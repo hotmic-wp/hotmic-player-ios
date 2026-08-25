@@ -1,0 +1,182 @@
+#if canImport(UIKit) && !os(watchOS)
+import AVFoundation
+import SwiftUI
+
+/// The flagship surface: a full-bleed, snap-paging vertical feed.
+///
+/// Built on SwiftUI's paging scroll target rather than a `UIPageViewController`
+/// so the whole thing stays a few hundred lines. Cells are lazy, and video is
+/// only ever rendered by a pooled node — a cell with no node assigned shows its
+/// poster, which is exactly what you want for items outside the warm window.
+public struct HMVerticalFeedView<Overlay: View>: View {
+
+    private let controller: HMFeedController
+    private let transition: HMPageTransition
+    private let gravity: AVLayerVideoGravity
+    private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
+
+    @State private var scrolledID: HMMediaItem.ID?
+
+    public init(
+        controller: HMFeedController,
+        transition: HMPageTransition = .none,
+        gravity: AVLayerVideoGravity = .resizeAspectFill,
+        @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay
+    ) {
+        self.controller = controller
+        self.transition = transition
+        self.gravity = gravity
+        self.overlay = overlay
+    }
+
+    public var body: some View {
+        // Outer reader still sits inside the safe area, so it can measure the
+        // insets; the inner one is expanded to full bleed. Overlays read the
+        // captured insets back out of the environment.
+        GeometryReader { container in
+            let insets = container.safeAreaInsets
+
+            GeometryReader { proxy in
+                let pageHeight = proxy.size.height
+
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(controller.items) { item in
+                            cell(for: item, pageHeight: pageHeight)
+                                .frame(width: proxy.size.width, height: pageHeight)
+                                .id(item.id)
+                        }
+                        if controller.isLoadingPage {
+                            loadingFooter.frame(width: proxy.size.width, height: 80)
+                        }
+                    }
+                    .scrollTargetLayout()
+                }
+                .scrollTargetBehavior(.paging)
+                .scrollIndicators(.hidden)
+                .scrollPosition(id: $scrolledID)
+                .background(.black)
+                .onChange(of: scrolledID) { _, newValue in
+                    guard let newValue,
+                          let index = controller.items.firstIndex(where: { $0.id == newValue })
+                    else { return }
+                    controller.setActiveIndex(index, reason: .swipe)
+                }
+                .onChange(of: controller.activeIndex) { _, newIndex in
+                    // Keep the scroll position in sync when the index is driven
+                    // programmatically (deep link, "next" button, autoadvance).
+                    guard controller.items.indices.contains(newIndex) else { return }
+                    let id = controller.items[newIndex].id
+                    guard id != scrolledID else { return }
+                    withAnimation(.snappy) { scrolledID = id }
+                }
+                .task {
+                    await controller.start()
+                    scrolledID = controller.currentItem?.id
+                }
+            }
+            .ignoresSafeArea()
+            .environment(\.hmFeedSafeArea, insets)
+        }
+        .background(.black)
+    }
+
+    @ViewBuilder
+    private func cell(for item: HMMediaItem, pageHeight: Double) -> some View {
+        let node = controller.node(for: item)
+        let snapshot = node?.snapshot ?? HMPlaybackSnapshot()
+
+        ZStack {
+            Color.black
+
+            if let posterURL = item.posterURL {
+                // Poster stays underneath so the first frame cross-dissolves in
+                // rather than punching through black.
+                HMPosterView(url: posterURL)
+            }
+
+            HMVideoSurface(node: node, gravity: gravity)
+                .opacity(snapshot.timeToFirstFrame == nil ? 0 : 1)
+                .animation(.easeOut(duration: 0.18), value: snapshot.timeToFirstFrame == nil)
+
+            overlay(item, snapshot)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .contentShape(.rect)
+        .modifier(PageTransitionEffect(transition: transition, pageHeight: pageHeight))
+    }
+
+    private var loadingFooter: some View {
+        ProgressView()
+            .progressViewStyle(.circular)
+            .tint(.white)
+    }
+}
+
+/// Applies the page transition, and gets out of the way entirely when there
+/// isn't one — an identity `rotation3DEffect` still forces a 3D transform layer
+/// on every cell, which is pure cost in the default configuration.
+private struct PageTransitionEffect: ViewModifier {
+    let transition: HMPageTransition
+    let pageHeight: Double
+
+    func body(content: Content) -> some View {
+        if transition == .none {
+            content
+        } else {
+            content.visualEffect { view, geometry in
+                let frame = geometry.frame(in: .scrollView(axis: .vertical))
+                let centreOffset = pageHeight > 0 ? (frame.minY / pageHeight) : 0
+                let attributes = transition.attributes(offset: centreOffset, height: pageHeight)
+                return view
+                    .opacity(attributes.opacity)
+                    .scaleEffect(attributes.scale)
+                    .offset(y: attributes.offsetY)
+                    .rotation3DEffect(
+                        .degrees(attributes.rotationDegrees),
+                        axis: (x: 1, y: 0, z: 0),
+                        anchor: attributes.anchor,
+                        perspective: attributes.perspective
+                    )
+            }
+        }
+    }
+}
+
+public extension HMVerticalFeedView where Overlay == EmptyView {
+    init(
+        controller: HMFeedController,
+        transition: HMPageTransition = .none,
+        gravity: AVLayerVideoGravity = .resizeAspectFill
+    ) {
+        self.init(controller: controller, transition: transition, gravity: gravity) { _, _ in EmptyView() }
+    }
+}
+
+/// Minimal async poster loader. Kept in-SDK on purpose: the whole point of this
+/// package is that it pulls in nothing but AVFoundation and SwiftUI.
+struct HMPosterView: View {
+    let url: URL
+
+    var body: some View {
+        // The `Color.clear` base is load-bearing: a bare `scaledToFill` image
+        // reports a huge ideal size, which would grow the enclosing cell and
+        // push overlay chrome outside the visible bounds. Layering it into an
+        // overlay keeps sizing driven by the cell instead of the artwork.
+        Color.clear
+            .overlay {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    default:
+                        Color.black
+                    }
+                }
+            }
+            .clipped()
+            .allowsHitTesting(false)
+    }
+}
+#endif

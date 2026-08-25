@@ -1,0 +1,76 @@
+// Drop-in replacement for HMLoggingMuxBridge.
+//
+// Copy into your app target as `MuxDataBridge.swift` once
+// `mux-stats-sdk-avplayer` is a dependency. Not compiled as part of the SDK
+// on purpose: HotMicPlayer depends on AVFoundation and SwiftUI, nothing else.
+
+import AVFoundation
+import HotMicPlayer
+import MUXSDKStats
+
+@MainActor
+final class MuxDataBridge: HMMuxBridge {
+
+    func monitor(
+        playerLayer: AVPlayerLayer,
+        playerName: String,
+        environment: HMMuxEnvironment,
+        video: HMMuxVideoData
+    ) {
+        let customerData = MUXSDKCustomerData(
+            customerPlayerData: Self.playerData(from: environment),
+            videoData: Self.videoData(from: video),
+            viewData: nil
+        )
+        MUXSDKStats.monitorAVPlayerLayer(
+            playerLayer,
+            withPlayerName: playerName,
+            customerData: customerData
+        )
+    }
+
+    func videoChange(playerName: String, video: HMMuxVideoData) {
+        let customerData = MUXSDKCustomerData(
+            customerPlayerData: nil,
+            videoData: Self.videoData(from: video),
+            viewData: nil
+        )
+        MUXSDKStats.videoChangeForPlayer(name: playerName, withCustomerData: customerData)
+    }
+
+    func destroy(playerName: String) {
+        MUXSDKStats.destroyPlayer(playerName)
+    }
+
+    func dispatchError(playerName: String, code: String, message: String) {
+        MUXSDKStats.dispatchError(code, withMessage: message, forPlayer: playerName)
+    }
+
+    // MARK: - Mapping
+
+    private static func playerData(from environment: HMMuxEnvironment) -> MUXSDKCustomerPlayerData {
+        let data = MUXSDKCustomerPlayerData(environmentKey: environment.environmentKey)!
+        data.playerName = environment.playerName
+        data.playerVersion = environment.playerVersion
+        data.viewerUserId = environment.viewerUserID
+        data.subPropertyId = environment.subPropertyID
+        data.experimentName = environment.experimentName
+        return data
+    }
+
+    private static func videoData(from video: HMMuxVideoData) -> MUXSDKCustomerVideoData {
+        let data = MUXSDKCustomerVideoData()
+        data.videoId = video.videoID
+        data.videoTitle = video.videoTitle
+        data.videoSeries = video.videoSeries
+        data.videoStreamType = video.videoStreamType
+        data.videoSourceUrl = video.videoSourceURL
+        data.videoCdn = video.videoCDN
+        data.videoVariantName = video.videoVariantName
+        if let duration = video.videoDuration {
+            // Mux expects milliseconds.
+            data.videoDuration = NSNumber(value: Int(duration * 1000))
+        }
+        return data
+    }
+}

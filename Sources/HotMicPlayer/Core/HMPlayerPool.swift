@@ -28,7 +28,7 @@ public final class HMPlayerPool {
     public var busyCount: Int { nodes.filter { $0.item != nil }.count }
 
     func resize(to size: Int) {
-        let target = max(1, size)
+        let target = max(1, min(4, size))
         if nodes.count < target {
             for index in nodes.count..<target {
                 let node = HMPlayerNode(id: "hm-player-\(index)", configuration: configuration)
@@ -59,7 +59,7 @@ public final class HMPlayerPool {
     /// - Parameter protectedItemIDs: items in the current prefetch window. These
     ///   are never evicted, which is what stops back-swipes from re-buffering.
     @discardableResult
-    func node(for item: HMMediaItem, protecting protectedItemIDs: Set<String>) -> HMPlayerNode {
+    func node(for item: HMMediaItem, protecting protectedItemIDs: Set<String>, playbackURL: URL? = nil) -> HMPlayerNode {
         if let existing = assignments[item.id] {
             existing.lastTouched = Date()
             return existing
@@ -72,7 +72,7 @@ public final class HMPlayerPool {
         }
         assignments[item.id] = node
         node.lastTouched = Date()
-        node.warm(with: item)
+        node.warm(with: item, playbackURL: playbackURL)
         return node
     }
 

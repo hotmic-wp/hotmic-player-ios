@@ -27,6 +27,16 @@ public final class HMPlayerNode: Identifiable {
     @ObservationIgnored public private(set) var isActive = false
 
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
+    @ObservationIgnored var onBufferChanged: (() -> Void)?
+    @ObservationIgnored private var summaryTask: Task<Void, Never>?
+    @ObservationIgnored private var activationID = ""
+    @ObservationIgnored private var activationReason = ""
+    @ObservationIgnored private var stallCount10 = 0
+    @ObservationIgnored private var stallTime10 = 0.0
+    @ObservationIgnored private var didReportSummary = false
+    @ObservationIgnored private var startupWidth = 0.0
+    @ObservationIgnored private var startupHeight = 0.0
+    @ObservationIgnored private var startupBitrate = 0.0
     @ObservationIgnored var configuration: HMPlayerConfiguration
 
     // Observation plumbing
@@ -75,10 +85,12 @@ public final class HMPlayerNode: Identifiable {
     ///
     /// This is the preload path. Buffer target and bitrate ceiling are kept low
     /// so warming a neighbour never competes with the item on screen.
-    func warm(with newItem: HMMediaItem) {
+    func warm(with newItem: HMMediaItem, playbackURL: URL? = nil) {
         guard item?.id != newItem.id else { return }
 
         let recycledFrom = item
+        player.pause()
+        isActive = false
         teardownItemObservers()
         item = newItem
         snapshot = HMPlaybackSnapshot()
@@ -91,10 +103,10 @@ public final class HMPlayerNode: Identifiable {
         lastReportedVariant = 0
         hasConfirmedDuration = false
         liveWindow.reset()
-        warmStartedAt = CACurrentMediaTime()
+        warmStartedAt = ProcessInfo.processInfo.systemUptime
 
         let asset = AVURLAsset(
-            url: newItem.url,
+            url: playbackURL ?? newItem.url,
             options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
         )
         let playerItem = AVPlayerItem(asset: asset)
@@ -114,15 +126,35 @@ public final class HMPlayerNode: Identifiable {
     }
 
     /// Promote this node to the on-screen item and begin playback.
-    func activate(startingAt position: TimeInterval? = nil) {
+    func activate(startingAt position: TimeInterval? = nil, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, reason: String = "play", cachedBytes: Int = 0) {
         guard let item else { return }
         isActive = true
-        activationTime = CACurrentMediaTime()
-        snapshot.wasPreloaded = warmStartedAt.map { CACurrentMediaTime() - $0 > 0.25 } ?? false
+        didLiftStartupCap = false
+        player.currentItem?.preferredPeakBitRate = configuration.startupPeakBitRate
+        activationTime = requestedAt
+        activationID = UUID().uuidString; snapshot.activationID = activationID
+        activationReason = reason
+        hasReportedFirstFrame = false; snapshot.timeToFirstFrame = nil
+        stallCount10 = 0; stallTime10 = 0; didReportSummary = false
+        snapshot.stallCount = 0; snapshot.totalStallDuration = 0
+        startupWidth = 0; startupHeight = 0; startupBitrate = 0
+        syncBufferHealth()
+        let status = player.currentItem?.status.rawValue ?? 0
+        let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
+        let tier = warmReady ? "warmPlayer" : cachedBytes > 0 ? "cachedBytes" : "cold"
+        snapshot.wasPreloaded = warmReady || cachedBytes > 0
+        snapshot.isFrameReady = playerLayer.isReadyForDisplay
+        playerLayer.opacity = snapshot.isFrameReady ? 1 : 0
+        summaryTask?.cancel()
+        summaryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            self?.reportStartupSummary()
+        }
 
         player.currentItem?.preferredForwardBufferDuration = configuration.steadyBufferDuration
 
-        emit(.viewStart, item: item, properties: ["preloaded": snapshot.wasPreloaded ? "1" : "0"])
+        emit(.viewStart, item: item, metrics: ["buffered_ahead_s": snapshot.bufferedAhead, "cached_bytes": Double(cachedBytes), "item_status": Double(status), "request_monotonic_s": requestedAt], properties: ["readiness_tier": tier])
 
         if let position, position > 0.1 {
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
@@ -135,6 +167,9 @@ public final class HMPlayerNode: Identifiable {
     /// Demote to a warmed neighbour: stop playback but keep the buffer.
     func deactivate(retainingPosition: Bool) {
         guard isActive, let item else { return }
+        handleStallEnded()
+        reportStartupSummary()
+        summaryTask?.cancel()
         isActive = false
         let watched = snapshot.currentTime
         player.pause()
@@ -154,7 +189,9 @@ public final class HMPlayerNode: Identifiable {
     /// Detach content entirely and free the decoder.
     func release() {
         if isActive { deactivate(retainingPosition: false) }
+        summaryTask?.cancel()
         teardownItemObservers()
+        playerLayer.opacity = 0
         player.replaceCurrentItem(with: nil)
         item = nil
         isActive = false
@@ -230,7 +267,7 @@ public final class HMPlayerNode: Identifiable {
             let window = liveWindow.update(
                 measuredStart: range.start.seconds,
                 measuredEdge: measuredEdge,
-                now: CACurrentMediaTime()
+                now: ProcessInfo.processInfo.systemUptime
             )
             snapshot.seekableStart = window.start
             snapshot.duration = window.edge
@@ -259,6 +296,14 @@ public final class HMPlayerNode: Identifiable {
     // MARK: - Observation
 
     private func installPlayerObservers() {
+        observations.append(playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.snapshot.isFrameReady = self.playerLayer.isReadyForDisplay
+                self.playerLayer.opacity = self.snapshot.isFrameReady ? 1 : 0
+                self.onBufferChanged?()
+            }
+        })
         observations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.syncTimeControlStatus() }
         })
@@ -331,7 +376,6 @@ public final class HMPlayerNode: Identifiable {
             if snapshot.state == .buffering { handleStallEnded() }
             snapshot.state = .playing
             emit(.playing, item: item)
-            reportFirstFrameIfNeeded()
         case .paused:
             if snapshot.state != .failed && snapshot.state != .idle {
                 snapshot.state = isActive ? .paused : .ready
@@ -358,10 +402,14 @@ public final class HMPlayerNode: Identifiable {
                 // Provisional only — the scrubber needs *some* scale to draw.
                 snapshot.duration = hint
             }
-            if snapshot.state == .loading { snapshot.state = isActive ? .playing : .ready }
+            if snapshot.state == .loading { snapshot.state = isActive ? .loading : .ready }
+            if !isActive {
+                // Decode the first frame without advancing the media clock.
+                player.preroll(atRate: 1) { _ in }
+            }
             emit(.preloadReady, item: item, metrics: [
                 "duration_s": snapshot.duration,
-                "warm_ms": warmStartedAt.map { (CACurrentMediaTime() - $0) * 1000 } ?? 0
+                "warm_ms": warmStartedAt.map { (ProcessInfo.processInfo.systemUptime - $0) * 1000 } ?? 0
             ])
         case .failed:
             handleFailure(playerItem.error as NSError?)
@@ -375,10 +423,9 @@ public final class HMPlayerNode: Identifiable {
         let current = playerItem.currentTime().seconds
         let buffered = playerItem.loadedTimeRanges
             .map { $0.timeRangeValue }
-            .first(where: { $0.containsTime(playerItem.currentTime()) || $0.start.seconds >= current })
-        if let buffered {
-            snapshot.bufferedAhead = max(0, (buffered.start.seconds + buffered.duration.seconds) - current)
-        }
+            .first(where: { $0.containsTime(playerItem.currentTime()) || abs($0.start.seconds - current) < 0.05 })
+        snapshot.bufferedAhead = buffered.map { max(0, $0.start.seconds + $0.duration.seconds - current) } ?? 0
+        onBufferChanged?()
         if playerItem.isPlaybackLikelyToKeepUp, snapshot.state == .buffering {
             handleStallEnded()
         }
@@ -387,6 +434,11 @@ public final class HMPlayerNode: Identifiable {
     private func syncVariant() {
         guard let item, let event = player.currentItem?.accessLog()?.events.last else { return }
         let bitrate = event.indicatedBitrate
+        if isActive, startupBitrate == 0, bitrate > 0 {
+            startupBitrate = bitrate
+            let size = player.currentItem?.presentationSize ?? .zero
+            startupWidth = Double(size.width); startupHeight = Double(size.height)
+        }
         guard bitrate > 0, bitrate != lastReportedVariant else { return }
         lastReportedVariant = bitrate
         snapshot.indicatedBitrate = bitrate
@@ -402,7 +454,7 @@ public final class HMPlayerNode: Identifiable {
         // `seekableTimeRanges` allocates on every read. VOD only needs it until
         // the duration is known; a sliding live window needs it continuously.
         if !hasConfirmedDuration || snapshot.isLive { syncSeekableRange() }
-        if snapshot.state == .playing { reportFirstFrameIfNeeded() }
+        syncBufferHealth()
         liftStartupCapIfDue()
     }
 
@@ -413,38 +465,50 @@ public final class HMPlayerNode: Identifiable {
               configuration.startupPeakBitRate > 0,
               isActive,
               let activationTime,
-              CACurrentMediaTime() - activationTime > configuration.startupBitRateWindow
+              ProcessInfo.processInfo.systemUptime - activationTime > configuration.startupBitRateWindow
         else { return }
         didLiftStartupCap = true
         player.currentItem?.preferredPeakBitRate = configuration.steadyPeakBitRate
     }
 
-    private func reportFirstFrameIfNeeded() {
-        guard !hasReportedFirstFrame, let item,
-              player.timeControlStatus == .playing,
-              snapshot.currentTime > 0
-        else { return }
+    /// Called only by a visible surface at a display-link boundary after its
+    /// layer was ready and committed. Never called by the media progress tick.
+    func didDisplayFrame(activation: String, at time: TimeInterval) {
+        guard isActive, activation == activationID, !hasReportedFirstFrame,
+              playerLayer.isReadyForDisplay, player.currentItem?.status == .readyToPlay, let item, let activationTime else { return }
         hasReportedFirstFrame = true
-        let ttff = activationTime.map { CACurrentMediaTime() - $0 }
+        let size = player.currentItem?.presentationSize ?? .zero
+        if startupWidth == 0 { startupWidth = Double(size.width); startupHeight = Double(size.height) }
+        let ttff = max(0, time - activationTime)
         snapshot.timeToFirstFrame = ttff
-        emit(.firstFrame, item: item, metrics: [
-            "ttff_ms": (ttff ?? 0) * 1000,
-            "preloaded": snapshot.wasPreloaded ? 1 : 0
-        ])
+        emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary"])
+    }
+
+    private func reportStartupSummary() {
+        guard !didReportSummary, let item, let activationTime else { return }
+        didReportSummary = true
+        let now = ProcessInfo.processInfo.systemUptime
+        let ongoing = stallStartedAt.map { max(0, min(now, activationTime + 10) - $0) } ?? 0
+        let size = player.currentItem?.presentationSize ?? .zero
+        emit(.startupSummary, item: item, metrics: ["stall_count_10s": Double(stallCount10), "stall_time_10s": stallTime10 + ongoing,
+            "observed_window_s": min(10, max(0, now - activationTime)), "startup_bitrate": startupBitrate,
+            "startup_width": startupWidth > 0 ? startupWidth : Double(size.width), "startup_height": startupHeight > 0 ? startupHeight : Double(size.height)])
     }
 
     private func handleStallBegan() {
-        guard isActive, stallStartedAt == nil, let item else { return }
-        stallStartedAt = CACurrentMediaTime()
+        guard isActive, hasReportedFirstFrame, stallStartedAt == nil, let item else { return }
+        stallStartedAt = ProcessInfo.processInfo.systemUptime
         snapshot.state = .buffering
         snapshot.stallCount += 1
+        if let activationTime, ProcessInfo.processInfo.systemUptime - activationTime < 10 { stallCount10 += 1 }
         emit(.rebufferStart, item: item, position: snapshot.currentTime)
     }
 
     private func handleStallEnded() {
         guard let started = stallStartedAt, let item else { return }
-        let elapsed = CACurrentMediaTime() - started
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
         stallStartedAt = nil
+        if let activationTime { stallTime10 += max(0, min(ProcessInfo.processInfo.systemUptime, activationTime + 10) - max(started, activationTime)) }
         snapshot.totalStallDuration += elapsed
         emit(.rebufferEnd, item: item, position: snapshot.currentTime, metrics: ["stall_ms": elapsed * 1000])
     }
@@ -479,6 +543,7 @@ public final class HMPlayerNode: Identifiable {
     ) {
         var props = properties
         props["player_key"] = id
+        if isActive || kind == .viewEnd { props["activation_id"] = activationID; props["activation_reason"] = activationReason }
         onEvent?(
             HMPlaybackEvent(
                 kind: kind,

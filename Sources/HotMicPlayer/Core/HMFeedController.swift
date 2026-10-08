@@ -39,6 +39,10 @@ public final class HMFeedController {
 
     // MARK: - Private
 
+    @ObservationIgnored private var proxy: HMCacheProxy?
+    @ObservationIgnored private var requestTime: TimeInterval?
+    @ObservationIgnored private var requestReason = "play"
+    @ObservationIgnored private var hasStarted = false
     @ObservationIgnored private let dataSource: HMFeedDataSource
     @ObservationIgnored private var nextCursor: String?
     @ObservationIgnored private var timelines: [String: HMStreamTimeline] = [:]
@@ -63,7 +67,13 @@ public final class HMFeedController {
         }
 
         pool.onEvent = { [weak self] event, item in
-            self?.analytics.emit(event, item: item)
+            guard let self else { return }
+            var metrics = event.metrics
+            if event.kind == .viewStart || event.kind == .firstFrame {
+                metrics["live_player_count"] = Double(self.pool.nodes.count)
+                metrics["memory_bytes"] = HMMemorySample.footprint()
+            }
+            self.analytics.emit(HMPlaybackEvent(kind: event.kind, itemID: event.itemID, position: event.position, metrics: metrics, properties: event.properties), item: item)
         }
         pool.willRecycle = { [weak self] node, incoming in
             guard let self else { return }
@@ -73,13 +83,37 @@ public final class HMFeedController {
         }
     }
 
+    public convenience init(items: [HMMediaItem], configuration: HMPlayerConfiguration = .default, analytics: HMAnalyticsHub? = nil) {
+        self.init(dataSource: HMStaticFeedDataSource(items: items, pageSize: max(1, items.count), loopsForever: false, simulatedLatency: .zero), configuration: configuration, analytics: analytics)
+    }
+
     // MARK: - Content loading
 
     public func start() async {
-        guard items.isEmpty else { return }
-        if configuration.managesAudioSession { HMAudioSession.activatePlayback() }
+        guard !hasStarted else { return }
+        hasStarted = true
+        let began = ProcessInfo.processInfo.systemUptime
         await loadNextPage()
-        if !items.isEmpty { setActiveIndex(0, reason: .initial) }
+        if !items.isEmpty, isFeedVisible { await prepareTransport(); setActiveIndex(0, reason: .initial, requestedAt: began) }
+    }
+
+    private func prepareTransport() async {
+        guard proxy == nil else { return }
+        do {
+            let created = try HMCacheProxy(configuration: configuration)
+            try await created.start()
+            created.onEvent = { [weak self] event, item in self?.analytics.emit(event, item: item) }
+            proxy = created
+        } catch { loadError = "Cache transport: \(error.localizedDescription)" }
+    }
+
+    /// Call at the user's tap, before presentation or asset work. Playlist
+    /// browsing loads metadata only, so the first-video baseline stays cold.
+    public func requestPlay(at index: Int) async {
+        let began = ProcessInfo.processInfo.systemUptime
+        await prepareTransport()
+        setActiveIndex(index, reason: .programmatic, requestedAt: began)
+        isFeedVisible = true
     }
 
     public func loadNextPage() async {
@@ -112,8 +146,11 @@ public final class HMFeedController {
     public enum ActivationReason { case initial, swipe, programmatic }
 
     /// The single entry point for "the viewer is now looking at index N".
-    public func setActiveIndex(_ index: Int, reason: ActivationReason = .swipe) {
+    public func setActiveIndex(_ index: Int, reason: ActivationReason = .swipe, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard items.indices.contains(index) else { return }
+        proxy?.cancelPrefetch()
+        requestTime = requestedAt
+        requestReason = reason == .swipe ? "swipe" : reason == .initial ? "initial" : "play"
         let previousIndex = activeIndex
         let isSameItem = previousIndex == index && currentNode?.isActive == true
         activeIndex = index
@@ -126,7 +163,7 @@ public final class HMFeedController {
         }
 
         let item = items[index]
-        let node = pool.node(for: item, protecting: windowItemIDs(around: index))
+        let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.setMuted(isMuted)
         attachAnalytics(node: node, item: item)
 
@@ -134,11 +171,14 @@ public final class HMFeedController {
             // The very first item of a session starts from the top; anything
             // the viewer has already watched resumes where they left it.
             let shouldRestore = configuration.restoresPlaybackPosition && reason != .initial
-            node.activate(startingAt: shouldRestore ? resumePositions[item.id] : nil)
+            proxy?.markPlayed(item)
+            node.activate(startingAt: shouldRestore ? resumePositions[item.id] : nil, requestedAt: requestedAt, reason: requestReason, cachedBytes: proxy?.cachedByteCount(for: item) ?? 0)
         }
 
-        prefetchWindow(around: index)
+        for n in pool.nodes { n.onBufferChanged = { [weak self] in self?.updatePrefetch() } }
         pool.trim(keeping: windowItemIDs(around: index))
+        if configuration.strategy == .S2 { prefetchWindow(around: index) }
+        updatePrefetch()
         loadMoreIfNeeded(currentIndex: index)
     }
 
@@ -148,7 +188,7 @@ public final class HMFeedController {
     private func windowItemIDs(around index: Int) -> Set<String> {
         var ids: Set<String> = []
         if items.indices.contains(index) { ids.insert(items[index].id) }
-        for offset in configuration.prefetch.windowOffsets {
+        for offset in configuration.warmOffsets {
             let neighbour = index + offset
             if items.indices.contains(neighbour) { ids.insert(items[neighbour].id) }
         }
@@ -161,14 +201,37 @@ public final class HMFeedController {
     /// viewer's thumb lifts, the next item already has its first segments.
     private func prefetchWindow(around index: Int) {
         let protectedIDs = windowItemIDs(around: index)
-        for offset in configuration.prefetch.windowOffsets {
+        for offset in configuration.warmOffsets {
             let neighbour = index + offset
             guard items.indices.contains(neighbour) else { continue }
             let item = items[neighbour]
             guard pool.existingNode(for: item) == nil else { continue }
-            let node = pool.node(for: item, protecting: protectedIDs)
+            let node = pool.node(for: item, protecting: protectedIDs, playbackURL: proxy?.url(for: item))
             node.setMuted(isMuted)
         }
+    }
+
+    private func updatePrefetch() {
+        guard isFeedVisible, let node = currentNode, node.isActive else { proxy?.cancelPrefetch(); return }
+        let threshold = max(0, configuration.prefetch.startThreshold)
+        let remaining = max(0, node.snapshot.duration - node.snapshot.currentTime)
+        let fullyLoaded = node.snapshot.duration > 0 && node.snapshot.bufferedAhead >= remaining - 0.1
+        let safe = node.snapshot.bufferedAhead >= threshold || fullyLoaded
+        guard safe else {
+            proxy?.cancelPrefetch()
+            // Detaching warm items cancels their AVFoundation network work.
+            // S2 intentionally preserves the original competing warm-pool path.
+            if configuration.strategy == .S3, node.snapshot.timeToFirstFrame != nil {
+                pool.trim(keeping: Set(currentItem.map { [$0.id] } ?? []))
+            }
+            return
+        }
+        prefetchWindow(around: activeIndex)
+        let dataItems = configuration.prefetch.windowOffsets.compactMap { offset -> HMMediaItem? in
+            let index = activeIndex + offset
+            return items.indices.contains(index) ? items[index] : nil
+        }
+        proxy?.prefetch(dataItems, keeping: (currentItem.map { [$0] } ?? []) + dataItems)
     }
 
     // MARK: - Access for views
@@ -205,6 +268,7 @@ public final class HMFeedController {
     public func seek(toProgress progress: Double) { currentNode?.seek(toProgress: progress) }
 
     public func pauseAll() {
+        proxy?.cancelPrefetch()
         for node in pool.nodes where node.isActive {
             if let item = node.item { resumePositions[item.id] = node.snapshot.currentTime }
             node.pause()
@@ -218,18 +282,29 @@ public final class HMFeedController {
     /// activation so the view is counted and time-to-first-frame is measured.
     public func resumeActive() {
         guard isFeedVisible, let item = currentItem else { return }
-        let node = pool.node(for: item, protecting: windowItemIDs(around: activeIndex))
+        let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.setMuted(isMuted)
         attachAnalytics(node: node, item: item)
         if node.isActive {
             node.play()
         } else {
-            node.activate(startingAt: configuration.restoresPlaybackPosition ? resumePositions[item.id] : nil)
+            proxy?.markPlayed(item)
+            node.activate(startingAt: configuration.restoresPlaybackPosition ? resumePositions[item.id] : nil,
+                          requestedAt: requestTime ?? ProcessInfo.processInfo.systemUptime, reason: requestReason,
+                          cachedBytes: proxy?.cachedByteCount(for: item) ?? 0)
         }
+    }
+
+    public func finishRun() async {
+        pauseAll()
+        for node in pool.nodes where node.isActive { node.deactivate(retainingPosition: true) }
+        let waste = await proxy?.finish() ?? 0
+        if let item = currentItem { analytics.emit(HMPlaybackEvent(kind: .runEnd, itemID: item.id, metrics: ["wasted_prefetch_bytes": Double(waste)]), item: item) }
     }
 
     public func teardown() {
         loadTask?.cancel()
+        if let proxy { Task { _ = await proxy.finish() } }
         for node in pool.nodes { analytics.detach(playerKey: node.id) }
         pool.releaseAll()
         if configuration.managesAudioSession { HMAudioSession.deactivate() }
@@ -245,8 +320,14 @@ public final class HMFeedController {
         pool.configuration = configuration
         pool.resize(to: configuration.poolSize)
         pool.applyConfiguration()
-        prefetchWindow(around: activeIndex)
-        pool.trim(keeping: windowItemIDs(around: activeIndex))
+        proxy?.configuration = configuration
+        proxy?.cancelPrefetch()
+        pool.trim(keeping: Set(currentItem.map { [$0.id] } ?? []))
+        if let item = currentItem {
+            let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
+            if isFeedVisible, !node.isActive { node.activate() }
+        }
+        updatePrefetch()
     }
 }
 #endif

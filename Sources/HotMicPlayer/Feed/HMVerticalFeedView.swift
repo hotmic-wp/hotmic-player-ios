@@ -51,17 +51,15 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
+                    .background(HMPageCommitProbe { index, time in
+                        guard index != controller.activeIndex else { return }
+                        controller.setActiveIndex(index, reason: .swipe, requestedAt: time)
+                    })
                 }
                 .scrollTargetBehavior(.paging)
                 .scrollIndicators(.hidden)
                 .scrollPosition(id: $scrolledID)
                 .background(.black)
-                .onChange(of: scrolledID) { _, newValue in
-                    guard let newValue,
-                          let index = controller.items.firstIndex(where: { $0.id == newValue })
-                    else { return }
-                    controller.setActiveIndex(index, reason: .swipe)
-                }
                 .onChange(of: controller.activeIndex) { _, newIndex in
                     // Keep the scroll position in sync when the index is driven
                     // programmatically (deep link, "next" button, autoadvance).
@@ -96,8 +94,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
             }
 
             HMVideoSurface(node: node, gravity: gravity)
-                .opacity(snapshot.timeToFirstFrame == nil ? 0 : 1)
-                .animation(.easeOut(duration: 0.18), value: snapshot.timeToFirstFrame == nil)
+
 
             overlay(item, snapshot)
         }

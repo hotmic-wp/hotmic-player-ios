@@ -36,37 +36,118 @@ true if you can read the whole dependency graph in one line.
 
 ## The three decisions that matter
 
-### 1. A pool of players, not a player per cell
+### 1. Two players and a separate data window (S3 default)
 
-`HMPlayerPool` holds a fixed number of `HMPlayerNode`s (default 4). Each node owns
-one `AVPlayer` and one `AVPlayerLayer`. As the viewer scrolls, nodes are recycled
-onto new items; the layer travels with the node.
+The app supplies a playlist to `HMFeedController(items:configuration:analytics:)`
+or a paginated data source to the same controller. The default allocates exactly
+**two** `AVPlayer`s. The active node plays; once it is safely buffered, the next
+node loads and prerolls at rate 1 without advancing the playback clock. Its
+`AVPlayerLayer` stays attached to the neighbouring surface. A forward page commit
+promotes that node, and recycles the old current node for the next neighbour.
+The current item is always protected; warm offsets are truncated to the actual
+pool capacity so a large data window cannot recycle the active player.
 
-Two consequences worth knowing:
+`HMPrefetchPolicy` independently defaults to five ahead and one behind,
+nearest-first, with an 800,000-byte budget per item, a three-second current-buffer
+threshold, and a 128 MB disk cap. Short clips qualify when their remaining media
+is fully buffered. Falling below the threshold cancels speculative data tasks;
+S3 also detaches warm items when buffer safety is lost after startup. Page
+commits invalidate the prefetch generation immediately. The cache pins the current
+window preferentially, but its hard cap wins even over pins. Disk entries are
+range chunks with a persisted LRU index; interrupted/unindexed files are removed
+on opening. Cache identity is scheme/host/path, independent of signed query
+strings. **Content and non-signature query variants must have versioned paths.**
 
-- Decoder sessions are capped, so a 500-item feed costs the same as a 5-item one.
-- Beacon-style analytics SDKs stay attached to a stable player across a recycle,
-  which is why the Mux adapter can emit `videoChange` instead of tearing down and
-  re-monitoring. See `Integrations/Mux/README.md`.
+Strategies are presets with independently overridable knobs: S0 is one player
+with no prefetch, S1 one player with disk prefetch, S2 the original competing warm
+pool (2/3/4 players), and S3 the hybrid. All remote VOD strategies traverse the
+same proxy, so transport overhead is common to the comparison. S0/S2 neither read
+nor write the disk cache. Live streams retain AVFoundation's direct transport.
 
-Eviction never touches an item inside the current prefetch window, which is what
-makes swiping back instant rather than a re-buffer.
+### 2. Transport spike, 2026-10-08
 
-### 2. Preloading is a window, and it's tunable
+We selected a loopback HTTP proxy implemented with `NWListener` and
+`URLSession`, with no third-party dependencies. The listener binds **only
+127.0.0.1**, on an ephemeral port, and exposes opaque per-item routes through
+`localhost`. There is no arbitrary URL endpoint. MP4 and HLS fMP4 were encoded
+from all six bundled clips and played on a dedicated **iPhone 17 Pro / iOS 26.5
+simulator**. Screenshots showed the correct video; JSONL first-frame, playback,
+access-log and network/cache events accompanied it. A four-swipe HLS
+`backAndForth` run completed with five matched first-frame events and no decoder
+or transport errors. This confirms the chosen path for these VOD fixtures; it
+is not evidence about all HLS features or physical-device performance.
 
-`HMPrefetchPolicy` declares how many items ahead and behind to warm.
-`HMFeedController.prefetchWindow(around:)` warms them nearest-first, so the item
-most likely to be swiped to gets bandwidth priority.
+The first spike exposed two failures: returning a shortened 206 response for
+AVFoundation's large open-ended MP4 Range caused item failure, and async
+byte-at-a-time reading took seconds in a Debug build. The working version honors
+the **entire requested Range**, streams it in bounded 512 KiB blocks, and uses
+block-based URLSession delegates. Invalid/multiple ranges return 416. Cancellation
+closes the response and upstream task. Upstream origins must support Range for
+nonzero offsets; an origin ignoring Range can supply the initial prefix but
+cannot serve later seeks correctly.
 
-A warmed item is attached to a player and buffering, but paused, with a *small*
-buffer target and (optionally) a bitrate ceiling — warming a neighbour must never
-compete with the item on screen. On activation the buffer target and ceiling are
-raised.
+HLS master/media URI lines and quoted URI attributes (MAP, KEY, MEDIA, etc.) are
+rewritten, resolving relative references against the final redirected URL. The
+raw playlist's final base URL is persisted with the bytes. Prefetch chooses one
+rendition at or below the startup cap (lowest if none fit), caches the playlists,
+init segment, then nearest first segments up to the byte budget. A seconds
+budget stops at a segment boundary; a byte budget may cache a segment prefix.
+MP4 seconds budgets estimate bytes from known duration and file length, with the
+byte ceiling still enforced. HTTP payload bytes are counted, including received
+bytes on cancellation; protocol/TLS overhead is not counted.
 
-`HMPlayerConfiguration.startupPeakBitRate` caps ABR for the first few seconds so
-the first segment is small, then lifts. This is the single biggest lever on
-time-to-first-frame, and the sample app's HUD shows the result directly:
-roughly **1000 ms cold vs 150 ms preloaded** on the bundled test streams.
+We did not build an AVAssetResourceLoader HLS-segment path: HTTP rewriting provides
+an observable, working common path for both fixtures. Future coverage needs
+byte-range HLS, alternate audio, encryption/DRM, live/LL-HLS, redirects, signed
+playlist refresh and authenticated origins on real hardware. Playlists currently
+have no expiry, so the cache is for immutable **VOD** assets with versioned paths.
+The SDK does not alter ATS policy. Debug LAN HTTP permission belongs exclusively
+to the Sample target; production hosts must allow loopback networking as required
+by their OS and continue serving upstream media over HTTPS.
+
+### Timing and byte accounting
+
+One monotonic clock (`ProcessInfo.systemUptime`) timestamps requests and events.
+`start()` records its play request before content loading; the sample's Play tap
+calls `requestPlay(at:)` before presentation and asset work. Browsing the playlist
+loads metadata, without warming the first video. On iOS 17, a delegate bridge
+commits pages at `scrollViewDidEndDecelerating` / a drag ending without deceleration,
+rather than when `scrollPosition` changes during a drag. The bridge forwards the
+other delegate callbacks to SwiftUI.
+
+`AVPlayerLayer.isReadyForDisplay` KVO reveals the layer directly. The visible
+surface waits for a subsequent display-link boundary, after observing that ready
+layer attached to a visible window, before emitting `firstFrame`. This includes
+the actual layer-swap/presentation delay of already-ready players, and resets per
+activation/back-swipe. There is **no media-time polling in TTFF**. The 100 ms
+periodic observer remains only for the scrubber/buffer state. Readiness alone is
+not a display timestamp ([Apple's property documentation](https://developer.apple.com/documentation/avfoundation/avplayerlayer/isreadyfordisplay)); the display-boundary detector is a presentation estimate
+with roughly a refresh-period uncertainty, not a physical-panel photodiode
+measurement. Physical iPhone validation is still required.
+
+Each activation records warm-player/cached-bytes/cold tier, item status, buffered
+seconds ahead and cached bytes. `wasPreloaded` reflects real readiness, not elapsed
+warm time. View IDs correlate startup summaries and first frames. Summaries clip
+stall count/time to the first ten wall-clock seconds after the request, emitting
+an observed-window length when the viewer leaves early. Startup bitrate comes
+from access logs; resolution comes from the first presented item's size.
+View/first-frame events sample player count and task physical memory footprint.
+Decoder, transport and speculative failures have separate events.
+
+Network and cache payload bytes are attributed to item routes. Wasted prefetch is
+received speculative bytes minus the union of prefetched ranges supplied to
+**activated** playback, including data supplied while warm and subsequently
+activated; repeated probes do not count twice. It includes cancelled/discarded
+bytes. This is a transport-consumption metric, not the number of pixels watched.
+The JSONL sink serializes ordered events off the main actor, writes a complete
+run/configuration/device/build header, and has an explicit durable flush barrier.
+
+Poster URLs render until a decoded layer is ready. Runtime first-non-black-frame
+generation is deferred: a partial MP4 may lack metadata or the needed GOP, HLS
+requires assembling init/segments, and AVAssetImageGenerator would allocate
+additional decoding work. A future worker needs a background decode budget,
+cancellation tied to the window, black-frame scoring and cached thumbnail files.
+The encoder generates supplied poster images at one second for the fixtures.
 
 ### 3. Overlays are a function of (clock, timeline)
 
@@ -178,7 +259,7 @@ Event kinds cover the union of what Mux, Conviva and product analytics want:
 `seeking`, `seeked`, `rebufferStart`, `rebufferEnd`, `variantChanged`, `ended`,
 `error`, plus feed-specific `preloadStart`, `preloadReady` and `playerRecycled`.
 
-Two sinks ship: `HMConsoleSink` (ring buffer + OSLog, drives the demo's console)
+Three sinks ship: `HMJSONLFileSink`, `HMConsoleSink` (ring buffer + OSLog, drives the demo's console)
 and `HMMuxAnalyticsSink`.
 
 ## What is deliberately not built yet

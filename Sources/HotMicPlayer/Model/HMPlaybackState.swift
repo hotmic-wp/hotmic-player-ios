@@ -36,6 +36,8 @@ public struct HMPlaybackSnapshot: Sendable, Equatable {
     public var totalStallDuration: TimeInterval = 0
     /// True while this item was preloaded ahead of being shown.
     public var wasPreloaded: Bool = false
+    public var isFrameReady: Bool = false
+    public var activationID: String = ""
     public var errorDescription: String?
 
     /// Position within the seekable window, not the absolute asset. Keeps the

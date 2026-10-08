@@ -12,7 +12,7 @@ public final class HMJSONLFileSink: HMAnalyticsSink {
     public let fileURL: URL
     private let writer: Writer
     public init(fileURL: URL, runID: String, configuration: HMPlayerConfiguration,
-                format: String, network: String, script: String, buildSHA: String) throws {
+                format: String, network: String, script: String, buildSHA: String, dimensions: [String: String] = [:]) throws {
         self.fileURL = fileURL
         writer = try Writer(fileURL)
         var model = utsname(); uname(&model)
@@ -22,7 +22,7 @@ public final class HMJSONLFileSink: HMAnalyticsSink {
             "configuration_sha256": HMCacheKey.hash(configuration.fingerprint), "format": format,
             "network": network, "script": script, "device_model": ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? device,
             "os": ProcessInfo.processInfo.operatingSystemVersionString, "build_sha": buildSHA,
-            "started_at": ISO8601DateFormatter().string(from: Date()),
+            "dimensions": dimensions, "started_at": ISO8601DateFormatter().string(from: Date()),
             "clock": "systemUptime", "simulator": ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] != nil]
         writer.append(try Self.line(header))
     }

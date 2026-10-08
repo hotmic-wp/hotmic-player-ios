@@ -130,7 +130,8 @@ seconds ahead and cached bytes. `wasPreloaded` reflects real readiness, not elap
 warm time. View IDs correlate startup summaries and first frames. Summaries clip
 stall count/time to the first ten wall-clock seconds after the request, emitting
 an observed-window length when the viewer leaves early. Startup bitrate comes
-from access logs; resolution comes from the first presented item's size.
+from access logs; resolution comes from a pixel buffer sampled at the first presentation boundary
+(with an explicitly labeled presentation-size fallback if unavailable).
 View/first-frame events sample player count and task physical memory footprint.
 Decoder, transport and speculative failures have separate events.
 
@@ -148,6 +149,13 @@ requires assembling init/segments, and AVAssetImageGenerator would allocate
 additional decoding work. A future worker needs a background decode budget,
 cancellation tied to the window, black-frame scoring and cached thumbnail files.
 The encoder generates supplied poster images at one second for the fixtures.
+
+The Sample's benchmark mode fetches a URL-supplied grid, runs cells/repetitions
+in-app, and posts each flushed run to a configurable receiver. It remembers the
+last grid URL and retains local JSONL on upload failure. Autopilot requests scroll
+animations; touch and autopilot both activate only in the settled-page callback.
+XCTest is a launcher/waiter for that same runner. See BENCHMARKING for Linux USB
+installation, Device Farm artifact packaging and the manual-only build workflow.
 
 ### 3. Overlays are a function of (clock, timeline)
 

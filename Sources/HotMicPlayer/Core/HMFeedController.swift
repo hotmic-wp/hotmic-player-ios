@@ -19,6 +19,19 @@ public final class HMFeedController {
     public private(set) var isLoadingPage = false
     public private(set) var hasMoreContent = true
     public private(set) var loadError: String?
+    public private(set) var requestedPageIndex: Int?
+    public private(set) var pageRequestID = UUID()
+    /// Autopilot and deep-link paging use the surface's scroll animation; only
+    /// its settled delegate callback activates the item and starts swipe TTFF.
+    public func requestPage(at index: Int) {
+        guard items.indices.contains(index), index != activeIndex else { return }
+        requestedPageIndex = index; pageRequestID = UUID()
+    }
+    public func commitPage(at index: Int, requestedAt: TimeInterval) {
+        requestedPageIndex = nil
+        guard index != activeIndex else { return }
+        setActiveIndex(index, reason: .swipe, requestedAt: requestedAt)
+    }
 
     /// Global mute. Vertical feeds are almost always sound-on, but demos aren't.
     public var isMuted: Bool {
@@ -43,6 +56,7 @@ public final class HMFeedController {
     @ObservationIgnored private var requestTime: TimeInterval?
     @ObservationIgnored private var requestReason = "play"
     @ObservationIgnored private var hasStarted = false
+    @ObservationIgnored private var runEnded = false
     @ObservationIgnored private let dataSource: HMFeedDataSource
     @ObservationIgnored private var nextCursor: String?
     @ObservationIgnored private var timelines: [String: HMStreamTimeline] = [:]
@@ -109,8 +123,8 @@ public final class HMFeedController {
 
     /// Call at the user's tap, before presentation or asset work. Playlist
     /// browsing loads metadata only, so the first-video baseline stays cold.
-    public func requestPlay(at index: Int) async {
-        let began = ProcessInfo.processInfo.systemUptime
+    public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
+        let began = requestedAt
         await prepareTransport()
         setActiveIndex(index, reason: .programmatic, requestedAt: began)
         isFeedVisible = true
@@ -296,6 +310,8 @@ public final class HMFeedController {
     }
 
     public func finishRun() async {
+        guard !runEnded else { return }
+        runEnded = true
         pauseAll()
         for node in pool.nodes where node.isActive { node.deactivate(retainingPosition: true) }
         let waste = await proxy?.finish() ?? 0

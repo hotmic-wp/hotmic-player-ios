@@ -12,10 +12,12 @@
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000005 /* HotMicPlayerDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HotMicPlayerDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HotMicPlayerDemoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AA0000000000000000000006 /* HotMicPlayerDemo */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = HotMicPlayerDemo; sourceTree = "<group>"; };
+		BB0000000000000000000006 = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = HotMicPlayerDemoUITests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -27,6 +29,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BB000000000000000000000E = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -34,6 +37,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000006 /* HotMicPlayerDemo */,
+                BB0000000000000000000006,
 				AA0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -42,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000005 /* HotMicPlayerDemo.app */,
+                BB0000000000000000000005,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -72,7 +77,21 @@
 			productReference = AA0000000000000000000005 /* HotMicPlayerDemo.app */;
 			productType = "com.apple.product-type.application";
 		};
+        BB0000000000000000000004 = {
+            isa = PBXNativeTarget; buildConfigurationList = BB000000000000000000000A;
+            buildPhases = (BB000000000000000000000D, BB000000000000000000000E, BB000000000000000000000F);
+            buildRules = (); dependencies = (BB0000000000000000000013);
+            fileSystemSynchronizedGroups = (BB0000000000000000000006);
+            name = HotMicPlayerDemoUITests; productName = HotMicPlayerDemoUITests;
+            productReference = BB0000000000000000000005; productType = "com.apple.product-type.bundle.ui-testing";
+        };
 /* End PBXNativeTarget section */
+/* Begin PBXContainerItemProxy section */
+        BB0000000000000000000014 = {isa = PBXContainerItemProxy; containerPortal = AA0000000000000000000001; proxyType = 1; remoteGlobalIDString = AA0000000000000000000004; remoteInfo = HotMicPlayerDemo; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXTargetDependency section */
+        BB0000000000000000000013 = {isa = PBXTargetDependency; target = AA0000000000000000000004; targetProxy = BB0000000000000000000014; };
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		AA0000000000000000000001 /* Project object */ = {
@@ -105,6 +124,7 @@
 			projectRoot = "";
 			targets = (
 				AA0000000000000000000004 /* HotMicPlayerDemo */,
+                BB0000000000000000000004,
 			);
 		};
 /* End PBXProject section */
@@ -117,6 +137,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BB000000000000000000000F = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -127,6 +148,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BB000000000000000000000D = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
@@ -197,6 +219,8 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = "Debug-Info.plist";
+                HM_BUILD_SHA = unknown;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarHidden = YES;
@@ -247,6 +271,16 @@
 			};
 			name = Release;
 		};
+        BB000000000000000000000B = {
+            isa = XCBuildConfiguration;
+            buildSettings = {GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.hotmic.HotMicPlayerDemoUITests; PRODUCT_NAME = "$(TARGET_NAME)"; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = HotMicPlayerDemo; SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 17.0; };
+            name = Debug;
+        };
+        BB000000000000000000000C = {
+            isa = XCBuildConfiguration;
+            buildSettings = {GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.hotmic.HotMicPlayerDemoUITests; PRODUCT_NAME = "$(TARGET_NAME)"; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = HotMicPlayerDemo; SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 17.0; };
+            name = Release;
+        };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -268,6 +302,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+        BB000000000000000000000A = {isa = XCConfigurationList; buildConfigurations = (BB000000000000000000000B, BB000000000000000000000C); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */

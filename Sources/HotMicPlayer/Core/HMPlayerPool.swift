@@ -13,7 +13,7 @@ import Observation
 public final class HMPlayerPool {
 
     public private(set) var nodes: [HMPlayerNode] = []
-    @ObservationIgnored private var assignments: [String: HMPlayerNode] = [:]  // itemID -> node
+    private var assignments: [String: HMPlayerNode] = [:]  // itemID -> node
     @ObservationIgnored var configuration: HMPlayerConfiguration
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     /// Called when a node is about to be reassigned, so analytics can detach.

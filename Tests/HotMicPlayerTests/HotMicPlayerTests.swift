@@ -21,6 +21,10 @@ struct PrefetchPolicyTests {
     func asymmetric() {
         #expect(HMPrefetchPolicy(ahead: 3, behind: 0).windowOffsets == [1, 2, 3])
         #expect(HMPrefetchPolicy(ahead: 0, behind: 2).windowOffsets == [-1, -2])
+        #expect(HMPrefetchPolicy(ahead: -1, behind: -2).windowOffsets.isEmpty)
+        #expect(HMPlayerConfiguration.default.warmOffsets == [1])
+        #expect(HMPlayerConfiguration.preset(.S0).warmOffsets.isEmpty)
+        #expect(HMPlayerConfiguration.preset(.S2).warmOffsets == [1, -1, 2])
     }
 }
 
@@ -405,5 +409,67 @@ struct LiveWindowTrackerTests {
         let window = tracker.update(measuredStart: 2, measuredEdge: 12, now: 0.1)
         #expect(window.edge == 12)
         #expect(window.start == 2)
+    }
+}
+
+@Suite("Cache transport primitives")
+struct CacheTransportTests {
+    @Test("Range boundaries, suffixes and invalid multi-ranges")
+    func ranges() {
+        #expect(HMByteRange.parse("bytes=0-1", total: 100) == HMByteRange(start: 0, end: 1))
+        #expect(HMByteRange.parse("bytes=50-", total: 100) == HMByteRange(start: 50, end: 99))
+        #expect(HMByteRange.parse("bytes=-10", total: 100) == HMByteRange(start: 90, end: 99))
+        #expect(HMByteRange.parse("bytes=0-999", total: 100, limit: 20) == HMByteRange(start: 0, end: 19))
+        #expect(HMByteRange.parse("bytes=0-", total: 100, limit: Int.max)?.count == 100)
+        for invalid in ["bytes=100-", "bytes=-0", "bytes=2-1", "bytes=-", "bytes=0-1,3-4", "items=0-2", "bytes=x-3"] {
+            #expect(HMByteRange.parse(invalid, total: 100) == nil)
+        }
+    }
+    @Test("Signatures do not change keys, different paths do")
+    func signatures() {
+        let a = URL(string: "https://cdn.example/a.mp4?sig=one")!
+        let b = URL(string: "https://cdn.example/a.mp4?sig=two")!
+        #expect(HMCacheKey.canonical(a) == HMCacheKey.canonical(b))
+        #expect(HMCacheKey.canonical(a) != HMCacheKey.canonical(URL(string: "https://cdn.example/b.mp4")!))
+    }
+    @Test("HLS relative media, init, key and alternate rendition URIs are rewritten")
+    func playlist() {
+        let base = URL(string: "https://cdn.example/redirected/variant/index.m3u8?sig=x")!
+        let text = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key\"\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio.m3u8\"\n#EXTINF:2,\nsegment.m4s\n#EXT-X-BYTERANGE:20@0\nhttps://other.example/a.m4s\n"
+        let urls = HMPlaylist.references(text, base: base)
+        #expect(urls.map(\.absoluteString) == ["https://cdn.example/redirected/variant/init.mp4", "https://cdn.example/redirected/key", "https://cdn.example/redirected/variant/audio.m3u8", "https://cdn.example/redirected/variant/segment.m4s", "https://other.example/a.m4s"])
+        let rewritten = HMPlaylist.rewrite(text, base: base) { URL(string: "http://127.0.0.1/" + HMCacheKey.hash($0.absoluteString))! }
+        #expect(!rewritten.contains("cdn.example"))
+        #expect(rewritten.contains("#EXT-X-BYTERANGE:20@0"))
+        #expect(HMPlaylist.references(rewritten, base: base).count == 5)
+    }
+    @Test("Wasted byte accounting unions probes and intersects delivered ranges")
+    func coverage() {
+        let fetched = [HMByteRange(start: 0, end: 99), HMByteRange(start: 50, end: 149)]
+        let consumed = [HMByteRange(start: 10, end: 19), HMByteRange(start: 15, end: 29), HMByteRange(start: 140, end: 999)]
+        #expect(HMRangeCoverage.overlap(fetched, consumed) == 30)
+        #expect(HMRangeCoverage.overlap([], consumed) == 0)
+    }
+    @Test("Disk ranges survive restart; pinned entries yield to a hard cap")
+    func disk() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hm-cache-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = HMDiskCache(directory: directory, capacity: 12)
+        let url = URL(string: "https://example.com/a")!
+        await cache.put(key: "a", start: 0, data: Data(0..<8), total: 20, mime: "video/mp4", base: url, owner: "a", prefetched: true, played: false)
+        let hit = await cache.read(key: "a", range: HMByteRange(start: 2, end: 5))
+        #expect(hit?.data == Data([2, 3, 4, 5]))
+        #expect(await cache.read(key: "a", range: HMByteRange(start: 5, end: 9)) == nil)
+        let partial = await cache.available(key: "a", start: 6, count: 6)
+        #expect(partial?.data == Data([6, 7]))
+        let reopened = HMDiskCache(directory: directory, capacity: 12)
+        #expect(await reopened.bytes(for: "a") == 8)
+        await cache.configure(capacity: 12, pinned: ["a"])
+        await cache.put(key: "b", start: 0, data: Data(repeating: 9, count: 8), total: 8, mime: "video/mp4", base: url, owner: "b", prefetched: true, played: false)
+        #expect(await cache.bytes(for: "a") == 8)
+        #expect(await cache.bytes(for: "b") == 0)
+        await cache.configure(capacity: 4, pinned: ["a"])
+        #expect(await cache.bytes(for: "a") == 0)
+        #expect(await cache.waste() == 16)
     }
 }

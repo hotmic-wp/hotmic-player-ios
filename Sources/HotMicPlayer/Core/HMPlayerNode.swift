@@ -28,12 +28,15 @@ public final class HMPlayerNode: Identifiable {
 
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     @ObservationIgnored var onBufferChanged: (() -> Void)?
+    @ObservationIgnored private var durationTask: Task<Void, Never>?
     @ObservationIgnored private var summaryTask: Task<Void, Never>?
     @ObservationIgnored private var activationID = ""
     @ObservationIgnored private var activationReason = ""
     @ObservationIgnored private var stallCount10 = 0
     @ObservationIgnored private var stallTime10 = 0.0
     @ObservationIgnored private var didReportSummary = false
+    @ObservationIgnored private var videoOutput: AVPlayerItemVideoOutput?
+    @ObservationIgnored private var startupResolutionSource = "unknown"
     @ObservationIgnored private var startupWidth = 0.0
     @ObservationIgnored private var startupHeight = 0.0
     @ObservationIgnored private var startupBitrate = 0.0
@@ -110,6 +113,8 @@ public final class HMPlayerNode: Identifiable {
             options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
         )
         let playerItem = AVPlayerItem(asset: asset)
+        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+        videoOutput = output; playerItem.add(output)
         playerItem.preferredForwardBufferDuration = configuration.prefetch.warmBufferDuration
         if configuration.startupPeakBitRate > 0 {
             playerItem.preferredPeakBitRate = configuration.startupPeakBitRate
@@ -137,7 +142,7 @@ public final class HMPlayerNode: Identifiable {
         hasReportedFirstFrame = false; snapshot.timeToFirstFrame = nil
         stallCount10 = 0; stallTime10 = 0; didReportSummary = false
         snapshot.stallCount = 0; snapshot.totalStallDuration = 0
-        startupWidth = 0; startupHeight = 0; startupBitrate = 0
+        startupWidth = 0; startupHeight = 0; startupBitrate = 0; startupResolutionSource = "unknown"
         syncBufferHealth()
         let status = player.currentItem?.status.rawValue ?? 0
         let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
@@ -190,9 +195,11 @@ public final class HMPlayerNode: Identifiable {
     func release() {
         if isActive { deactivate(retainingPosition: false) }
         summaryTask?.cancel()
+        durationTask?.cancel()
         teardownItemObservers()
         playerLayer.opacity = 0
         player.replaceCurrentItem(with: nil)
+        videoOutput = nil
         item = nil
         isActive = false
         snapshot = HMPlaybackSnapshot()
@@ -281,7 +288,8 @@ public final class HMPlayerNode: Identifiable {
     /// flips to `.readyToPlay` on HLS, and it is not reliably KVO-observable
     /// afterwards. Asking the asset is the authoritative path.
     private func loadDuration(from asset: AVURLAsset, for itemID: String) {
-        Task { [weak self] in
+        durationTask?.cancel()
+        durationTask = Task { [weak self] in
             guard let duration = try? await asset.load(.duration) else { return }
             let seconds = duration.seconds
             guard seconds.isFinite, seconds > 0 else { return }
@@ -436,8 +444,7 @@ public final class HMPlayerNode: Identifiable {
         let bitrate = event.indicatedBitrate
         if isActive, startupBitrate == 0, bitrate > 0 {
             startupBitrate = bitrate
-            let size = player.currentItem?.presentationSize ?? .zero
-            startupWidth = Double(size.width); startupHeight = Double(size.height)
+
         }
         guard bitrate > 0, bitrate != lastReportedVariant else { return }
         lastReportedVariant = bitrate
@@ -477,8 +484,14 @@ public final class HMPlayerNode: Identifiable {
         guard isActive, activation == activationID, !hasReportedFirstFrame,
               playerLayer.isReadyForDisplay, player.currentItem?.status == .readyToPlay, let item, let activationTime else { return }
         hasReportedFirstFrame = true
-        let size = player.currentItem?.presentationSize ?? .zero
-        if startupWidth == 0 { startupWidth = Double(size.width); startupHeight = Double(size.height) }
+        if let buffer = videoOutput?.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
+            startupWidth = Double(CVPixelBufferGetWidth(buffer)); startupHeight = Double(CVPixelBufferGetHeight(buffer))
+            startupResolutionSource = "decoded-pixel-buffer"
+        } else {
+            let size = player.currentItem?.presentationSize ?? .zero
+            startupWidth = Double(size.width); startupHeight = Double(size.height)
+            startupResolutionSource = "presentation-size-fallback"
+        }
         let ttff = max(0, time - activationTime)
         snapshot.timeToFirstFrame = ttff
         emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary"])
@@ -492,7 +505,7 @@ public final class HMPlayerNode: Identifiable {
         let size = player.currentItem?.presentationSize ?? .zero
         emit(.startupSummary, item: item, metrics: ["stall_count_10s": Double(stallCount10), "stall_time_10s": stallTime10 + ongoing,
             "observed_window_s": min(10, max(0, now - activationTime)), "startup_bitrate": startupBitrate,
-            "startup_width": startupWidth > 0 ? startupWidth : Double(size.width), "startup_height": startupHeight > 0 ? startupHeight : Double(size.height)])
+            "startup_width": startupWidth > 0 ? startupWidth : Double(size.width), "startup_height": startupHeight > 0 ? startupHeight : Double(size.height)], properties: ["startup_resolution_source": startupResolutionSource])
     }
 
     private func handleStallBegan() {

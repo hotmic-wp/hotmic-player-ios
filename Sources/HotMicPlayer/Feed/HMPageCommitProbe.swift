@@ -5,13 +5,20 @@ import UIKit
 /// iOS 17 bridge: scrollPosition changes during a drag; delegate end callbacks
 /// identify the settled page. Forward other delegate messages to SwiftUI.
 struct HMPageCommitProbe: UIViewRepresentable {
+    var targetIndex: Int?
+    var requestID: UUID
     var commit: (Int, TimeInterval) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(commit: commit) }
     func makeUIView(context: Context) -> Probe {
         let view = Probe(); view.coordinator = context.coordinator
         return view
     }
-    func updateUIView(_ view: Probe, context: Context) { context.coordinator.commit = commit; view.connect() }
+    func updateUIView(_ view: Probe, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.commit = commit
+        coordinator.targetIndex = targetIndex; coordinator.requestID = requestID
+        view.connect()
+    }
     static func dismantleUIView(_ view: Probe, coordinator: Coordinator) {
         if let scroll = coordinator.scroll, scroll.delegate === coordinator { scroll.delegate = coordinator.original }
     }
@@ -28,6 +35,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
                             coordinator.original = scroll.delegate
                             coordinator.scroll = scroll; scroll.delegate = coordinator
                         }
+                        coordinator.pageIfRequested()
                         return
                     }
                     ancestor = view.superview
@@ -37,6 +45,16 @@ struct HMPageCommitProbe: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var commit: (Int, TimeInterval) -> Void
+        var targetIndex: Int?
+        var requestID: UUID?
+        private var handledRequest: UUID?
+        func pageIfRequested() {
+            guard let index = targetIndex, let requestID, requestID != handledRequest,
+                  let scroll, scroll.bounds.height > 0 else { return }
+            handledRequest = requestID
+            let y = Double(index) * scroll.bounds.height - scroll.adjustedContentInset.top
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: true)
+        }
         weak var scroll: UIScrollView?
         weak var original: UIScrollViewDelegate?
         init(commit: @escaping (Int, TimeInterval) -> Void) { self.commit = commit }

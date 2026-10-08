@@ -51,9 +51,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe { index, time in
-                        guard index != controller.activeIndex else { return }
-                        controller.setActiveIndex(index, reason: .swipe, requestedAt: time)
+                    .background(HMPageCommitProbe(targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID) { index, time in
+                        controller.commitPage(at: index, requestedAt: time)
                     })
                 }
                 .scrollTargetBehavior(.paging)

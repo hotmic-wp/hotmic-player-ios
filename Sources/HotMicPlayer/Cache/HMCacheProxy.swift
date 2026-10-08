@@ -418,6 +418,7 @@ actor HMCacheTransport {
         catch { await cacheStream(streamID, bytes: Data(), route: route, finishing: true); throw error }
     }
     private func beginStream(_ id: UUID, response: HTTPURLResponse) {
+        guard response.statusCode == 200 || response.statusCode == 206 else { return }
         let range = response.value(forHTTPHeaderField: "Content-Range")
         let total = range?.split(separator: "/").last.flatMap { Int($0) } ?? Int(response.expectedContentLength)
         let cursor = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0

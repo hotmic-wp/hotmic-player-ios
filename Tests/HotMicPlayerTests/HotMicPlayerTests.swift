@@ -484,6 +484,8 @@ struct CacheTransportTests {
         let cache = HMDiskCache.shared(directory: directory, capacity: 12)
         let url = URL(string: "https://example.com/a")!
         await cache.put(key: "a", start: 0, data: Data(0..<8), total: 20, mime: "video/mp4", base: url, owner: "a", prefetched: true, played: false)
+        await cache.put(key: "invalid", start: 19, data: Data([1, 2]), total: 20, mime: "video/mp4", base: url, owner: "invalid", prefetched: true, played: false)
+        #expect(await cache.bytes(for: "invalid") == 0)
         let hit = await cache.read(key: "a", range: HMByteRange(start: 2, end: 5))
         #expect(hit?.data == Data([2, 3, 4, 5]))
         #expect(await cache.read(key: "a", range: HMByteRange(start: 5, end: 9)) == nil)

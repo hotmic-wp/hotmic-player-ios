@@ -94,7 +94,7 @@ actor HMDiskCache {
     }
     func put(key: String, start: Int, data: Data, total: Int, mime: String, base: URL, owner: String, prefetched: Bool, played: Bool) {
         loadIfNeeded()
-        guard base.pathExtension.lowercased() != "m3u8", mime != "application/vnd.apple.mpegurl", !Task.isCancelled, !data.isEmpty, data.count <= capacity else { return }
+        guard base.pathExtension.lowercased() != "m3u8", mime != "application/vnd.apple.mpegurl", !Task.isCancelled, start >= 0, total > start, !data.isEmpty, data.count <= total - start, data.count <= capacity else { return }
         let k = key + ":" + String(start)
         if let existing = entries[k], existing.count >= data.count { return }
         let e = Entry(key: key, start: start, count: data.count, total: total, mime: mime, base: base,

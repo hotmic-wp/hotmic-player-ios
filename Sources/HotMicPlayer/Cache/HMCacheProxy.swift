@@ -12,6 +12,7 @@ final class HMCacheProxy {
     private let queue = DispatchQueue(label: "com.hotmic.cache.http")
     private let cache: HMDiskCache
     private var port: UInt16 = 0
+    private var isFinishing = false
     private var routes: [String: Route] = [:]
     private var tokens: [String: String] = [:]
     private var played: Set<String> = []
@@ -213,6 +214,7 @@ final class HMCacheProxy {
         emit(.transfer, item: item, metrics: ["network_bytes": Double(bytes), "cache_bytes": 0, "prefetch_bytes": prefetch ? Double(bytes) : 0], properties: ["resource": HMCacheKey.hash(HMCacheKey.canonical(url))])
     }
     private func accept(_ connection: NWConnection) {
+        guard !isFinishing else { connection.cancel(); return }
         let id = UUID(); connections[id] = connection
         connection.stateUpdateHandler = { [weak self] state in
             if case .failed = state { Task { @MainActor in self?.close(id) } }
@@ -304,6 +306,8 @@ final class HMCacheProxy {
         connections.removeValue(forKey: id)?.cancel()
     }
     func finish() async -> Int {
+        isFinishing = true
+        listener.cancel()
         cancelPrefetch()
         let tasks = Array(responseTasks.values) + retiringPrefetch
         retiringPrefetch.removeAll()

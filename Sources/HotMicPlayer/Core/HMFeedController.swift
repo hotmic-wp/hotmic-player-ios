@@ -107,6 +107,7 @@ public final class HMFeedController {
         guard !hasStarted else { return }
         hasStarted = true
         let began = ProcessInfo.processInfo.systemUptime
+        if isFeedVisible, configuration.managesAudioSession { HMAudioSession.activatePlayback() }
         await loadNextPage()
         if !items.isEmpty, isFeedVisible { await prepareTransport(); setActiveIndex(0, reason: .initial, requestedAt: began) }
     }
@@ -125,6 +126,7 @@ public final class HMFeedController {
     /// browsing loads metadata only, so the first-video baseline stays cold.
     public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
         let began = requestedAt
+        if configuration.managesAudioSession { HMAudioSession.activatePlayback() }
         await prepareTransport()
         setActiveIndex(index, reason: .programmatic, requestedAt: began)
         isFeedVisible = true
@@ -313,7 +315,7 @@ public final class HMFeedController {
         guard !runEnded else { return }
         runEnded = true
         pauseAll()
-        for node in pool.nodes where node.isActive { node.deactivate(retainingPosition: true) }
+        for node in pool.nodes { node.release() }
         let waste = await proxy?.finish() ?? 0
         if let item = currentItem { analytics.emit(HMPlaybackEvent(kind: .runEnd, itemID: item.id, metrics: ["wasted_prefetch_bytes": Double(waste)]), item: item) }
     }
@@ -334,6 +336,8 @@ public final class HMFeedController {
 
     private func applyConfiguration() {
         pool.configuration = configuration
+        let target = max(1, min(4, configuration.poolSize))
+        for node in pool.nodes.dropFirst(target) { analytics.detach(playerKey: node.id) }
         pool.resize(to: configuration.poolSize)
         pool.applyConfiguration()
         proxy?.configuration = configuration

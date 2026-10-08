@@ -143,6 +143,8 @@ public final class HMPlayerNode: Identifiable {
         stallCount10 = 0; stallTime10 = 0; didReportSummary = false
         snapshot.stallCount = 0; snapshot.totalStallDuration = 0
         startupWidth = 0; startupHeight = 0; startupBitrate = 0; startupResolutionSource = "unknown"
+        // A warmed item may have logged its rendition before activation.
+        syncVariant()
         syncBufferHealth()
         let status = player.currentItem?.status.rawValue ?? 0
         let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
@@ -541,6 +543,8 @@ public final class HMPlayerNode: Identifiable {
         snapshot.errorDescription = error?.localizedDescription ?? "Playback failed"
         emit(.error, item: item, properties: [
             "error_code": String(error?.code ?? -1),
+            "error_domain": error?.domain ?? "unknown",
+            "error_log": player.currentItem?.errorLog()?.events.last?.errorComment ?? "",
             "error_message": snapshot.errorDescription ?? ""
         ])
     }

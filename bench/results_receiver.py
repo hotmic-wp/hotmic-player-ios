@@ -14,6 +14,7 @@ class Receiver(http.server.BaseHTTPRequestHandler):
             raw=self.rfile.read(length)
             if len(raw)!=length or not raw.endswith(b'\n'): raise ValueError('incomplete JSONL')
             rows=[json.loads(line) for line in raw.splitlines()]
+            if not rows or any(not isinstance(row,dict) for row in rows): raise ValueError("JSONL records must be objects")
             header=rows[0]; run_id=header.get('run_id','')
             if header.get('type')!='runHeader' or not re.fullmatch(r'[A-Za-z0-9_-]{1,240}',run_id): raise ValueError('invalid header/run_id')
             if self.headers.get('X-HotMic-Run-ID')!=run_id: raise ValueError('header run ID mismatch')

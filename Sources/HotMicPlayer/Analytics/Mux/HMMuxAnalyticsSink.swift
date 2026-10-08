@@ -57,6 +57,8 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     }
 
     public func videoChange(playerKey: String, item: HMMediaItem) {
+        // A speculative node can recycle before it was ever attached.
+        guard monitoredItems[playerKey] != nil else { return }
         guard monitoredItems[playerKey] != item.id else { return }
         monitoredItems[playerKey] = item.id
         bridge.videoChange(playerName: playerKey, video: videoData(for: item))

@@ -65,7 +65,10 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                     guard controller.items.indices.contains(newIndex) else { return }
                     let id = controller.items[newIndex].id
                     guard id != scrolledID else { return }
-                    withAnimation(.snappy) { scrolledID = id }
+                    // Page requests animate through the delegate bridge. Deep
+                    // links snap immediately so a second animation cannot race
+                    // the first programmatic page request.
+                    scrolledID = id
                 }
                 .task {
                     await controller.start()

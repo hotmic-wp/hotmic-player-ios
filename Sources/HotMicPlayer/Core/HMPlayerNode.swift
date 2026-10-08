@@ -494,7 +494,7 @@ public final class HMPlayerNode: Identifiable {
         }
         let ttff = max(0, time - activationTime)
         snapshot.timeToFirstFrame = ttff
-        emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary"])
+        emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary"], occurredAt: time)
     }
 
     private func reportStartupSummary() {
@@ -552,7 +552,8 @@ public final class HMPlayerNode: Identifiable {
         item: HMMediaItem,
         position: TimeInterval? = nil,
         metrics: [String: Double] = [:],
-        properties: [String: String] = [:]
+        properties: [String: String] = [:],
+        occurredAt: TimeInterval? = nil
     ) {
         var props = properties
         props["player_key"] = id
@@ -561,6 +562,7 @@ public final class HMPlayerNode: Identifiable {
             HMPlaybackEvent(
                 kind: kind,
                 itemID: item.id,
+                monotonicTime: occurredAt ?? ProcessInfo.processInfo.systemUptime,
                 position: position ?? snapshot.currentTime,
                 metrics: metrics,
                 properties: props

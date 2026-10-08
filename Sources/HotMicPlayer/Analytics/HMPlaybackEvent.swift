@@ -48,6 +48,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         kind: Kind,
         itemID: String,
         timestamp: Date = Date(),
+        monotonicTime: TimeInterval = ProcessInfo.processInfo.systemUptime,
         position: TimeInterval = 0,
         metrics: [String: Double] = [:],
         properties: [String: String] = [:]
@@ -55,7 +56,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         self.kind = kind
         self.itemID = itemID
         self.timestamp = timestamp
-        self.monotonicTime = ProcessInfo.processInfo.systemUptime
+        self.monotonicTime = monotonicTime
         self.position = position
         self.metrics = metrics
         self.properties = properties

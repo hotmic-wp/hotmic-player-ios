@@ -87,7 +87,7 @@ public final class HMFeedController {
                 metrics["live_player_count"] = Double(self.pool.nodes.count)
                 metrics["memory_bytes"] = HMMemorySample.footprint()
             }
-            self.analytics.emit(HMPlaybackEvent(kind: event.kind, itemID: event.itemID, position: event.position, metrics: metrics, properties: event.properties), item: item)
+            self.analytics.emit(HMPlaybackEvent(kind: event.kind, itemID: event.itemID, timestamp: event.timestamp, monotonicTime: event.monotonicTime, position: event.position, metrics: metrics, properties: event.properties), item: item)
         }
         pool.willRecycle = { [weak self] node, incoming in
             guard let self else { return }

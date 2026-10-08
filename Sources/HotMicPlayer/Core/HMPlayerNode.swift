@@ -566,7 +566,7 @@ public final class HMPlayerNode: Identifiable {
             teardownItemObservers(); setLayerVisible(false)
             let asset = AVURLAsset(url: item.url)
             let replacement = AVPlayerItem(asset: asset)
-            replacement.preferredPeakBitRate = configuration.startupPeakBitRate
+            replacement.preferredPeakBitRate = didLiftStartupCap ? configuration.steadyPeakBitRate : configuration.startupPeakBitRate
             replacement.preferredForwardBufferDuration = isActive ? configuration.steadyBufferDuration : configuration.prefetch.warmBufferDuration
             installItemObservers(for: replacement); player.replaceCurrentItem(with: replacement)
             videoOutput = nil; didPreroll = false; snapshot.state = .loading

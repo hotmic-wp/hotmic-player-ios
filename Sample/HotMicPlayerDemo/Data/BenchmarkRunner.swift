@@ -103,8 +103,7 @@ final class BenchmarkRunner {
     }
     private func runCell(_ cell: BenchmarkGrid.Cell, grid: BenchmarkGrid, base: URL, runID: String) async throws -> URL {
         if cell.resetCache ?? true {
-            let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HotMicPlayer-v1")
-            try? FileManager.default.removeItem(at: directory)
+            await HMPlayerCache.reset()
         }
         let cellOptions = try cellOptions(cell, grid: grid, base: base)
         let configuration = try cellOptions.configuration()
@@ -143,6 +142,7 @@ final class BenchmarkRunner {
             if cell.requireFrame ?? false { try await awaitFrame(created) }
             let seconds = cell.script == "watchThrough" ? (created.currentItem?.durationHint ?? created.currentNode?.snapshot.duration ?? 12) + 0.2 : dwell
             try await Task.sleep(for: .seconds(seconds))
+            try await awaitForeground()
             if let playbackError { throw BenchmarkOptions.Invalid(playbackError) }
             let backwards = cell.script == "backAndForth" && swipe % 2 == 1
             let next = created.activeIndex + (backwards ? -1 : 1)
@@ -158,6 +158,9 @@ final class BenchmarkRunner {
         await created.finishRun()
         try await createdSink.flush()
         return file
+    }
+    private func awaitForeground() async throws {
+        while UIApplication.shared.applicationState != .active { try await Task.sleep(for: .milliseconds(100)) }
     }
     private func awaitPage(_ controller: HMFeedController, index: Int) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + 10

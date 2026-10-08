@@ -5,6 +5,9 @@ from urllib.parse import unquote, urlsplit
 
 class Origin(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    def handle(self):
+        try: super().handle()
+        except (BrokenPipeError, ConnectionResetError): pass
     def do_HEAD(self): self.serve(False)
     def do_GET(self): self.serve(True)
     def serve(self, body):
@@ -40,7 +43,7 @@ class Origin(http.server.BaseHTTPRequestHandler):
                         self.wfile.write(block); remaining-=len(block); sent+=len(block)
         except (BrokenPipeError,ConnectionResetError): pass
         finally:
-            row=dict(timestamp=time.time(),path=urlsplit(self.path).path,method=self.command,status=status,bytes=sent,range=self.headers.get('Range'),duration_ms=(time.monotonic()-began)*1000)
+            row=dict(connection=f"{self.client_address[0]}:{self.client_address[1]}",timestamp=time.time(),path=urlsplit(self.path).path,method=self.command,status=status,bytes=sent,range=self.headers.get('Range'),duration_ms=(time.monotonic()-began)*1000)
             with self.server.log_lock:
                 with self.server.log.open('a') as f: f.write(json.dumps(row)+'\n')
     def log_message(self,*args): pass

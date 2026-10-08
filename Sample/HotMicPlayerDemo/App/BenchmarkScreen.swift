@@ -6,6 +6,7 @@ struct BenchmarkScreen: View {
     var autoStart = false
     @State private var url = ""
     @State private var runner = BenchmarkRunner()
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         ZStack {
@@ -46,6 +47,7 @@ struct BenchmarkScreen: View {
             .padding(24).background(alignment: .top) { Color.black.opacity(0.3).frame(height: runner.isRunning ? 120 : 240) }
         }
         .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { _, phase in runner.controller?.isFeedVisible = phase == .active }
         .task {
             url = initialURL ?? UserDefaults.standard.string(forKey: "HMGridURL") ?? ""
             if autoStart, !url.isEmpty { runner.start(urlString: url) }

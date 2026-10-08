@@ -33,7 +33,7 @@ struct BenchmarkOptions {
         if let n = try number("players", 1...4) { guard n.rounded() == n else { throw Invalid("players") }; c.poolSize = Int(n) }
         if let n = try number("ahead", 0...8) { guard n.rounded() == n else { throw Invalid("ahead") }; c.prefetch.ahead = Int(n) }
         if let n = try number("behind", 0...8) { guard n.rounded() == n else { throw Invalid("behind") }; c.prefetch.behind = Int(n) }
-        if let n = try number("prefetch-bytes", 0...1_000_000_000) { c.prefetch.bytesPerItem = Int(n) }
+        if let n = try number("prefetch-bytes", 0...Double(HMPrefetchPolicy.maximumBytesPerItem)) { c.prefetch.bytesPerItem = Int(n) }
         if let n = try number("prefetch-seconds", 0...600) { c.prefetch.secondsPerItem = n }
         if let n = try number("threshold", 0...600) { c.prefetch.startThreshold = n }
         if let n = try number("cache-cap", 0...10_000_000_000) { c.cacheCapacityBytes = Int(n) }

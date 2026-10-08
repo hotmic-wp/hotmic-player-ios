@@ -370,7 +370,7 @@ Grid runs take their playback knobs from cells, not unrelated launch overrides.
 | --- | --- |
 | `players` | Live allocation 1–4, default 2 |
 | `ahead`, `behind` | Data window 0–8 per side, default 5/1; S2 warm window |
-| `prefetch-bytes` | Response-payload budget/item, default 800000; cancellation may overshoot a transport block |
+| `prefetch-bytes` | Response-payload budget/item, default 800000, max 8388608 (8 MiB), 512 KiB chunks; cancellation may overshoot a transport block |
 | `prefetch-seconds` | Optional time budget, byte cap retained; MP4 estimate, HLS segment selection |
 | `threshold` | Current seconds ahead before speculation (default 3), or fully buffered short remainder |
 | `cache-cap` | Hard disk bytes cap, default 128000000 |
@@ -426,3 +426,18 @@ Simulator tables must be labeled **“simulator smoke run — not benchmark
 numbers”**. Physical iPhone/Device Farm validation remains necessary for display
 latency, layer swaps, RAM/decoder/thermal behavior, actual network profiles,
 HTTPS/HTTP2, signing/re-signing/installation and unattended result delivery.
+
+Review validation can build the Release simulator configuration with
+`xcodebuild build-for-testing -configuration Release -sdk iphonesimulator ...`.
+Its generated Info.plist has **no NSAppTransportSecurity keys**. The SDK probes
+its numeric loopback endpoint and automatically uses direct media URLs if the
+host policy blocks it; partners need no ATS exception for the SDK.
+Set `HM_BACKGROUND_SECONDS=3` on `bench/run.py` to have the thin XCTest wrapper
+background the app during playback, reactivate it, and await the same grid.
+The in-app autopilot waits for foreground before committing its next page.
+
+Cache identity includes every query parameter by default. SDK hosts can configure
+`volatileSigningQueryParameters` with an explicit list of signing names to ignore;
+this never removes unrelated query variants. Playlists use a three-second memory
+TTL only; they are not retained across relaunch. Benchmark cache resets use the
+shared cache actor between runs instead of deleting files behind live controllers.

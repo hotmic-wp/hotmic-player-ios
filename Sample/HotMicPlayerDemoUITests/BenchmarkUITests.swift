@@ -25,6 +25,12 @@ final class BenchmarkUITests: XCTestCase {
             app.buttons["benchmark-grid-start"].tap()
         }
         XCTAssertTrue(app.staticTexts["benchmark-grid-progress"].waitForExistence(timeout: 30))
+        if let seconds = Double(env["HM_BACKGROUND_SECONDS"] ?? ""), seconds > 0 {
+            Thread.sleep(forTimeInterval: 3)
+            XCUIDevice.shared.press(.home)
+            Thread.sleep(forTimeInterval: seconds)
+            app.activate()
+        }
         let timeout = Double(env["HM_GRID_TIMEOUT"] ?? "7200") ?? 7200
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

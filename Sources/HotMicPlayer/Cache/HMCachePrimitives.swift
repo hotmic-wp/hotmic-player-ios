@@ -26,12 +26,23 @@ struct HMByteRange: Equatable {
 }
 
 enum HMCacheKey {
-    /// Signatures rotate, media identity does not. Hosts must version the path
-    /// when content changes. Non-signature query variants need distinct paths.
-    static func canonical(_ url: URL) -> String {
-        var c = URLComponents(url: url, resolvingAgainstBaseURL: true)!
-        c.query = nil; c.fragment = nil
-        return c.string!
+    /// Query values are media identity unless explicitly declared volatile.
+    static func canonical(_ url: URL, ignoring parameters: [String] = []) -> String {
+        guard !parameters.isEmpty, var c = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return url.absoluteString }
+        let ignored = Set(parameters)
+        c.queryItems = c.queryItems?.filter { !ignored.contains($0.name) }
+        if c.queryItems?.isEmpty == true { c.query = nil }
+        return c.string ?? url.absoluteString
+    }
+    static func mime(_ url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "m3u8": return "application/vnd.apple.mpegurl"
+        case "ts": return "video/mp2t"
+        case "m4s", "mp4": return "video/mp4"
+        case "aac": return "audio/aac"
+        case "vtt": return "text/vtt"
+        default: return "application/octet-stream"
+        }
     }
     static func hash(_ value: String) -> String {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -46,6 +57,7 @@ enum HMPlaylist {
         return text.components(separatedBy: "\n").map { line in
             if !line.isEmpty, !line.hasPrefix("#") {
                 guard let u = URL(string: line.trimmingCharacters(in: .whitespacesAndNewlines), relativeTo: base)?.absoluteURL else { return line }
+                guard ["http", "https"].contains(u.scheme?.lowercased() ?? "") else { return line }
                 return proxy(u).absoluteString
             }
             var result = line
@@ -53,6 +65,7 @@ enum HMPlaylist {
             for match in matches.reversed() {
                 guard let range = Range(match.range(at: 1), in: result),
                       let u = URL(string: String(result[range]), relativeTo: base)?.absoluteURL else { continue }
+                guard ["http", "https"].contains(u.scheme?.lowercased() ?? "") else { continue }
                 result.replaceSubrange(range, with: proxy(u).absoluteString)
             }
             return result
@@ -82,5 +95,24 @@ enum HMRangeCoverage {
         return left.reduce(0) { sum, l in
             sum + right.reduce(0) { $0 + max(0, min(l.end, $1.end) - max(l.start, $1.start) + 1) }
         }
+    }
+}
+
+/// Completed and failed windows remain remembered until explicit cancellation.
+/// An unchanged buffer tick cannot create a new run or retry an exhausted item.
+struct HMPrefetchEpoch {
+    private(set) var generation = 0
+    private var window: String?
+    func matches(_ identity: String) -> Bool { window == identity }
+    mutating func begin(_ identity: String) -> Int? {
+        guard !matches(identity) else { return nil }
+        generation += 1; window = identity; return generation
+    }
+    mutating func cancel() { generation += 1; window = nil }
+}
+
+enum HMBufferSafety {
+    static func isSafe(ahead: Double, remaining: Double, hasDuration: Bool, threshold: Double, wasSafe: Bool) -> Bool {
+        (hasDuration && ahead >= remaining - 0.1) || ahead >= max(0, threshold) * (wasSafe ? 0.5 : 1)
     }
 }

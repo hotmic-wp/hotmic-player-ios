@@ -20,15 +20,33 @@ actor HMDiskCache {
     private var capacity: Int
     private var pinned: Set<String> = []
     private(set) var wastedBytes = 0
-    init(directory: URL, capacity: Int) {
-        self.directory = directory; self.capacity = capacity
+    private static let registry = Registry()
+    private final class Registry: @unchecked Sendable {
+        let lock = NSLock()
+        final class Weak { weak var value: HMDiskCache?; init(_ value: HMDiskCache) { self.value = value } }
+        var instances: [String: Weak] = [:]
+        func get(_ directory: URL, capacity: Int) -> HMDiskCache {
+            let directory = directory.standardizedFileURL
+            lock.lock(); defer { lock.unlock() }
+            if let existing = instances[directory.path]?.value { return existing }
+            instances = instances.filter { $0.value.value != nil }
+            let created = HMDiskCache(directory: directory, capacity: capacity)
+            instances[directory.path] = Weak(created)
+            return created
+        }
+    }
+    nonisolated static func shared(directory: URL, capacity: Int) -> HMDiskCache { registry.get(directory, capacity: capacity) }
+    private var loaded = false
+    private init(directory: URL, capacity: Int) { self.directory = directory; self.capacity = max(0, capacity) }
+    private func loadIfNeeded() {
+        guard !loaded else { return }; loaded = true
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let data = try? Data(contentsOf: directory.appendingPathComponent("index.json")),
            let saved = try? JSONDecoder().decode([String: Entry].self, from: data) {
             entries = saved.filter { _, entry in
                 let path = directory.appendingPathComponent(entry.filename).path
                 let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-                return (attrs?[.size] as? Int) == entry.count
+                return entry.mime != "application/vnd.apple.mpegurl" && entry.base.pathExtension.lowercased() != "m3u8" && (attrs?[.size] as? Int) == entry.count
             }
         }
         // Interrupted writes and obsolete schema files are not allowed to grow
@@ -37,25 +55,36 @@ actor HMDiskCache {
         for file in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] where !keep.contains(file.lastPathComponent) {
             try? FileManager.default.removeItem(at: file)
         }
+        if entries.values.reduce(0, { $0 + $1.count }) > capacity { evict(); persist() }
     }
     func configure(capacity: Int, pinned: Set<String>) {
+        loadIfNeeded()
+        guard self.capacity != max(0, capacity) || self.pinned != pinned else { return }
         self.capacity = max(0, capacity); self.pinned = pinned
         evict(); persist()
     }
     func markPlayed(_ owner: String) {
-        for (k, var e) in entries where e.owner == owner { e.played = true; entries[k] = e }
-        persist()
+        loadIfNeeded()
+        var changed = false
+        for (k, var e) in entries where e.owner == owner && !e.played { e.played = true; entries[k] = e; changed = true }
+        if changed { persist() }
     }
     func bytes(for owner: String) -> Int {
-        entries.values.filter { $0.owner == owner }.reduce(0) { $0 + $1.count }
+        loadIfNeeded()
+        return entries.values.filter { $0.owner == owner }.reduce(0) { $0 + $1.count }
     }
-    func sizes() -> [String: Int] { Dictionary(grouping: entries.values, by: \.owner).mapValues { $0.reduce(0) { $0 + $1.count } } }
-    func total(for key: String) -> Int? { entries.values.first { $0.key == key }?.total }
+    func sizes() -> [String: Int] {
+        loadIfNeeded(); return Dictionary(grouping: entries.values, by: \.owner).mapValues { $0.reduce(0) { $0 + $1.count } } }
+    func mime(for key: String) -> String? { loadIfNeeded(); return entries.values.first { $0.key == key }?.mime }
+    func total(for key: String) -> Int? {
+        loadIfNeeded(); return entries.values.first { $0.key == key }?.total }
     func available(key: String, start: Int, count: Int) -> Hit? {
+        loadIfNeeded()
         guard let entry = entries.values.filter({ $0.key == key && $0.start <= start && $0.start + $0.count > start }).max(by: { $0.start + $0.count < $1.start + $1.count }) else { return nil }
         return read(key: key, range: HMByteRange(start: start, end: min(start + count - 1, entry.start + entry.count - 1)))
     }
     func read(key: String, range: HMByteRange) -> Hit? {
+        loadIfNeeded()
         guard let (k, entry) = entries.first(where: { $0.value.key == key && $0.value.start <= range.start && $0.value.start + $0.value.count > range.end }),
               let bytes = try? Data(contentsOf: directory.appendingPathComponent(entry.filename)),
               bytes.count == entry.count else { return nil }
@@ -64,7 +93,8 @@ actor HMDiskCache {
         return Hit(data: bytes.subdata(in: offset..<(offset + range.count)), total: e.total, mime: e.mime, base: e.base)
     }
     func put(key: String, start: Int, data: Data, total: Int, mime: String, base: URL, owner: String, prefetched: Bool, played: Bool) {
-        guard !Task.isCancelled, !data.isEmpty, data.count <= capacity else { return }
+        loadIfNeeded()
+        guard base.pathExtension.lowercased() != "m3u8", mime != "application/vnd.apple.mpegurl", !Task.isCancelled, !data.isEmpty, data.count <= capacity else { return }
         let k = key + ":" + String(start)
         if let existing = entries[k], existing.count >= data.count { return }
         let e = Entry(key: key, start: start, count: data.count, total: total, mime: mime, base: base,
@@ -87,8 +117,21 @@ actor HMDiskCache {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(e.filename))
         }
     }
+    func reset() {
+        loadIfNeeded()
+        for e in entries.values { try? FileManager.default.removeItem(at: directory.appendingPathComponent(e.filename)) }
+        entries.removeAll(); wastedBytes = 0; persist()
+    }
     func waste() -> Int { wastedBytes + entries.values.filter { !$0.played }.reduce(0) { $0 + $1.prefetched } }
     private func persist() {
         if let data = try? JSONEncoder().encode(entries) { try? data.write(to: directory.appendingPathComponent("index.json"), options: .atomic) }
+    }
+}
+
+/// Benchmark reset is serialized with readers/writers. Call between runs only.
+public enum HMPlayerCache {
+    public static func reset() async {
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HotMicPlayer-v1")
+        await HMDiskCache.shared(directory: directory, capacity: 128_000_000).reset()
     }
 }

@@ -50,13 +50,17 @@ pool capacity so a large data window cannot recycle the active player.
 `HMPrefetchPolicy` independently defaults to five ahead and one behind,
 nearest-first, with an 800,000-byte budget per item, a three-second current-buffer
 threshold, and a 128 MB disk cap. Short clips qualify when their remaining media
-is fully buffered. Falling below the threshold cancels speculative data tasks;
+is fully buffered. Hysteresis enters at the threshold and leaves below half that threshold; losing buffer safety cancels speculative data tasks;
 S3 also detaches warm items when buffer safety is lost after startup. Page
 commits invalidate the prefetch generation immediately. The cache pins the current
 window preferentially, but its hard cap wins even over pins. Disk entries are
 range chunks with a persisted LRU index; interrupted/unindexed files are removed
-on opening. Cache identity is scheme/host/path, independent of signed query
-strings. **Content and non-signature query variants must have versioned paths.**
+on first actor use (never synchronously during UI initialization). A process-wide
+registry shares one cache actor per standardized directory. Cache identity is the
+**full URL by default**. Apps can set `volatileSigningQueryParameters` to exact
+query names (for example `["Signature", "Expires", "Key-Pair-Id"]`); only those
+names are removed. Other query values remain distinct. Hosts must version media
+identity when content changes. Playlists never enter the persistent cache.
 
 Strategies are presets with independently overridable knobs: S0 is one player
 with no prefetch, S1 one player with disk prefetch, S2 the original competing warm
@@ -69,7 +73,7 @@ nor write the disk cache. Live streams retain AVFoundation's direct transport.
 We selected a loopback HTTP proxy implemented with `NWListener` and
 `URLSession`, with no third-party dependencies. The listener binds **only
 127.0.0.1**, on an ephemeral port, and exposes opaque per-item routes through
-`localhost`. There is no arbitrary URL endpoint. MP4 and HLS fMP4 were encoded
+`http://127.0.0.1:<port>/...`. There is no arbitrary URL endpoint. MP4 and HLS fMP4 were encoded
 from all six bundled clips and played on a dedicated **iPhone 17 Pro / iOS 26.5
 simulator**. Screenshots showed the correct video; JSONL first-frame, playback,
 access-log and network/cache events accompanied it. A four-swipe HLS
@@ -88,9 +92,9 @@ cannot serve later seeks correctly.
 
 HLS master/media URI lines and quoted URI attributes (MAP, KEY, MEDIA, etc.) are
 rewritten, resolving relative references against the final redirected URL. The
-raw playlist's final base URL is persisted with the bytes. Prefetch chooses one
-rendition at or below the startup cap (lowest if none fit), caches the playlists,
-init segment, then nearest first segments up to the byte budget. A seconds
+raw playlist and final response base URL are held in memory for at most three seconds; expired signed playlists are refetched. Prefetch chooses one
+rendition at or below the startup cap (lowest if none fit), warms the short-lived playlists,
+caches the init segment, then nearest first segments up to the byte budget. A seconds
 budget stops at a segment boundary; a byte budget may cache a segment prefix.
 MP4 seconds budgets estimate bytes from known duration and file length, with the
 byte ceiling still enforced. HTTP payload bytes are counted, including received
@@ -99,11 +103,22 @@ bytes on cancellation; protocol/TLS overhead is not counted.
 We did not build an AVAssetResourceLoader HLS-segment path: HTTP rewriting provides
 an observable, working common path for both fixtures. Future coverage needs
 byte-range HLS, alternate audio, encryption/DRM, live/LL-HLS, redirects, signed
-playlist refresh and authenticated origins on real hardware. Playlists currently
-have no expiry, so the cache is for immutable **VOD** assets with versioned paths.
-The SDK does not alter ATS policy. Debug LAN HTTP permission belongs exclusively
-to the Sample target; production hosts must allow loopback networking as required
-by their OS and continue serving upstream media over HTTPS.
+playlist refresh and authenticated origins on real hardware. Only HTTP(S) playlist references are rewritten; `skd:`, `data:` and other
+schemes pass through unchanged. The SDK does not alter ATS policy or require ATS
+keys from partners. Listener startup has a one-second timeout and a loopback HEAD
+health check; failure leaves direct URLs available. Listener failure/cancellation
+clears its published port; foreground/next use recreates it, preferably at the
+previous port. Debug LAN permission belongs exclusively to the Sample target.
+
+A dedicated transport actor parses headers, rewrites playlists and serves bytes.
+All upstream requests share one ephemeral URLSession connection pool, across all
+strategies. Uncached requests preserve the player's Range (or lack of Range) and
+stream directly without a size probe. Cached ranges use bounded 512 KiB blocks.
+MP4/segment prefetch is also chunked at 512 KiB; the budget is clamped to 8 MiB.
+The prefetch window/configuration identifies an epoch: no-op buffer ticks do not
+start work or rewrite the cache index. Each failed item gets at most three
+attempts per epoch, separated by 0.5 and 2 second backoff. Routes/tokens and
+completed cancellation handles are pruned as the window advances.
 
 ### Timing and byte accounting
 

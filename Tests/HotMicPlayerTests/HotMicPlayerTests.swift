@@ -414,6 +414,24 @@ struct LiveWindowTrackerTests {
 
 @Suite("Cache transport primitives")
 struct CacheTransportTests {
+    @Test("Unchanged windows never restart; cancellation invalidates an epoch; buffer hysteresis prevents churn")
+    func epochsAndSafety() {
+        var epoch = HMPrefetchEpoch()
+        let first = epoch.begin("window/config-A")
+        for _ in 0..<100 { #expect(epoch.begin("window/config-A") == nil) }
+        #expect(epoch.generation == first)
+        epoch.cancel()
+        #expect(epoch.generation != first)
+        #expect(epoch.begin("window/config-A") != nil)
+        #expect(epoch.begin("window/config-B") != nil)
+        #expect(!HMBufferSafety.isSafe(ahead: 2.9, remaining: 20, hasDuration: true, threshold: 3, wasSafe: false))
+        for ahead in [3.1, 2.9, 3.01, 2.99, 1.5] {
+            #expect(HMBufferSafety.isSafe(ahead: ahead, remaining: 20, hasDuration: true, threshold: 3, wasSafe: true))
+        }
+        #expect(!HMBufferSafety.isSafe(ahead: 1.4, remaining: 20, hasDuration: true, threshold: 3, wasSafe: true))
+        #expect(HMBufferSafety.isSafe(ahead: 1, remaining: 1, hasDuration: true, threshold: 3, wasSafe: false))
+    }
+
     @Test("Range boundaries, suffixes and invalid multi-ranges")
     func ranges() {
         #expect(HMByteRange.parse("bytes=0-1", total: 100) == HMByteRange(start: 0, end: 1))
@@ -425,17 +443,26 @@ struct CacheTransportTests {
             #expect(HMByteRange.parse(invalid, total: 100) == nil)
         }
     }
-    @Test("Signatures do not change keys, different paths do")
+    @Test("Only explicitly volatile signing parameters are removed")
     func signatures() {
         let a = URL(string: "https://cdn.example/a.mp4?sig=one")!
         let b = URL(string: "https://cdn.example/a.mp4?sig=two")!
-        #expect(HMCacheKey.canonical(a) == HMCacheKey.canonical(b))
+        #expect(HMCacheKey.canonical(a) != HMCacheKey.canonical(b))
+        #expect(HMCacheKey.canonical(a, ignoring: ["sig"]) == HMCacheKey.canonical(b, ignoring: ["sig"]))
+        let variant = URL(string: "https://cdn.example/a.mp4?variant=720&sig=two")!
+        #expect(HMCacheKey.canonical(variant, ignoring: ["sig"]).contains("variant=720"))
+        #expect(HMPrefetchPolicy(bytesPerItem: Int.max).bytesPerItem == 8 * 1024 * 1024)
+        #expect(HMCacheKey.mime(URL(string: "https://x/a.ts")!) == "video/mp2t")
+        #expect(HMCacheKey.mime(URL(string: "https://x/a.vtt")!) == "text/vtt")
         #expect(HMCacheKey.canonical(a) != HMCacheKey.canonical(URL(string: "https://cdn.example/b.mp4")!))
     }
     @Test("HLS relative media, init, key and alternate rendition URIs are rewritten")
     func playlist() {
         let base = URL(string: "https://cdn.example/redirected/variant/index.m3u8?sig=x")!
         let text = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key\"\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio.m3u8\"\n#EXTINF:2,\nsegment.m4s\n#EXT-X-BYTERANGE:20@0\nhttps://other.example/a.m4s\n"
+        let nonHTTP = "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://license\"\n#EXT-X-KEY:URI=\"data:text/plain,key\"\ncustom://segment\n"
+        #expect(HMPlaylist.rewrite(nonHTTP, base: base) { _ in URL(string: "http://rewritten")! } == nonHTTP)
+        #expect(HMPlaylist.references(nonHTTP, base: base).isEmpty)
         let urls = HMPlaylist.references(text, base: base)
         #expect(urls.map(\.absoluteString) == ["https://cdn.example/redirected/variant/init.mp4", "https://cdn.example/redirected/key", "https://cdn.example/redirected/variant/audio.m3u8", "https://cdn.example/redirected/variant/segment.m4s", "https://other.example/a.m4s"])
         let rewritten = HMPlaylist.rewrite(text, base: base) { URL(string: "http://127.0.0.1/" + HMCacheKey.hash($0.absoluteString))! }
@@ -450,11 +477,11 @@ struct CacheTransportTests {
         #expect(HMRangeCoverage.overlap(fetched, consumed) == 30)
         #expect(HMRangeCoverage.overlap([], consumed) == 0)
     }
-    @Test("Disk ranges survive restart; pinned entries yield to a hard cap")
+    @Test("Controllers share disk ranges; playlists never persist; no-op configure leaves index untouched")
     func disk() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hm-cache-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let cache = HMDiskCache(directory: directory, capacity: 12)
+        let cache = HMDiskCache.shared(directory: directory, capacity: 12)
         let url = URL(string: "https://example.com/a")!
         await cache.put(key: "a", start: 0, data: Data(0..<8), total: 20, mime: "video/mp4", base: url, owner: "a", prefetched: true, played: false)
         let hit = await cache.read(key: "a", range: HMByteRange(start: 2, end: 5))
@@ -462,12 +489,19 @@ struct CacheTransportTests {
         #expect(await cache.read(key: "a", range: HMByteRange(start: 5, end: 9)) == nil)
         let partial = await cache.available(key: "a", start: 6, count: 6)
         #expect(partial?.data == Data([6, 7]))
-        let reopened = HMDiskCache(directory: directory, capacity: 12)
+        let reopened = HMDiskCache.shared(directory: directory, capacity: 12)
+        #expect(cache === reopened)
         #expect(await reopened.bytes(for: "a") == 8)
         await cache.configure(capacity: 12, pinned: ["a"])
         await cache.put(key: "b", start: 0, data: Data(repeating: 9, count: 8), total: 8, mime: "video/mp4", base: url, owner: "b", prefetched: true, played: false)
         #expect(await cache.bytes(for: "a") == 8)
         #expect(await cache.bytes(for: "b") == 0)
+        let index = directory.appendingPathComponent("index.json")
+        let before = try FileManager.default.attributesOfItem(atPath: index.path)[.modificationDate] as? Date
+        await cache.configure(capacity: 12, pinned: ["a"])
+        #expect(try FileManager.default.attributesOfItem(atPath: index.path)[.modificationDate] as? Date == before)
+        await cache.put(key: "playlist", start: 0, data: Data([1]), total: 1, mime: "application/vnd.apple.mpegurl", base: URL(string: "https://x/index.m3u8?sig=old")!, owner: "playlist", prefetched: true, played: false)
+        #expect(await cache.bytes(for: "playlist") == 0)
         await cache.configure(capacity: 4, pinned: ["a"])
         #expect(await cache.bytes(for: "a") == 0)
         #expect(await cache.waste() == 16)

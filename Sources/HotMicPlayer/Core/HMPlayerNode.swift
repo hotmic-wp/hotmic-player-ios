@@ -35,6 +35,8 @@ public final class HMPlayerNode: Identifiable {
     @ObservationIgnored private var stallCount10 = 0
     @ObservationIgnored private var stallTime10 = 0.0
     @ObservationIgnored private var didReportSummary = false
+    @ObservationIgnored private var didPreroll = false
+    @ObservationIgnored private var wantsPlayback = false
     @ObservationIgnored private var videoOutput: AVPlayerItemVideoOutput?
     @ObservationIgnored private var startupResolutionSource = "unknown"
     @ObservationIgnored private var startupWidth = 0.0
@@ -92,6 +94,7 @@ public final class HMPlayerNode: Identifiable {
         guard item?.id != newItem.id else { return }
 
         let recycledFrom = item
+        wantsPlayback = false
         player.pause()
         setLayerVisible(false)
         isActive = false
@@ -107,6 +110,7 @@ public final class HMPlayerNode: Identifiable {
         lastReportedVariant = 0
         hasConfirmedDuration = false
         liveWindow.reset()
+        didPreroll = false
         warmStartedAt = ProcessInfo.processInfo.systemUptime
 
         let asset = AVURLAsset(
@@ -162,12 +166,13 @@ public final class HMPlayerNode: Identifiable {
 
         player.currentItem?.preferredForwardBufferDuration = configuration.steadyBufferDuration
 
-        emit(.viewStart, item: item, metrics: ["buffered_ahead_s": snapshot.bufferedAhead, "cached_bytes": Double(cachedBytes), "item_status": Double(status), "request_monotonic_s": requestedAt], properties: ["readiness_tier": tier])
+        emit(.viewStart, item: item, metrics: ["buffered_ahead_s": snapshot.bufferedAhead, "cached_bytes": Double(cachedBytes), "item_status": Double(status), "request_monotonic_s": requestedAt], properties: ["readiness_tier": tier, "transport": (player.currentItem?.asset as? AVURLAsset)?.url.host == "127.0.0.1" && (player.currentItem?.asset as? AVURLAsset)?.url != item.url ? "loopback" : "direct"])
 
         if let position, position > 0.1 {
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
                         toleranceBefore: .zero, toleranceAfter: .positiveInfinity)
         }
+        wantsPlayback = true
         player.play()
         emit(.play, item: item)
     }
@@ -180,6 +185,7 @@ public final class HMPlayerNode: Identifiable {
         summaryTask?.cancel()
         isActive = false
         let watched = snapshot.currentTime
+        wantsPlayback = false
         player.pause()
         if !retainingPosition {
             player.seek(to: .zero)
@@ -219,12 +225,14 @@ public final class HMPlayerNode: Identifiable {
 
     public func play() {
         guard let item else { return }
+        wantsPlayback = true
         player.play()
         emit(.play, item: item)
     }
 
     public func pause() {
         guard let item else { return }
+        wantsPlayback = false
         player.pause()
         emit(.pause, item: item)
     }
@@ -321,6 +329,9 @@ public final class HMPlayerNode: Identifiable {
                 self.setLayerVisible(self.snapshot.isFrameReady)
                 self.onBufferChanged?()
             }
+        })
+        observations.append(player.observe(\.status, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.syncItemStatus() }
         })
         observations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.syncTimeControlStatus() }
@@ -422,8 +433,9 @@ public final class HMPlayerNode: Identifiable {
                 snapshot.duration = hint
             }
             if snapshot.state == .loading { snapshot.state = isActive ? .loading : .ready }
-            if !isActive {
+            if !isActive, !didPreroll, player.status == .readyToPlay, player.rate == 0 {
                 // Decode the first frame without advancing the media clock.
+                didPreroll = true
                 player.preroll(atRate: 1) { _ in }
             }
             emit(.preloadReady, item: item, metrics: [
@@ -499,6 +511,7 @@ public final class HMPlayerNode: Identifiable {
             startupWidth = Double(size.width); startupHeight = Double(size.height)
             startupResolutionSource = "presentation-size-fallback"
         }
+        if let output = videoOutput { player.currentItem?.remove(output); videoOutput = nil }
         let ttff = max(0, time - activationTime)
         snapshot.timeToFirstFrame = ttff
         emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary"], occurredAt: time)
@@ -539,12 +552,30 @@ public final class HMPlayerNode: Identifiable {
         emit(.ended, item: item, position: snapshot.currentTime)
         if configuration.loops {
             player.seek(to: .zero)
-            if isActive { player.play() }
+            if isActive && wantsPlayback { player.play() }
         }
     }
 
     private func handleFailure(_ error: NSError?) {
         guard let item else { return }
+        if let asset = player.currentItem?.asset as? AVURLAsset, asset.url.host == "127.0.0.1", asset.url != item.url {
+            // A dead listener or host ATS policy must not strand playback. The
+            // direct retry keeps this activation and its original request clock.
+            let position = snapshot.currentTime
+            let resume = isActive && wantsPlayback
+            teardownItemObservers(); setLayerVisible(false)
+            let asset = AVURLAsset(url: item.url)
+            let replacement = AVPlayerItem(asset: asset)
+            replacement.preferredPeakBitRate = configuration.startupPeakBitRate
+            replacement.preferredForwardBufferDuration = isActive ? configuration.steadyBufferDuration : configuration.prefetch.warmBufferDuration
+            installItemObservers(for: replacement); player.replaceCurrentItem(with: replacement)
+            videoOutput = nil; didPreroll = false; snapshot.state = .loading
+            loadDuration(from: asset, for: item.id)
+            if position > 0 { player.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
+            emit(.loadStart, item: item, properties: ["transport": "direct-fallback"])
+            if resume { player.play() }
+            return
+        }
         handleStallEnded()
         snapshot.state = .failed
         snapshot.errorDescription = error?.localizedDescription ?? "Playback failed"

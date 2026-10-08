@@ -44,7 +44,10 @@ public final class HMFeedController {
 
     /// Set false when the feed scrolls out of view or the app backgrounds.
     public var isFeedVisible = true {
-        didSet { isFeedVisible ? resumeActive() : pauseAll() }
+        didSet {
+            if isFeedVisible { Task { await prepareTransport(); guard isFeedVisible else { return }; resumeActive(); updatePrefetch() } }
+            else { pauseAll() }
+        }
     }
 
     @ObservationIgnored public let pool: HMPlayerPool
@@ -57,6 +60,7 @@ public final class HMFeedController {
     @ObservationIgnored private var requestReason = "play"
     @ObservationIgnored private var hasStarted = false
     @ObservationIgnored private var runEnded = false
+    @ObservationIgnored private var prefetchSafe = false
     @ObservationIgnored private let dataSource: HMFeedDataSource
     @ObservationIgnored private var nextCursor: String?
     @ObservationIgnored private var timelines: [String: HMStreamTimeline] = [:]
@@ -113,7 +117,7 @@ public final class HMFeedController {
     }
 
     private func prepareTransport() async {
-        guard proxy == nil else { return }
+        if let proxy { try? await proxy.start(); return }
         do {
             let created = try HMCacheProxy(configuration: configuration)
             try await created.start()
@@ -140,6 +144,8 @@ public final class HMFeedController {
         do {
             let page = try await dataSource.loadPage(cursor: nextCursor)
             items.append(contentsOf: page.items)
+            prefetchSafe = false
+            updatePrefetch()
             nextCursor = page.nextCursor
             hasMoreContent = page.nextCursor != nil
         } catch {
@@ -165,6 +171,7 @@ public final class HMFeedController {
     public func setActiveIndex(_ index: Int, reason: ActivationReason = .swipe, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard items.indices.contains(index) else { return }
         proxy?.cancelPrefetch()
+        prefetchSafe = false
         requestTime = requestedAt
         requestReason = reason == .swipe ? "swipe" : reason == .initial ? "initial" : "play"
         let previousIndex = activeIndex
@@ -179,6 +186,8 @@ public final class HMFeedController {
         }
 
         let item = items[index]
+        let offsets = Set(configuration.prefetch.windowOffsets + configuration.warmOffsets + [0, -1])
+        proxy?.retainWindow(offsets.compactMap { items.indices.contains(index + $0) ? items[index + $0] : nil })
         let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.setMuted(isMuted)
         attachAnalytics(node: node, item: item)
@@ -228,13 +237,17 @@ public final class HMFeedController {
     }
 
     private func updatePrefetch() {
-        guard isFeedVisible, let node = currentNode, node.isActive else { proxy?.cancelPrefetch(); return }
+        guard isFeedVisible, let node = currentNode, node.isActive else { if prefetchSafe { proxy?.cancelPrefetch(); prefetchSafe = false }; return }
         let threshold = max(0, configuration.prefetch.startThreshold)
         let remaining = max(0, node.snapshot.duration - node.snapshot.currentTime)
-        let fullyLoaded = node.snapshot.duration > 0 && node.snapshot.bufferedAhead >= remaining - 0.1
-        let safe = node.snapshot.bufferedAhead >= threshold || fullyLoaded
+        // Enter at N seconds; leave only below half N. A tiny fluctuation
+        // around N must not recycle the prepared next player's decoder.
+        let wasSafe = prefetchSafe
+        let safe = HMBufferSafety.isSafe(ahead: node.snapshot.bufferedAhead, remaining: remaining, hasDuration: node.snapshot.duration > 0, threshold: threshold, wasSafe: wasSafe)
+        prefetchSafe = safe
         guard safe else {
-            proxy?.cancelPrefetch()
+            // Cancel only on the transition out of the safe region.
+            if wasSafe { proxy?.cancelPrefetch() }
             // Detaching warm items cancels their AVFoundation network work.
             // S2 intentionally preserves the original competing warm-pool path.
             if configuration.strategy == .S3, node.snapshot.timeToFirstFrame != nil {
@@ -242,12 +255,15 @@ public final class HMFeedController {
             }
             return
         }
+        guard !wasSafe else { return }
         prefetchWindow(around: activeIndex)
         let dataItems = configuration.prefetch.windowOffsets.compactMap { offset -> HMMediaItem? in
             let index = activeIndex + offset
             return items.indices.contains(index) ? items[index] : nil
         }
-        proxy?.prefetch(dataItems, keeping: (currentItem.map { [$0] } ?? []) + dataItems)
+        let keptOffsets = Set(configuration.prefetch.windowOffsets + configuration.warmOffsets + [0, -1])
+        let kept = keptOffsets.compactMap { items.indices.contains(activeIndex + $0) ? items[activeIndex + $0] : nil }
+        proxy?.prefetch(dataItems, keeping: kept)
     }
 
     // MARK: - Access for views
@@ -285,6 +301,7 @@ public final class HMFeedController {
 
     public func pauseAll() {
         proxy?.cancelPrefetch()
+        prefetchSafe = false
         for node in pool.nodes where node.isActive {
             if let item = node.item { resumePositions[item.id] = node.snapshot.currentTime }
             node.pause()
@@ -340,6 +357,7 @@ public final class HMFeedController {
         for node in pool.nodes.dropFirst(target) { analytics.detach(playerKey: node.id) }
         pool.resize(to: configuration.poolSize)
         pool.applyConfiguration()
+        prefetchSafe = false
         proxy?.configuration = configuration
         proxy?.cancelPrefetch()
         pool.trim(keeping: Set(currentItem.map { [$0.id] } ?? []))

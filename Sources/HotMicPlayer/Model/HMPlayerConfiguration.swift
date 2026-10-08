@@ -21,9 +21,10 @@ public struct HMPrefetchPolicy: Sendable, Equatable, Codable {
                 startThreshold: TimeInterval = 3) {
         self.ahead = max(0, min(8, ahead)); self.behind = max(0, min(8, behind))
         self.warmBufferDuration = warmBufferDuration
-        self.bytesPerItem = bytesPerItem; self.secondsPerItem = secondsPerItem
+        self.bytesPerItem = max(0, min(Self.maximumBytesPerItem, bytesPerItem)); self.secondsPerItem = secondsPerItem
         self.startThreshold = startThreshold
     }
+    public static let maximumBytesPerItem = 8 * 1024 * 1024
     public static let off = HMPrefetchPolicy(ahead: 0, behind: 0, warmBufferDuration: 0)
     public static let nextOnly = HMPrefetchPolicy(ahead: 1, behind: 0)
     public static let balanced = HMPrefetchPolicy(ahead: 2, behind: 1)
@@ -38,6 +39,8 @@ public struct HMPrefetchPolicy: Sendable, Equatable, Codable {
 }
 
 public struct HMPlayerConfiguration: Sendable, Codable {
+    /// Exact query parameter names to remove from cache identity. Empty is safe by default.
+    public var volatileSigningQueryParameters: [String] = []
     public var strategy: HMPlaybackStrategy
     public var poolSize: Int
     public var prefetch: HMPrefetchPolicy

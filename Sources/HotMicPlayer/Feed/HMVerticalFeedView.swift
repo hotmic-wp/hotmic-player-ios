@@ -15,6 +15,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     private let gravity: AVLayerVideoGravity
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
 
+    @State private var scrollReference = HMScrollViewReference()
+    @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
 
     public init(
@@ -51,7 +53,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe(targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID) { index, time in
+                    .background(HMPageCommitProbe(targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { index, time in
+                        fallbackCommit?.cancel()
                         controller.commitPage(at: index, requestedAt: time)
                     })
                 }
@@ -59,6 +62,17 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                 .scrollIndicators(.hidden)
                 .scrollPosition(id: $scrolledID)
                 .background(.black)
+                .onChange(of: scrolledID) { _, id in
+                    fallbackCommit?.cancel()
+                    guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
+                    fallbackCommit = Task { @MainActor in
+                        do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                        guard scrolledID == id, index != controller.activeIndex else { return }
+                        if let scroll = scrollReference.scroll, scroll.isDragging || scroll.isDecelerating { return }
+                        controller.commitPage(at: index, requestedAt: ProcessInfo.processInfo.systemUptime)
+                    }
+                }
+                .onDisappear { fallbackCommit?.cancel() }
                 .onChange(of: controller.activeIndex) { _, newIndex in
                     // Keep the scroll position in sync when the index is driven
                     // programmatically (deep link, "next" button, autoadvance).

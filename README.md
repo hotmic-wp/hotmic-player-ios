@@ -97,14 +97,18 @@ drive playback directly.
 
 ```swift
 var configuration = HMPlayerConfiguration.default
-configuration.prefetch = HMPrefetchPolicy(ahead: 2, behind: 1)
-configuration.poolSize = 4
+configuration.prefetch = HMPrefetchPolicy(ahead: 5, behind: 1, bytesPerItem: 800_000)
+configuration.poolSize = 2
 configuration.startupPeakBitRate = 1_600_000   // small first segment, then lift
 configuration.steadyBufferDuration = 10
 controller.configuration = configuration       // safe to change at runtime
 ```
 
-Presets: `.default`, `.instantStart`, `.highQuality`.
+Default: two players plus bounded disk prefetch (S3). Presets: `.default`,
+`.instantStart`, `.highQuality`, and `.preset(.S0/.S1/.S2/.S3)` for comparisons.
+The data window does not allocate players. See [architecture](docs/ARCHITECTURE.md)
+for buffer gating, cache transport and timing limits, and
+[benchmarking](docs/BENCHMARKING.md) for remote playlists and headless device runs.
 
 ### Analytics
 

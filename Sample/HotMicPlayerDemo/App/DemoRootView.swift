@@ -10,10 +10,22 @@ struct DemoRootView: View {
     @State private var muxBridge = HMLoggingMuxBridge()
     @State private var controller: HMFeedController?
 
+    private let benchmark = BenchmarkOptions()
+    @State private var showsBenchmark = false
+    @State private var fileSink: HMJSONLFileSink?
+    @State private var bootstrapError: String?
     @State private var isFeedPresented = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
+        if let url = benchmark.values["grid-url"] {
+            BenchmarkScreen(initialURL: url, autoStart: true)
+        } else {
+            demoBody
+        }
+    }
+
+    private var demoBody: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
@@ -26,7 +38,8 @@ struct DemoRootView: View {
                     muxBridge: muxBridge
                 )
             } else {
-                ProgressView().tint(.white)
+                if let bootstrapError { Text(bootstrapError).accessibilityIdentifier("benchmark-error") }
+                else { ProgressView().tint(.white) }
             }
         }
         // Deliberately a cover rather than a navigation push: the interactive
@@ -39,13 +52,27 @@ struct DemoRootView: View {
                     settings: settings,
                     console: console,
                     muxBridge: muxBridge,
-                    onBack: { close(controller) }
+                    onBack: { close(controller) },
+                    fileSink: fileSink,
+                    isBenchmark: benchmark.enabled
                 )
             }
         }
+        .overlay(alignment: .bottom) {
+            Button("Benchmark mode") {
+                controller?.teardown()
+                controller = nil
+                fileSink = nil
+                showsBenchmark = true
+            }
+                .accessibilityIdentifier("benchmark-mode").padding(12)
+        }
+        .fullScreenCover(isPresented: $showsBenchmark, onDismiss: {
+            Task { await bootstrapIfNeeded() }
+        }) { BenchmarkScreen() }
         .tint(DemoTheme.accent)
         .preferredColorScheme(.dark)
-        .task { bootstrapIfNeeded() }
+        .task { await bootstrapIfNeeded() }
         .onChange(of: scenePhase) { _, phase in
             // Only the feed screen plays. Backgrounding while browsing the
             // playlist must not start anything.
@@ -56,12 +83,11 @@ struct DemoRootView: View {
     // MARK: - Navigation
 
     private func open(_ controller: HMFeedController, at index: Int) {
-        // Index first, then visibility: `setActiveIndex` only promotes an item
-        // to playing when the feed is on screen, so this ordering gives the
-        // selected clip a clean activation (and an honest TTFF).
-        controller.setActiveIndex(index, reason: .programmatic)
-        isFeedPresented = true
-        controller.isFeedVisible = true
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        Task {
+            await controller.requestPlay(at: index, requestedAt: requestedAt)
+            isFeedPresented = true
+        }
     }
 
     private func close(_ controller: HMFeedController) {
@@ -71,8 +97,8 @@ struct DemoRootView: View {
 
     // MARK: - Wiring
 
-    private func bootstrapIfNeeded() {
-        guard controller == nil else { return }
+    private func bootstrapIfNeeded() async {
+        guard controller == nil, !showsBenchmark else { return }
 
         let hub = HMAnalyticsHub()
         hub.add(console)
@@ -90,17 +116,37 @@ struct DemoRootView: View {
             )
         )
 
+        do {
+        if benchmark.values["reset-cache"] == "1" {
+            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HotMicPlayer-v1")
+            try? FileManager.default.removeItem(at: cache)
+        }
+        let configuration = try benchmark.configuration()
+        let source = try await benchmark.dataSource()
+        guard !showsBenchmark else { return }
+        if benchmark.enabled {
+            let safeID = benchmark.runID.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "_" }.map(String.init).joined()
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("BenchRuns/\(safeID).jsonl")
+            let sink = try HMJSONLFileSink(fileURL: url, runID: benchmark.runID, configuration: configuration,
+                format: benchmark.values["format"] ?? "bundled", network: benchmark.values["network"] ?? "unspecified",
+                script: benchmark.script, buildSHA: benchmark.values["build-sha"] ?? (Bundle.main.object(forInfoDictionaryKey: "HMBuildSHA") as? String ?? "unknown"))
+            fileSink = sink; hub.add(sink)
+        }
         let created = HMFeedController(
-            dataSource: DemoContent.dataSource,
-            configuration: settings.preset.configuration,
+            dataSource: source,
+            configuration: configuration,
             analytics: hub
         )
-        // Warm content while the viewer browses the playlist, but do not play.
+        // Load playlist metadata while browsing, before the measured play tap.
         created.isFeedVisible = false
         settings.applyConfiguration = { [weak created] configuration in
             created?.configuration = configuration
         }
-        settings.rebuildConfiguration()
+        if !benchmark.enabled { settings.rebuildConfiguration() }
+        else { settings.showsOverlays = false; settings.showsHUD = false }
         controller = created
+        await created.start()
+        if benchmark.autoStart { open(created, at: benchmark.startIndex) }
+        } catch { bootstrapError = error.localizedDescription }
     }
 }

@@ -12,6 +12,10 @@ struct FeedScreen: View {
     let console: HMConsoleSink
     let muxBridge: HMLoggingMuxBridge
     let onBack: () -> Void
+    var fileSink: HMJSONLFileSink? = nil
+    var isBenchmark = false
+    @State private var exportReady = false
+    @State private var exportError: String?
 
     @State private var showsPanel = false
 
@@ -40,6 +44,22 @@ struct FeedScreen: View {
             }
 
             chrome
+            if isBenchmark {
+                VStack {
+                    Text("\(controller.activeIndex)|\(controller.currentItem?.id ?? "")|\(controller.currentNode?.snapshot.timeToFirstFrame != nil ? "displayed" : "loading")|\(controller.currentNode?.snapshot.duration ?? 0)")
+                        .font(.system(size: 10)).accessibilityIdentifier("benchmark-status")
+                    Spacer()
+                    if let exportError { Text(exportError) }
+                    if exportReady { Text("Complete").accessibilityIdentifier("benchmark-complete") }
+                    Button("Finish run") {
+                        Task {
+                            await controller.finishRun()
+                            do { try await fileSink?.flush(); exportReady = true }
+                            catch { exportError = error.localizedDescription }
+                        }
+                    }.accessibilityIdentifier("benchmark-finish")
+                }.padding(.vertical, 32)
+            }
         }
         // A cover manages its own status bar, so this has to live here rather
         // than on the presenting view.
@@ -59,7 +79,10 @@ struct FeedScreen: View {
                     .font(.system(size: 15, weight: .bold))
 
                 Spacer()
-
+                if let fileSink {
+                    ShareLink(item: fileSink.fileURL) { Image(systemName: "square.and.arrow.up") }
+                        .simultaneousGesture(TapGesture().onEnded { Task { try? await fileSink.flush() } })
+                }
                 ChromeButton { showsPanel = true } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "slider.horizontal.3")

@@ -15,6 +15,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     private let gravity: AVLayerVideoGravity
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
 
+    @State private var scrollReference = HMScrollViewReference()
+    @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
 
     public init(
@@ -51,24 +53,39 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
+                    .background(HMPageCommitProbe(targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { index, time in
+                        fallbackCommit?.cancel()
+                        controller.commitPage(at: index, requestedAt: time)
+                    })
                 }
                 .scrollTargetBehavior(.paging)
                 .scrollIndicators(.hidden)
                 .scrollPosition(id: $scrolledID)
                 .background(.black)
-                .onChange(of: scrolledID) { _, newValue in
-                    guard let newValue,
-                          let index = controller.items.firstIndex(where: { $0.id == newValue })
-                    else { return }
-                    controller.setActiveIndex(index, reason: .swipe)
+                .onChange(of: scrolledID) { _, id in
+                    fallbackCommit?.cancel()
+                    guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
+                    fallbackCommit = Task { @MainActor in
+                        do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                        guard scrolledID == id, index != controller.activeIndex else { return }
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if let scroll = scrollReference.scroll {
+                            guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
+                        }
+                        controller.commitPage(at: index, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now)
+                    }
                 }
+                .onDisappear { fallbackCommit?.cancel() }
                 .onChange(of: controller.activeIndex) { _, newIndex in
                     // Keep the scroll position in sync when the index is driven
                     // programmatically (deep link, "next" button, autoadvance).
                     guard controller.items.indices.contains(newIndex) else { return }
                     let id = controller.items[newIndex].id
                     guard id != scrolledID else { return }
-                    withAnimation(.snappy) { scrolledID = id }
+                    // Page requests animate through the delegate bridge. Deep
+                    // links snap immediately so a second animation cannot race
+                    // the first programmatic page request.
+                    scrolledID = id
                 }
                 .task {
                     await controller.start()
@@ -96,8 +113,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
             }
 
             HMVideoSurface(node: node, gravity: gravity)
-                .opacity(snapshot.timeToFirstFrame == nil ? 0 : 1)
-                .animation(.easeOut(duration: 0.18), value: snapshot.timeToFirstFrame == nil)
+
 
             overlay(item, snapshot)
         }

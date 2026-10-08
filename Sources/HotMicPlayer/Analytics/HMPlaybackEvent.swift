@@ -29,11 +29,13 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         case preloadReady
         /// A pooled `AVPlayer` was recycled onto a different item.
         case playerRecycled
+        case transfer, prefetchError, transportError, startupSummary, runEnd
     }
 
     public let id = UUID()
     public let kind: Kind
     public let itemID: String
+    public let monotonicTime: TimeInterval
     public let timestamp: Date
     /// Player position when the event fired, seconds.
     public let position: TimeInterval
@@ -46,6 +48,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         kind: Kind,
         itemID: String,
         timestamp: Date = Date(),
+        monotonicTime: TimeInterval = ProcessInfo.processInfo.systemUptime,
         position: TimeInterval = 0,
         metrics: [String: Double] = [:],
         properties: [String: String] = [:]
@@ -53,6 +56,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         self.kind = kind
         self.itemID = itemID
         self.timestamp = timestamp
+        self.monotonicTime = monotonicTime
         self.position = position
         self.metrics = metrics
         self.properties = properties

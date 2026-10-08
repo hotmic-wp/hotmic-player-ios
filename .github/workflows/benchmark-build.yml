@@ -1,0 +1,124 @@
+name: Build benchmark device artifacts
+
+# Intentionally manual only. Never run on push, pull_request, or schedules.
+"on":
+  workflow_dispatch:
+    inputs:
+      grid_url:
+        description: Public HTTPS grid URL for the Device Farm wrapper (optional)
+        required: false
+        type: string
+      sign:
+        description: Sign with existing development secrets, when all are present
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build generic iOS app and XCTest runner, unsigned
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing \
+            -project Sample/HotMicPlayerDemo.xcodeproj -scheme HotMicPlayerDemo \
+            -configuration Debug -destination 'generic/platform=iOS' \
+            -derivedDataPath .bench/DeviceFarm CODE_SIGNING_ALLOWED=NO \
+            HM_BUILD_SHA="$GITHUB_SHA"
+      - name: Include grid URL resource before optional signing
+        env:
+          GRID_URL: ${{ inputs.grid_url }}
+        run: |
+          set -euo pipefail
+          if [ -n "$GRID_URL" ]; then
+            printf '%s\n' "$GRID_URL" > .bench/DeviceFarm/Build/Products/Debug-iphoneos/HotMicPlayerDemoUITests-Runner.app/PlugIns/HotMicPlayerDemoUITests.xctest/grid-url.txt
+          fi
+      - name: Optional development signing with existing secrets
+        if: ${{ inputs.sign }}
+        env:
+          CERTIFICATE: ${{ secrets.IOS_DEV_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_DEV_CERTIFICATE_PASSWORD }}
+          APP_PROFILE: ${{ secrets.IOS_APP_PROFILE_BASE64 }}
+          RUNNER_PROFILE: ${{ secrets.IOS_RUNNER_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CERTIFICATE" ] || [ -z "$CERTIFICATE_PASSWORD" ] || [ -z "$APP_PROFILE" ] || [ -z "$RUNNER_PROFILE" ]; then
+            echo 'Development signing skipped: certificate or profiles not provided. Artifacts remain unsigned.'
+            exit 0
+          fi
+          signing_dir=$(mktemp -d "$RUNNER_TEMP/hotmic-signing.XXXXXX")
+          keychain="$signing_dir/benchmark.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          trap 'security delete-keychain "$keychain" >/dev/null 2>&1 || true; rm -rf "$signing_dir"' EXIT
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$signing_dir/certificate.p12"
+          printf '%s' "$APP_PROFILE" | base64 --decode > "$signing_dir/app.mobileprovision"
+          printf '%s' "$RUNNER_PROFILE" | base64 --decode > "$signing_dir/runner.mobileprovision"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$signing_dir/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk '/"/{print $2; exit}')
+          test -n "$identity"
+          for kind in app runner; do
+            if [ "$kind" = app ]; then
+              bundle=.bench/DeviceFarm/Build/Products/Debug-iphoneos/HotMicPlayerDemo.app
+            else
+              bundle=.bench/DeviceFarm/Build/Products/Debug-iphoneos/HotMicPlayerDemoUITests-Runner.app
+            fi
+            cp "$signing_dir/$kind.mobileprovision" "$bundle/embedded.mobileprovision"
+            security cms -D -i "$signing_dir/$kind.mobileprovision" > "$signing_dir/profile.plist"
+            /usr/libexec/PlistBuddy -x -c 'Print Entitlements' "$signing_dir/profile.plist" > "$signing_dir/entitlements.plist"
+            # Resolve wildcard development entitlements for this exact bundle.
+            python3 - "$bundle" "$signing_dir/entitlements.plist" <<'PYCODE'
+          import pathlib,plistlib,sys
+          bundle=pathlib.Path(sys.argv[1]); path=pathlib.Path(sys.argv[2])
+          identifier=plistlib.loads((bundle/'Info.plist').read_bytes())['CFBundleIdentifier']
+          entitlements=plistlib.loads(path.read_bytes())
+          appid=entitlements.get('application-identifier','')
+          team=appid.split('.',1)[0]
+          entitlements['application-identifier']=team+'.'+identifier
+          groups=entitlements.get('keychain-access-groups')
+          if groups:
+              entitlements['keychain-access-groups']=[team+'.'+identifier if g==team+'.*' else g for g in groups]
+          path.write_bytes(plistlib.dumps(entitlements))
+          PYCODE
+            # Code-sign deepest nested bundles first; never use --deep as a substitute.
+            python3 - "$bundle" "$identity" "$keychain" <<'PY'
+          import pathlib,subprocess,sys
+          root=pathlib.Path(sys.argv[1])
+          bundles=sorted((p for p in root.rglob('*') if p.suffix in ('.framework','.xctest') and p.is_dir()),key=lambda p:len(p.parts),reverse=True)
+          dylibs=[p for p in root.rglob('*.dylib') if p.is_file()]
+          for p in dylibs+bundles:
+              subprocess.run(['codesign','--force','--sign',sys.argv[2],'--keychain',sys.argv[3],str(p)],check=True)
+          PY
+            codesign --force --sign "$identity" --keychain "$keychain" --entitlements "$signing_dir/entitlements.plist" "$bundle"
+            codesign --verify --strict "$bundle"
+          done
+      - name: Package Device Farm artifact shapes
+        run: |
+          python3 bench/package_device_farm.py \
+            --products .bench/DeviceFarm/Build/Products/Debug-iphoneos \
+            --output .bench/DeviceFarmArtifacts
+      - name: Upload app IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotmic-benchmark-ios-app
+          path: .bench/DeviceFarmArtifacts/HotMicPlayerDemo.ipa
+          if-no-files-found: error
+      - name: Upload XCTest UI runner ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotmic-benchmark-xctest-ui
+          path: .bench/DeviceFarmArtifacts/HotMicPlayerDemoUITests.zip
+          if-no-files-found: error
+      - name: Upload build notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotmic-benchmark-build-notes
+          path: .bench/DeviceFarmArtifacts/README.txt

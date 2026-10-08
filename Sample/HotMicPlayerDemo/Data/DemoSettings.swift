@@ -31,17 +31,18 @@ final class DemoSettings {
         var blurb: String {
             switch self {
             case .instantStart: "Caps the first segment at 900 kbps and warms 3 ahead. Fastest swipe-to-frame."
-            case .balanced: "1.6 Mbps startup cap, 2 ahead / 1 back. The shipping default."
+            case .balanced: "Two players, 5 ahead / 1 back in disk cache. The shipping default."
             case .highQuality: "No bitrate cap, 20s buffers, only 1 preloaded. Best picture, slowest start."
             }
         }
     }
 
     enum PrefetchChoice: String, CaseIterable, Identifiable {
-        case off, next, balanced, aggressive
+        case off, next, balanced, aggressive, hybrid
         var id: String { rawValue }
         var displayName: String {
             switch self {
+            case .hybrid: "5 / 1 data"
             case .off: "Off"
             case .next: "1 ahead"
             case .balanced: "2 / 1"
@@ -50,6 +51,7 @@ final class DemoSettings {
         }
         var policy: HMPrefetchPolicy {
             switch self {
+            case .hybrid: HMPrefetchPolicy()
             case .off: .off
             case .next: .nextOnly
             case .balanced: .balanced
@@ -59,8 +61,8 @@ final class DemoSettings {
     }
 
     var preset: Preset = .balanced { didSet { syncFromPreset() } }
-    var prefetch: PrefetchChoice = .balanced { didSet { rebuildConfiguration() } }
-    var poolSize: Int = 4 { didSet { rebuildConfiguration() } }
+    var prefetch: PrefetchChoice = .hybrid { didSet { rebuildConfiguration() } }
+    var poolSize: Int = 2 { didSet { rebuildConfiguration() } }
     var loops: Bool = true { didSet { rebuildConfiguration() } }
 
     var transition: HMPageTransition = .none

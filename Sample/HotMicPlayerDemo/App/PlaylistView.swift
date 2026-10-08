@@ -104,6 +104,7 @@ struct PlaylistView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("play-all")
     }
 
     private var list: some View {

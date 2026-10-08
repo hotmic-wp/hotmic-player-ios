@@ -391,10 +391,11 @@ public final class HMPlayerNode: Identifiable {
         guard let item else { return }
         switch player.timeControlStatus {
         case .playing:
-            if snapshot.state == .buffering { handleStallEnded() }
+            handleStallEnded()
             snapshot.state = .playing
             emit(.playing, item: item)
         case .paused:
+            handleStallEnded()
             if snapshot.state != .failed && snapshot.state != .idle {
                 snapshot.state = isActive ? .paused : .ready
             }
@@ -444,9 +445,6 @@ public final class HMPlayerNode: Identifiable {
             .first(where: { $0.containsTime(playerItem.currentTime()) || abs($0.start.seconds - current) < 0.05 })
         snapshot.bufferedAhead = buffered.map { max(0, $0.start.seconds + $0.duration.seconds - current) } ?? 0
         onBufferChanged?()
-        if playerItem.isPlaybackLikelyToKeepUp, snapshot.state == .buffering {
-            handleStallEnded()
-        }
     }
 
     private func syncVariant() {
@@ -537,6 +535,7 @@ public final class HMPlayerNode: Identifiable {
 
     private func handleReachedEnd() {
         guard let item else { return }
+        handleStallEnded()
         emit(.ended, item: item, position: snapshot.currentTime)
         if configuration.loops {
             player.seek(to: .zero)
@@ -546,6 +545,7 @@ public final class HMPlayerNode: Identifiable {
 
     private func handleFailure(_ error: NSError?) {
         guard let item else { return }
+        handleStallEnded()
         snapshot.state = .failed
         snapshot.errorDescription = error?.localizedDescription ?? "Playback failed"
         emit(.error, item: item, properties: [

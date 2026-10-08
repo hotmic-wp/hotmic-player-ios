@@ -59,10 +59,17 @@ struct DemoRootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            Button("Benchmark mode") { showsBenchmark = true }
+            Button("Benchmark mode") {
+                controller?.teardown()
+                controller = nil
+                fileSink = nil
+                showsBenchmark = true
+            }
                 .accessibilityIdentifier("benchmark-mode").padding(12)
         }
-        .fullScreenCover(isPresented: $showsBenchmark) { BenchmarkScreen() }
+        .fullScreenCover(isPresented: $showsBenchmark, onDismiss: {
+            Task { await bootstrapIfNeeded() }
+        }) { BenchmarkScreen() }
         .tint(DemoTheme.accent)
         .preferredColorScheme(.dark)
         .task { await bootstrapIfNeeded() }
@@ -91,7 +98,7 @@ struct DemoRootView: View {
     // MARK: - Wiring
 
     private func bootstrapIfNeeded() async {
-        guard controller == nil else { return }
+        guard controller == nil, !showsBenchmark else { return }
 
         let hub = HMAnalyticsHub()
         hub.add(console)
@@ -116,6 +123,7 @@ struct DemoRootView: View {
         }
         let configuration = try benchmark.configuration()
         let source = try await benchmark.dataSource()
+        guard !showsBenchmark else { return }
         if benchmark.enabled {
             let safeID = benchmark.runID.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "_" }.map(String.init).joined()
             let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("BenchRuns/\(safeID).jsonl")
@@ -129,7 +137,7 @@ struct DemoRootView: View {
             configuration: configuration,
             analytics: hub
         )
-        // Warm content while the viewer browses the playlist, but do not play.
+        // Load playlist metadata while browsing, before the measured play tap.
         created.isFeedVisible = false
         settings.applyConfiguration = { [weak created] configuration in
             created?.configuration = configuration

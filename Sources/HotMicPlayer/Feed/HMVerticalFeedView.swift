@@ -68,8 +68,11 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                     fallbackCommit = Task { @MainActor in
                         do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
                         guard scrolledID == id, index != controller.activeIndex else { return }
-                        if let scroll = scrollReference.scroll, scroll.isDragging || scroll.isDecelerating { return }
-                        controller.commitPage(at: index, requestedAt: ProcessInfo.processInfo.systemUptime)
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if let scroll = scrollReference.scroll {
+                            guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
+                        }
+                        controller.commitPage(at: index, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now)
                     }
                 }
                 .onDisappear { fallbackCommit?.cancel() }

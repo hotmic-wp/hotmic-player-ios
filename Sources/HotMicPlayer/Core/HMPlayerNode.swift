@@ -93,6 +93,7 @@ public final class HMPlayerNode: Identifiable {
 
         let recycledFrom = item
         player.pause()
+        setLayerVisible(false)
         isActive = false
         teardownItemObservers()
         item = newItem
@@ -151,7 +152,7 @@ public final class HMPlayerNode: Identifiable {
         let tier = warmReady ? "warmPlayer" : cachedBytes > 0 ? "cachedBytes" : "cold"
         snapshot.wasPreloaded = warmReady || cachedBytes > 0
         snapshot.isFrameReady = playerLayer.isReadyForDisplay
-        playerLayer.opacity = snapshot.isFrameReady ? 1 : 0
+        setLayerVisible(snapshot.isFrameReady)
         summaryTask?.cancel()
         summaryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
@@ -199,12 +200,19 @@ public final class HMPlayerNode: Identifiable {
         summaryTask?.cancel()
         durationTask?.cancel()
         teardownItemObservers()
-        playerLayer.opacity = 0
+        setLayerVisible(false)
         player.replaceCurrentItem(with: nil)
         videoOutput = nil
         item = nil
         isActive = false
         snapshot = HMPlaybackSnapshot()
+    }
+
+    private func setLayerVisible(_ visible: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.opacity = visible ? 1 : 0
+        CATransaction.commit()
     }
 
     // MARK: - Transport
@@ -310,7 +318,7 @@ public final class HMPlayerNode: Identifiable {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.snapshot.isFrameReady = self.playerLayer.isReadyForDisplay
-                self.playerLayer.opacity = self.snapshot.isFrameReady ? 1 : 0
+                self.setLayerVisible(self.snapshot.isFrameReady)
                 self.onBufferChanged?()
             }
         })
@@ -471,7 +479,6 @@ public final class HMPlayerNode: Identifiable {
     /// ABR can climb to the quality the connection can actually sustain.
     private func liftStartupCapIfDue() {
         guard !didLiftStartupCap,
-              configuration.startupPeakBitRate > 0,
               isActive,
               let activationTime,
               ProcessInfo.processInfo.systemUptime - activationTime > configuration.startupBitRateWindow

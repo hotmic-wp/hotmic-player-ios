@@ -1,0 +1,23 @@
+{
+  "run_prefix": "simulator-smoke",
+  "results_url": "http://127.0.0.1:8090/runs",
+  "network": "lan",
+  "cells": [
+    {"id":"S0-mp4-faststart-720-normal","strategy":"S0","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S0-mp4-faststart-720-binge","strategy":"S0","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S1-mp4-faststart-720-normal","strategy":"S1","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S1-mp4-faststart-720-binge","strategy":"S1","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S2-mp4-faststart-720-normal","strategy":"S2","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{"players":4}},
+    {"id":"S2-mp4-faststart-720-binge","strategy":"S2","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{"players":4}},
+    {"id":"S3-mp4-faststart-720-normal","strategy":"S3","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S3-mp4-faststart-720-binge","strategy":"S3","format":"mp4-faststart-720","playlist_url":"/mp4-faststart-720.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S0-hls-2s-normal","strategy":"S0","format":"hls-2s","playlist_url":"/hls-2s.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S0-hls-2s-binge","strategy":"S0","format":"hls-2s","playlist_url":"/hls-2s.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S1-hls-2s-normal","strategy":"S1","format":"hls-2s","playlist_url":"/hls-2s.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S1-hls-2s-binge","strategy":"S1","format":"hls-2s","playlist_url":"/hls-2s.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S2-hls-2s-normal","strategy":"S2","format":"hls-2s","playlist_url":"/hls-2s.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{"players":4}},
+    {"id":"S2-hls-2s-binge","strategy":"S2","format":"hls-2s","playlist_url":"/hls-2s.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{"players":4}},
+    {"id":"S3-hls-2s-normal","strategy":"S3","format":"hls-2s","playlist_url":"/hls-2s.json","script":"normal","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}},
+    {"id":"S3-hls-2s-binge","strategy":"S3","format":"hls-2s","playlist_url":"/hls-2s.json","script":"binge","repeats":1,"swipes":50,"reset_cache":true,"require_frame":true,"knobs":{}}
+  ]
+}

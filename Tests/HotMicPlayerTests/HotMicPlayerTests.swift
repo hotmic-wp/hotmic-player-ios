@@ -473,3 +473,28 @@ struct CacheTransportTests {
         #expect(await cache.waste() == 16)
     }
 }
+
+@Suite("JSONL export")
+struct JSONLExportTests {
+    @Test("Flush preserves header, event ordering, exact occurrence clock and full configuration")
+    @MainActor
+    func orderedExport() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hm-jsonl-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("run.jsonl")
+        let configuration = HMPlayerConfiguration.default
+        let sink = try HMJSONLFileSink(fileURL: file, runID: "test", configuration: configuration, format: "mp4", network: "lan", script: "binge", buildSHA: "abc")
+        let item = HMMediaItem(id: "a", url: URL(string: "https://example.com/a.mp4")!)
+        sink.handle(HMPlaybackEvent(kind: .viewStart, itemID: "a", monotonicTime: 100, metrics: ["request_monotonic_s": 99]), item: item)
+        sink.handle(HMPlaybackEvent(kind: .firstFrame, itemID: "a", monotonicTime: 100.25, metrics: ["ttff_ms": 1250]), item: item)
+        try await sink.flush()
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+        let records = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        #expect(records.count == 3)
+        #expect(records[0]["type"] as? String == "runHeader")
+        #expect(records[0]["configuration"] as? String == configuration.fingerprint)
+        #expect(records[1]["event"] as? String == "viewStart")
+        #expect(records[2]["event"] as? String == "firstFrame")
+        #expect(records[2]["monotonic_s"] as? Double == 100.25)
+    }
+}

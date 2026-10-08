@@ -1,10 +1,12 @@
 # Headless HotMicPlayer benchmarking
 
 You can do content preparation, serving, shaping and analysis on **Linux**.
-Building and driving the native player requires a **remote Mac with Xcode**;
-credible timing requires a **physical iPhone** attached to that Mac. All steps
-below are CLI-only and can be driven over SSH. No Xcode GUI is required. Do not
-use production HotMic media. Do not treat Simulator timings as benchmark numbers.
+Get device builds from the manual macOS GitHub Actions workflow or a remote Mac
+with Xcode. Once installed, benchmark mode runs unattended on **your own iPhone**
+or **AWS Device Farm**, without Xcode or XCUITest on your Linux machine. A remote
+Mac can also drive device/Simulator runs over SSH. The build and automation steps
+are CLI-only; no Xcode GUI is required. Credible timing requires a physical iPhone.
+Do not use production HotMic media or treat Simulator timings as benchmark numbers.
 
 ## Dependencies and ownership
 
@@ -163,11 +165,11 @@ matching `com.hotmic.HotMicPlayerDemo`, the registered iPhone UDID, and a truste
 Developer Mode-enabled phone. For a locally installed XCTest runner he must
 also provide a profile for `com.hotmic.HotMicPlayerDemoUITests.xctrunner`.
 Certificates/profiles must be unexpired, from the same team, and cover that
-phone. No signing/project settings or secrets were added by this task.
+phone. No existing project signing settings or signing secrets were changed.
 
 The workflow's optional `sign=true` checks four **existing** repo secrets:
 `IOS_DEV_CERTIFICATE_P12_BASE64`, `IOS_DEV_CERTIFICATE_PASSWORD`,
-`IOS_APP_PROFILE_BASE64`, `IOS_RUNNER_PROFILE_BASE64`. If certificate or profiles
+`IOS_APP_PROFILE_BASE64`, `IOS_RUNNER_PROFILE_BASE64`. If any of these inputs
 are absent, signing skips cleanly and artifacts stay unsigned. When supplied,
 it imports the certificate into an ephemeral runner keychain, embeds the
 profiles, signs nested code and the two apps, and removes the keychain/files.
@@ -348,6 +350,14 @@ into a copied xctestrun beside the original (preserving `__TESTROOT__`). It pull
 Simulator files with simctl, phone files with devicectl, and records wrapper wall
 time. It is callable over SSH from Linux. `xcodebuild test -project ... -scheme
 ... -destination id=UDID` is also supported when a grid URL is bundled/provided.
+
+For the 16-cell Simulator smoke matrix (S0/S1/S2 with four players/S3 × MP4
+faststart 720/HLS 2s × normal/binge, 50 moves each), copy
+`bench/grid.smoke.json` into the origin root as `smoke-grid.json`. It uses
+localhost and `require_frame=true`; change URLs for a phone and do not use this
+frame-waiting smoke grid for adverse-network performance conclusions. With the
+12s smoke encodes it takes roughly 45–50 minutes. Validation results and limits are
+recorded in [the task smoke report](SIMULATOR_SMOKE_213.md).
 
 ## Grid knobs and direct launch arguments
 

@@ -44,7 +44,7 @@ final class HMVideoSurfaceView: UIView {
     private weak var hostedLayer: AVPlayerLayer?
     private weak var node: HMPlayerNode?
     private var displayLink: CADisplayLink?
-    private var readyActivation: String?
+    private var readyItem: HMMediaItem?
     var isPlaybackVisible = true { didSet { refreshDisplayLink() } }
 
     func attach(_ node: HMPlayerNode?, gravity: AVLayerVideoGravity) {
@@ -55,18 +55,20 @@ final class HMVideoSurfaceView: UIView {
             hostedLayer = layer; self.node = node
             layer?.removeFromSuperlayer()
             if let layer { self.layer.addSublayer(layer) }
-            readyActivation = nil
+            readyItem = nil
+            setNeedsLayout()
         }
-        layer?.videoGravity = gravity
-        setNeedsLayout()
+        if layer?.videoGravity != gravity { layer?.videoGravity = gravity }
+        if layer?.frame != bounds { setNeedsLayout() }
         refreshDisplayLink()
     }
 
     override var isHidden: Bool { didSet { refreshDisplayLink() } }
 
     private func refreshDisplayLink() {
-        if !isPlaybackVisible || isHidden || node?.isActive != true || window == nil || node?.snapshot.timeToFirstFrame != nil {
-            displayLink?.invalidate(); displayLink = nil; readyActivation = nil
+        if !isPlaybackVisible || isHidden || node == nil || window == nil ||
+            (node?.isActive == true && node?.snapshot.timeToFirstFrame != nil) {
+            displayLink?.invalidate(); displayLink = nil; readyItem = nil
         } else if displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(displayBoundary))
             link.add(to: .main, forMode: .common); displayLink = link
@@ -74,32 +76,37 @@ final class HMVideoSurfaceView: UIView {
     }
 
     @objc private func displayBoundary() {
-        guard isPlaybackVisible, let node, node.isActive, let window, !isHidden,
+        guard isPlaybackVisible, let node, let window, !isHidden,
               convert(bounds, to: window).intersects(window.bounds) else {
-            displayLink?.invalidate(); displayLink = nil; readyActivation = nil; return
+            readyItem = nil; return
         }
         guard
               hostedLayer?.superlayer === layer, hostedLayer?.isReadyForDisplay == true,
               hostedLayer?.opacity == 1, bounds.width > 0, bounds.height > 0,
-              convert(bounds, to: window).intersects(window.bounds) else { readyActivation = nil; return }
+              convert(bounds, to: window).intersects(window.bounds) else { readyItem = nil; return }
         let activation = node.snapshot.activationID
-        // The preceding boundary observed the ready, visible layer. Its
-        // transaction has now crossed a display boundary, including warm swaps.
-        guard readyActivation == activation else { readyActivation = activation; return }
+        // Observe the incoming warm layer during the animation as well. A
+        // continuously ready, visible frame has already crossed a display
+        // boundary before commit; a new activation need not render it again.
+        // Item identity and attachment/visibility resets prevent recycled or
+        // offscreen frames from satisfying this proof. The timestamp remains
+        // this post-commit boundary, never a preroll or pre-commit timestamp.
+        guard readyItem == node.item else { readyItem = node.item; return }
+        guard node.isActive else { return }
         node.didDisplayFrame(activation: activation, at: ProcessInfo.processInfo.systemUptime)
         displayLink?.invalidate(); displayLink = nil
     }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { displayLink?.invalidate(); displayLink = nil; readyActivation = nil }
+        if window == nil { displayLink?.invalidate(); displayLink = nil; readyItem = nil }
         else { attach(node, gravity: hostedLayer?.videoGravity ?? .resizeAspectFill) }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        hostedLayer?.frame = bounds
+        if hostedLayer?.frame != bounds { hostedLayer?.frame = bounds }
         CATransaction.commit()
         refreshDisplayLink()
     }

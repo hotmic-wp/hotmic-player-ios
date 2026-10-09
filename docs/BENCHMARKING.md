@@ -475,3 +475,16 @@ The app drives settled page transitions and posts complete JSONLs. The smoke has
 two moves per cell, one-second binge dwell and five-second normal dwell, with
 `require_frame=true`. Pass `--normal-dwell 9 --swipes 3` to exercise the default
 long-dwell rule. This is functional smoke, not a physical-device benchmark.
+
+## Ready-layer display continuity
+
+The surface observes display boundaries while a warm incoming page is visible
+during the swipe animation. If the same item's layer remains attached, opaque,
+ready and visible across the preceding and current boundaries, it can report
+that frame on the first boundary after page commit. Previously the detector
+started observing only after activation propagated through SwiftUI, then waited
+for two more boundaries. Offscreen, detached, recycled, hidden and unready layers
+clear continuity. No preroll timestamp is reported as TTFF: the request clock is
+still the settled page callback, and firstFrame uses the current post-commit
+display boundary. HMPlayerNode still validates activation identity, native item
+status and layer readiness. Cold frames retain the two-boundary requirement.

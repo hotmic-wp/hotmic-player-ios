@@ -25,6 +25,7 @@ final class EngagementWalkthroughUITests: XCTestCase {
     func testWalkthrough() throws {
         let env = ProcessInfo.processInfo.environment
         let mode = env["HM_WALK_MODE"] ?? "main"
+        guard mode != "scrub" else { throw XCTSkip("scrub mode runs testScrubCancellation") }
         app = XCUIApplication()
         app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0"]
         if let origin = env["HM_FEED_HLS_ORIGIN"] { app.launchArguments += ["--hm-feed-hls-origin", origin] }
@@ -106,6 +107,78 @@ final class EngagementWalkthroughUITests: XCTestCase {
         app.swipeUp(velocity: .fast)
         Thread.sleep(forTimeInterval: 3.5)
         shot("third-item")
+    }
+
+    /// Scrub cancellation: a drag on the scrubber that turns into a page swipe, a drag that returns
+    /// and completes, and a press interrupted by backgrounding (the host opens Settings when
+    /// `scrub-hold.signal` appears). After each, the player must not be left interacting and the
+    /// rail must be back at rest. Runs with `HM_WALK_MODE=scrub`.
+    func testScrubCancellation() throws {
+        guard ProcessInfo.processInfo.environment["HM_WALK_MODE"] == "scrub" else { throw XCTSkip("HM_WALK_MODE=scrub") }
+        app = XCUIApplication()
+        app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0", "--hm-probe", "1"]
+        app.launch()
+        let state = app.staticTexts["interaction-state"]
+        let scrubber = app.otherElements["Playback position"].firstMatch
+        XCTAssertTrue(scrubber.waitForExistence(timeout: 20))
+        let moment = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Moment at'")).firstMatch
+        XCTAssertTrue(moment.waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 1)
+        let restingMarkerY = moment.frame.midY
+        XCTAssertEqual(state.label, "idle")
+
+        // 1. A vertical drag that starts on the scrubber stays a scrub (the feed doesn't take the
+        //    pan) and ends cleanly.
+        scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)),
+                   withVelocity: .fast, thenHoldForDuration: 0)
+        Thread.sleep(forTimeInterval: 1.5)
+        shot("scrub-vertical-drag")
+        XCTAssertTrue(waitFor(state, "idle"), "interaction stuck after a vertical drag: \(state.label)")
+        XCTAssertEqual(moment.frame.midY, restingMarkerY, accuracy: 2)
+
+        // 1b. The cell scrolls away mid-scrub: the host pages forward while the press is held.
+        try Data().write(to: directory.appendingPathComponent("scrub-next.signal"))
+        scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).press(forDuration: 5)
+        Thread.sleep(forTimeInterval: 1.5)
+        shot("scrub-swiped-away")
+        XCTAssertTrue(waitFor(state, "idle"), "interaction stuck after the cell scrolled away mid-scrub: \(state.label)")
+        let onScreen = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'One-handed grab'"))
+            .allElementsBoundByIndex.contains { $0.frame.minY > 0 && $0.frame.maxY < app.frame.maxY }
+        XCTAssertTrue(onScreen, "feed did not page while scrubbing")
+        app.swipeDown(velocity: .fast)
+        Thread.sleep(forTimeInterval: 2.5)
+        XCTAssertTrue(waitFor(state, "idle"))
+        let back = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Moment at'")).firstMatch
+        XCTAssertEqual(back.frame.midY, restingMarkerY, accuracy: 2, "rail left expanded on the cell that scrolled away")
+        shot("scrub-swiped-back")
+
+        // 2. A completed horizontal scrub still seeks and ends the interaction.
+        let before = scrubber.value as? String ?? ""
+        scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+            .press(forDuration: 0.2, thenDragTo: scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)))
+        XCTAssertTrue(waitFor(state, "idle"))
+        XCTAssertNotEqual(scrubber.value as? String ?? "", before, "completed scrub did not seek")
+        XCTAssertEqual(moment.frame.midY, restingMarkerY, accuracy: 2)
+
+        // 3. Backgrounded mid-press: the host opens Settings while the press is held.
+        try Data().write(to: directory.appendingPathComponent("scrub-hold.signal"))
+        scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 6)
+        app.activate()
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue(waitFor(state, "idle"), "interaction stuck after backgrounding mid-scrub: \(state.label)")
+        let afterBackground = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Moment at'")).firstMatch
+        XCTAssertEqual(afterBackground.frame.midY, restingMarkerY, accuracy: 2, "rail left expanded after backgrounding")
+        shot("scrub-after-background")
+    }
+
+    private func waitFor(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, element.label == label { return true }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return false
     }
 
     /// Taps empty video above the overlay content, which toggles playback.

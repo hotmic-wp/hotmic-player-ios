@@ -19,6 +19,7 @@ struct FeedScreen: View {
 
     @State private var showsPanel = false
     @State private var shareNotice: String?
+    private let probes = BenchmarkOptions().values["probe"] == "1"
 
     var body: some View {
         ZStack {
@@ -35,6 +36,17 @@ struct FeedScreen: View {
             }
 
             chrome
+            if probes {
+                // Walkthrough probe (`--hm-probe 1`): lets UI tests see interaction deferral.
+                VStack {
+                    Text(controller.isInteracting ? "interacting" : "idle")
+                        .font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
+                        .accessibilityIdentifier("interaction-state")
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+                .task { await HMProbeNotifications.advance(controller) }
+            }
             if let shareNotice {
                 Text(shareNotice)
                     .font(DemoTheme.label(13, weight: .semibold))
@@ -104,4 +116,19 @@ struct FeedScreen: View {
             Spacer()
         }
     }
+}
+
+/// Walkthrough probe: the host posts `com.hotmic.probe.next` (`xcrun simctl spawn <id> notifyutil -p ...`)
+/// to page forward while a UI test is holding a touch, which XCUITest can't do on its own.
+enum HMProbeNotifications {
+    @MainActor static func advance(_ controller: HMPlayer) async {
+        let name = "com.hotmic.probe.next" as CFString
+        let stream = AsyncStream<Void> { continuation in
+            Box.continuation = continuation
+            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil,
+                { _, _, _, _, _ in Box.continuation?.yield() }, name, nil, .deliverImmediately)
+        }
+        for await _ in stream { controller.next() }
+    }
+    private enum Box { nonisolated(unsafe) static var continuation: AsyncStream<Void>.Continuation? }
 }

@@ -508,27 +508,11 @@ actor HMCacheTransport {
         let fetcher = HMHTTPFetcher(limit: limit, priority: played.contains(route.item.id) ? URLSessionTask.highPriority : URLSessionTask.defaultPriority,
             measurement: measurementHandler(route.item, speculative: !played.contains(route.item.id)), headers: { [weak self] response in
             guard let self else { throw CancellationError() }
-            try await self.waitForPlaybackPriority(route.item)
-            await self.beginStream(streamID, response: response)
-            if !sendHeaders {
-                let start = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
-                guard (response.statusCode == 206 && response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(start)-") == true) ||
-                        (response.statusCode == 200 && start == 0) else { throw URLError(.badServerResponse) }
-                return
-            }
-            var headers: [String: String] = [:]
-            for name in ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Type"] {
-                headers[name] = response.value(forHTTPHeaderField: name)
-            }
-            headers["Content-Type"] = headers["Content-Type"] ?? HMCacheKey.mime(route.url)
-            headers["Connection"] = "close"; headers["Cache-Control"] = "no-store"
-            let head = "HTTP/1.1 \(response.statusCode) OK\r\n" + headers.map { "\($0.key): \($0.value)\r\n" }.joined() + "\r\n"
-            try await self.sendBlock(connection, data: Data(head.utf8))
+            try await self.deliverStreamHeaders(streamID, response: response, route: route, range: range,
+                                                connection: connection, sendHeaders: sendHeaders)
         }, bytes: { [weak self] bytes in
             guard let self else { throw CancellationError() }
-            try await self.waitForPlaybackPriority(route.item)
-            try await self.sendBlock(connection, data: bytes)
-            await self.cacheStream(streamID, bytes: bytes, route: route)
+            try await self.deliverStreamBytes(streamID, bytes: bytes, route: route, connection: connection)
         })
         do {
             let result = try await fetcher.load(request)
@@ -539,6 +523,33 @@ actor HMCacheTransport {
             if let failure = error as? HMHTTPFetcher.Failure { account(failure.received, url: route.url, item: route.item, prefetch: false) }
             await cacheStream(streamID, bytes: Data(), route: route, finishing: true); throw error
         }
+    }
+    // Gate and deliver in one actor entry per callback. Separate actor calls for
+    // priority, socket delivery and cache bookkeeping add avoidable executor
+    // round trips to every small native delegate chunk, including S0/S2.
+    private func deliverStreamBytes(_ id: UUID, bytes: Data, route: Route, connection: NWConnection) async throws {
+        try await waitForPlaybackPriority(route.item)
+        try await sendBlock(connection, data: bytes)
+        await cacheStream(id, bytes: bytes, route: route)
+    }
+    private func deliverStreamHeaders(_ id: UUID, response: HTTPURLResponse, route: Route, range: String?,
+                                      connection: NWConnection, sendHeaders: Bool) async throws {
+        try await waitForPlaybackPriority(route.item)
+        beginStream(id, response: response)
+        if !sendHeaders {
+            let start = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
+            guard (response.statusCode == 206 && response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(start)-") == true) ||
+                    (response.statusCode == 200 && start == 0) else { throw URLError(.badServerResponse) }
+            return
+        }
+        var headers: [String: String] = [:]
+        for name in ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Type"] {
+            headers[name] = response.value(forHTTPHeaderField: name)
+        }
+        headers["Content-Type"] = headers["Content-Type"] ?? HMCacheKey.mime(route.url)
+        headers["Connection"] = "close"; headers["Cache-Control"] = "no-store"
+        let head = "HTTP/1.1 \(response.statusCode) OK\r\n" + headers.map { "\($0.key): \($0.value)\r\n" }.joined() + "\r\n"
+        try await sendBlock(connection, data: Data(head.utf8))
     }
     private func beginStream(_ id: UUID, response: HTTPURLResponse) {
         guard response.statusCode == 200 || response.statusCode == 206 else { return }

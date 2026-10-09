@@ -108,7 +108,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         if sampleSeconds >= 0.25 { flushMeasurementLocked() }
         if let bytes {
             dataTask.suspend(); suspendWatchdogLocked()
-            let accepted = Data(chunk.prefix(max(0, limit - delivered)))
+            let accepted = limit == Int.max ? chunk : Data(chunk.prefix(max(0, limit - delivered)))
             delivered += accepted.count
             let atLimit = delivered >= limit
             reachedStreamLimit = atLimit

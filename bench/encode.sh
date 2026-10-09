@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: encode.sh [source-directory] [output-directory] [origin-base-url] [keyframe-seconds]
+# Supply your own clips with permission for your intended use. None are bundled.
 # Env: CLIP_LIST (clip-list.json: verify source sha256 + category/length in manifest.json),
 #      CONTENT_MANIFEST (also write manifest.json there), ENCODE_JOBS (clips in parallel, default 1),
 #      ENCODE_PRESET (default veryfast), ENCODE_THREADS (per ffmpeg, default 2), ENCODE_SECONDS (smoke only),
 #      HLS_AS_SERVED (lines "<id> <master-url>": mirror each clip's served HLS byte for byte as hls-as-served).
-source_dir=${1:-Sample/HotMicPlayerDemo/Resources}
+source_dir=${1:-Sample/LocalMedia}
 out=${2:-bench/generated}
 base=${3:-http://127.0.0.1:8088}
 key=${4:-2}

@@ -25,13 +25,15 @@ No signing settings, distribution profiles, Fastlane or deployments are changed.
 A physical-device build needs the remote Mac's **already provisioned development
 signing** and trusted device. Without that, stop and have its owner prepare it.
 
-## 1. Linux: encode the bundled sources
+## 1. Linux: encode your own source clips
 
-Clone/check out the approved feature commit (or receive this repo over SSH) and
-run:
+Clone/check out the approved feature commit (or receive this repo over SSH).
+Supply your own source clips with permission for your intended use; no source
+videos or posters are bundled. For example, put MP4s in the ignored
+`Sample/LocalMedia/` folder and run:
 
 ```bash
-bench/encode.sh Sample/HotMicPlayerDemo/Resources bench/generated https://bench.example.com 2
+bench/encode.sh Sample/LocalMedia bench/generated https://bench.example.com 2
 ```
 
 Arguments are source directory, output directory, origin base URL and keyframe
@@ -66,7 +68,7 @@ each clip's HLS as the CDN serves it, byte for byte, into `hls-as-served/`
 GOP and cap rules. Validate checksums with `sha256sum -c checksums.sha256` on
 Linux or `shasum -a 256 -c checksums.sha256` on macOS, from the output directory.
 All generated media/results are gitignored. Each manifest has 80 distinct item
-IDs cycling the six source clips. That repetition exercises recycling and cache
+IDs cycling the source clips. That repetition exercises recycling and cache
 reuse; it is **not** an 80-unique-video workload. For real benchmark conclusions,
 provide enough distinct approved source content and regenerate manifests with
 unique paths. Don't compare repeated-media smoke data against unique-media runs.
@@ -398,8 +400,10 @@ Grid runs take their playback knobs from cells, not unrelated launch overrides.
 also include `--hm-manifest-url`, strategy/players/ahead/behind and the same knob
 names above; `--hm-format`, `--hm-network`, `--hm-run-id`, `--hm-script`,
 `--hm-auto-start 1`, `--hm-start-index` (zero-based), `--hm-build-sha`, and
-`--hm-reset-cache 1`. Numeric invalids stop visibly. Bundled clips remain the
-default when no manifest/grid is supplied. The last typed grid URL is remembered
+`--hm-reset-cache 1`. Numeric invalids stop visibly. The Sample's public remote
+MP4/HLS demo feed is the default when no manifest/grid is supplied; optional local
+media and demo manifests are described in [Sample](../Sample/README.md).
+The last typed grid URL is remembered
 in app preferences. No configuration or result URL is compiled into the SDK.
 
 S0/S2 do not read/write disk cache. S0/S1 allocate no warm neighbours; additional
@@ -483,7 +487,7 @@ HEAD semantics are retained. Rates are bytes/sec; latency is per response, befor
 headers. Logs record both knobs. The rate is shared across requests, so adding
 prefetch workers does not multiply the configured capacity.
 
-`python3 bench/prepare_adaptive_smoke.py` prepares eight distinct media paths,
+`python3 bench/prepare_adaptive_smoke.py --source Sample/LocalMedia/your-clip.mp4` prepares eight distinct media paths,
 a two-rendition HLS ladder, MP4 faststart fixtures, and a 16-cell `grid.json`.
 It uses the existing ffmpeg; no installation is performed. Start a receiver on
 18415 and the two origins above. Build/install on a dedicated simulator,

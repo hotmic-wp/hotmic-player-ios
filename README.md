@@ -104,6 +104,7 @@ Read the [benchmark guide](docs/BENCHMARKING.md) before drawing performance conc
 - [PlayerWithUI](Examples/PlayerWithUI): overlay options, orange/yellow theme and an in-memory interaction source; public API only.
 - [Sample](Sample): full demo, playlist/reference labs and benchmark app. Uses Benchmark SPI deliberately. Open `Sample/HotMicPlayerDemo.xcodeproj`.
 - [Player DocC catalog](Sources/HotMicPlayer/HotMicPlayer.docc) and [UI DocC catalog](Sources/HotMicPlayerUI/HotMicPlayerUI.docc): build in Xcode with Product → Build Documentation.
+- [Encoding and hosting for fast start](Sources/HotMicPlayer/HotMicPlayer.docc/EncodingForFastStart.md): partner MP4/HLS settings and CDN checklist.
 - [Public API inventory](docs/PUBLIC_API.md), [1.0 API decisions](docs/API_REVIEW_1.0.md), [changelog](CHANGELOG.md).
 
 ## Versioning and support

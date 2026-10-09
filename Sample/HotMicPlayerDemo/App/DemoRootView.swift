@@ -78,7 +78,8 @@ struct DemoRootView: View {
             Task { await bootstrapIfNeeded() }
         }) { BenchmarkScreen() }
         .tint(DemoTheme.accent)
-        .preferredColorScheme(.dark)
+        // `--hm-appearance light` previews the engagement cards in light mode.
+        .preferredColorScheme(benchmark.values["appearance"] == "light" ? .light : .dark)
         .task { await bootstrapIfNeeded() }
         .onChange(of: scenePhase) { _, phase in
             // Only the feed screen plays. Backgrounding while browsing the
@@ -141,6 +142,8 @@ struct DemoRootView: View {
         }
         let created = HMPlayer(
             configuration: configuration,
+            // MOCK — every engagement action, accepted after a simulated round trip.
+            interactions: HMMockInteractionSource(),
             analytics: hub
         )
         // Load playlist metadata while browsing, before the measured play tap.
@@ -150,10 +153,13 @@ struct DemoRootView: View {
             created?.configuration = configuration
         }
         if !benchmark.enabled { settings.rebuildConfiguration() }
+        if benchmark.values["hud"] == "0" { settings.showsHUD = false }
         else { settings.showsOverlays = false; settings.showsHUD = false }
         controller = created
         await created.start()
         if benchmark.autoStart { open(created, at: benchmark.startIndex) }
+        // `--hm-open-feed <index>` opens the feed with overlays, for demos and screenshots.
+        else if let index = benchmark.values["open-feed"].flatMap(Int.init) { open(created, at: index) }
         } catch { bootstrapError = error.localizedDescription }
     }
 }

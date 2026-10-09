@@ -24,12 +24,17 @@ enum HMNetworkFailure {
 }
 
 /// Unbounded attempts with bounded waits; connectivity errors never spend the terminal budget.
+/// Each wait is jittered by ±25% so many clients (or many entries) recovering from the same
+/// server outage spread their retries instead of arriving as one synchronized burst.
 struct HMNetworkRetry {
+    static let jitter: ClosedRange<Double> = 0.75...1.25
     var attempts = 0
     var nextAttempt: TimeInterval = 0
-    mutating func failed(at now: TimeInterval) {
+    /// Base delay before jitter: 1, 2, 4, 8, 16, then 30 seconds.
+    var baseDelay: TimeInterval { attempts == 0 ? 0 : min(30, pow(2, Double(attempts - 1))) }
+    mutating func failed(at now: TimeInterval, jitter: Double = Double.random(in: HMNetworkRetry.jitter)) {
         attempts = min(6, attempts + 1)
-        nextAttempt = now + min(30, pow(2, Double(attempts - 1)))
+        nextAttempt = now + baseDelay * min(Self.jitter.upperBound, max(Self.jitter.lowerBound, jitter))
     }
 }
 

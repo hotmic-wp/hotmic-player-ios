@@ -159,7 +159,7 @@ private struct PlaylistRow: View {
 
                 HStack(spacing: 6) {
                     if let duration = item.durationHint {
-                        Text(EmojiScrubberView.timecode(duration))
+                        Text(DemoTheme.timecode(duration))
                             .font(DemoTheme.metric(11, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.7))
                     }

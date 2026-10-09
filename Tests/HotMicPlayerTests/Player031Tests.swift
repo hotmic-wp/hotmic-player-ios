@@ -151,11 +151,18 @@ struct Player031Tests {
             #expect(player.currentItem == a); #expect(player.requestedPageID == nil)
         }
         #expect(!HMNetworkFailure.isTransient(URLError(.badServerResponse)))
-        var backoff = HMNetworkRetry()
+        // Bounded exponential backoff with ±25% jitter, so recovering clients don't retry in lockstep.
+        var backoff = HMNetworkRetry(), low = HMNetworkRetry(), high = HMNetworkRetry(), random = HMNetworkRetry()
+        var samples: Set<Double> = []
         for delay in [1.0, 2, 4, 8, 16, 30, 30] {
-            backoff.failed(at: 100)
+            backoff.failed(at: 100, jitter: 1); low.failed(at: 100, jitter: 0.1); high.failed(at: 100, jitter: 9)
+            random.failed(at: 100)
             #expect(backoff.nextAttempt == 100 + delay)
+            #expect(low.nextAttempt == 100 + delay * 0.75); #expect(high.nextAttempt == 100 + delay * 1.25)
+            #expect((100 + delay * 0.75)...(100 + delay * 1.25) ~= random.nextAttempt)
+            samples.insert(random.nextAttempt - 100 - delay)
         }
+        #expect(samples.count > 1)
 
         // Repeated resolver connectivity failures do not consume the terminal budget.
         let net = NetworkResolver()
@@ -200,6 +207,34 @@ struct Player031Tests {
         #expect(player.currentItem == a)
         try await wait { !player.isInteracting && player.currentItem == b }
         player.detachFeed()
+    }
+
+    actor FailingPages: HMPlaylistSource {
+        var calls = 0
+        func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+            calls += 1
+            throw URLError(.badServerResponse)
+        }
+    }
+    @Test("A failed last item falls back to previous once paging retries are exhausted")
+    func exhaustedPagingFallback() async throws {
+        var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false)
+        c.resolveAhead = 0
+        let player = HMPlayer(configuration: c)
+        defer { player.teardown() }
+        let a = HMMediaItem(id: "a", url: URL(fileURLWithPath: "/tmp/hotmic-040-a.mp4"))
+        let b = HMMediaItem(id: "b", url: URL(fileURLWithPath: "/tmp/hotmic-040-b.mp4"))
+        let source = FailingPages()
+        player.isFeedVisible = false
+        player.playlistSource = source
+        player.replaceAll([a, b], startAt: 1)
+        player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: b.id), b)
+        // While paging still has retries left, a next page may arrive: stay on the failed item.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(player.currentItem == b); #expect(player.hasMoreContent)
+        // Four attempts with 1/2/4 s waits, then the previous item takes over.
+        try await wait(until: { player.currentItem == a }, seconds: 12)
+        #expect(await source.calls >= 4); #expect(player.hasMoreContent)
     }
 
     actor NetworkResolver: HMItemResolver {

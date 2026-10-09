@@ -51,7 +51,24 @@ enum DemoContent {
 
     static let reel: [HMMediaItem] = clips.compactMap(bundled)
 
+    /// The feed: the bundled reel, plus an HLS rendition of `coach-mic` second
+    /// when launched with `--hm-feed-hls-origin http://127.0.0.1:8088` (see
+    /// `bench/prepare_lab.py` and `bench/origin.py`). MP4 and HLS share one feed
+    /// and one engagement layout.
+    static var feed: [HMMediaItem] {
+        guard let origin = BenchmarkOptions().values["feed-hls-origin"],
+              let url = URL(string: origin + "/lab-hls/index.m3u8"), ["http", "https"].contains(url.scheme) else { return reel }
+        let hls = HMMediaItem(id: "coach-mic-hls", url: url, format: .hls,
+                              posterURL: Bundle.main.url(forResource: "coach-mic", withExtension: "jpg"),
+                              title: "Coach took the mic · HLS", author: "@lockerroom", durationHint: 12,
+                              metadata: ["series": "Locker Room", "aspect": "9:16", "source": "hls"])
+        var items = reel
+        items.insert(hls, at: min(1, items.count))
+        return items
+    }
+
     static var dataSource: HMPlaylistSource {
-        HMStaticPlaylistSource(items: reel, pageSize: reel.count, loopsForever: true)
+        let items = feed
+        return HMStaticPlaylistSource(items: items, pageSize: items.count, loopsForever: true)
     }
 }

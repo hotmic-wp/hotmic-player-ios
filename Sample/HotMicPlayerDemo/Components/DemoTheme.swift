@@ -15,12 +15,14 @@ enum DemoTheme {
     static func label(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .rounded)
     }
-}
 
-extension View {
-    /// Keeps white text legible over arbitrary video without a full scrim.
-    func videoLegible() -> some View {
-        shadow(color: .black.opacity(0.55), radius: 6, y: 1)
+    static func timecode(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds.rounded())
+        if total >= 3600 {
+            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+        }
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

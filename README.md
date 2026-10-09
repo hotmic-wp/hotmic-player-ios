@@ -1,139 +1,113 @@
-# HotMicPlayer 0.4.1
+# HotMicPlayer 1.0 release candidate
 
-A zero-dependency partner SDK for iOS 17+ apps embedding a vertical VOD playlist. MP4 and HLS can share one playlist. `HMPlayer` owns playlist edits, playback and events; `HMVerticalFeedView` renders video with your overlay.
+A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in your app. `HMPlayer` owns playback, five atomic playlist operations, bounded adaptive prefetch and events. Add only the integration layers you need.
 
-```swift
-import HotMicPlayer
-
-@MainActor
-func makePlayer() -> HMPlayer {
-    let player = HMPlayer(configuration: .default)
-    player.replaceAll([
-        HMMediaItem(id: "intro", source: .url(introURL, format: .mp4)),
-        HMMediaItem(id: "replay", source: .url(replayURL, format: .hls))
-    ])
-    return player
-}
-
-HMVerticalFeedView(player: player) { item, snapshot in
-    MyOverlay(item: item, snapshot: snapshot)
-}
-```
-
-### Engagement on the playback clock
-
-HotMic's chat, polls, reactions and moments render on the partner's screen, bound to the media clock, with an engagement waveform on the scrubber whose peaks are tappable. One line adds the ready-made layout:
-
-```swift
-import HotMicPlayerUI
-
-HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
-    .hmTheme(.default)                      // colors, fonts, corner radius, icons
-    .hmOverlayOptions(options)              // optional: hide parts, wire Share
-```
-
-Three layers, each usable on its own:
-
-| Layer | Product | What it is |
+| Integration level | Products | Start here |
 | --- | --- | --- |
-| Data and actions | `HotMicPlayer` | `player.engagement(for: item)` returns an observable `HMEngagement`: chat near the playhead, polls with media-time windows and the viewer's vote, reaction totals, waveform and peaks; `sendChat`, `react`, `react(_:toMessage:)`, `vote`. Capabilities declared by the source gate every action. |
-| Components | `HotMicPlayerUI` | `HMChatRail`, `HMPollCard`, `HMFloatingReactions`, `HMActionRail`, `HMComposer`, `HMEngagementScrubber`. Each takes an `HMEngagement` and reads `HMTheme` from the environment. |
-| Layouts | `HotMicPlayerUI` | `HMOverlayLayout` (full-screen vertical, TikTok-style). `HMEngagementLayout` is the extension point for the planned stacked and side-panel layouts. |
+| URLs → your feed UI | `HotMicPlayer` | [PlayerOnly Example](Examples/PlayerOnly), [getting started](Sources/HotMicPlayer/HotMicPlayer.docc/GettingStarted.md) |
+| Player + engagement overlay + your data | `HotMicPlayer`, `HotMicPlayerUI` | [PlayerWithUI Example](Examples/PlayerWithUI), [UI guide](Sources/HotMicPlayerUI/HotMicPlayerUI.docc/GettingStarted.md) |
+| HotMic content + engagement | Above plus separate `HotMicPlayerCore` | [HotMicPlayerCore package](https://github.com/hotmic-wp/hotmic-player-core-ios) |
 
-`HotMicPlayerUI` depends only on `HotMicPlayer`. Partners who build their own UI on `HMEngagement` never link it. Engagement data comes from your `HMInteractionSource` (the HotMicCore adapter will be one). Without one there is no engagement: the player uses an empty, read-only source and never shows invented content. The Sample opts into the deterministic demo source explicitly. See [Integration › Engagement](docs/INTEGRATION.md#engagement).
+## Install
 
-| Chat and poll at the playhead | Vote | Tap a peak to seek | Scrub back rewinds chat | Compose |
-| --- | --- | --- | --- | --- |
-| ![](docs/screenshots/overlay-mp4.png) | ![](docs/screenshots/poll-voted.png) | ![](docs/screenshots/marker-seek.png) | ![](docs/screenshots/scrub-back.png) | ![](docs/screenshots/composer.png) |
-| **Sent at the current time** | **Swipe: HLS item, its own engagement** | **Next MP4 item** | **Light mode** | **Dynamic Type XL** |
-| ![](docs/screenshots/chat-sent.png) | ![](docs/screenshots/next-item.png) | ![](docs/screenshots/third-item.png) | ![](docs/screenshots/light-poll.png) | ![](docs/screenshots/dynamic-type-xl.png) |
+In Xcode, add `https://github.com/hotmic-wp/hotmic-player-sdk.git` as a Package Dependency. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For a Swift package:
 
-iPhone 17 Pro simulator, Sample app with the mock source. The burned-in captions and UI in the frames belong to the source videos. Evidence: [engagement UI validation](docs/ENGAGEMENT_UI_VALIDATION.md).
+```swift
+.package(url: "https://github.com/hotmic-wp/hotmic-player-sdk.git", from: "1.0.0")
+```
 
-URL items play directly. Opaque `.reference(namespace: "partner", id: "clip")` items require an `HMItemResolver`. `HMPlaylistSource` supplies pages, and `HMInteractionSource` supplies engagement timelines and optional actions. The default interaction source is a deterministic demo. The future `HotMicPlayerCore` adapter will live in a separate package; this package has no Core dependency.
+This branch is `1.0.0-rc.1`. To evaluate the candidate after its tag is published, use `exact: "1.0.0-rc.1"`. The `from: "1.0.0"` requirement is for the final stable release and will resolve once that tag is published.
 
-| Playlist operation | Playback effect |
+## 1. Player only
+
+Given your `mp4URL` and `hlsURL`, keep a player in screen state and present the feed on the main actor:
+
+```swift
+import SwiftUI
+import HotMicPlayer
+@MainActor struct Feed: View {
+    @State private var player = HMPlayer()
+    let mp4URL: URL, hlsURL: URL
+    var body: some View {
+        HMVerticalFeedView(player: player)
+            .task { player.replaceAll([.init(id: "mp4", url: mp4URL), .init(id: "hls", url: hlsURL)]) }
+            .onDisappear { player.teardown() }
+    }
+}
+```
+
+| Playlist operation | Result |
 | --- | --- |
-| `replaceAll(_:startAt:)` | Switches to the selected entry; empty becomes idle |
-| `replaceUpcoming(_:)` | Replaces entries after current; current keeps playing |
-| `insertNext(_:)` | Inserts after current; current keeps playing |
-| `append(_:)` | Appends at the end; current keeps playing |
-| `remove(ids:)` | Preserves current unless removed; then next survivor, then previous |
+| `replaceAll(_:startAt:)` | Selects a new playlist/index; empty becomes idle. |
+| `replaceUpcoming(_:)` | Replaces entries after current, preserving playback. |
+| `insertNext(_:)` | Inserts immediately after current. |
+| `append(_:)` | Adds at the end without interrupting playback. |
+| `remove(ids:)` | Removes IDs; removing current selects next survivor, then previous. |
 
-Edits are atomic on the main actor, return a success Boolean and emit clear errors for duplicates or invalid inputs. Swipes commit by item ID. An edit cancels the move only when current or destination changes position; appends preserve it. Empty append/insert and unknown removals are silent no-ops. Completed resolutions are session-cached; pending resolutions and speculative downloads leave with their window. Removed entries release their cache ownership while shared known resources remain reusable.
+Operations run atomically on the main actor and return `Bool`; invalid edits emit an error and leave the playlist intact. IDs must be nonempty and unique. Use `play`, `pause`, `seek(to:)`, `next`, `previous`, `jump(toID:)` and `isMuted` for controls. Observe `snapshot` and consume `player.events` in a task; each subscription buffers the newest 256 ordered events. Subscribe before editing when the first event matters. `teardown()` is terminal; make a new player for a new screen lifetime.
 
-A current reference starts automatically when resolution completes, including its video surface. Its readiness is `resolving` until the URL/format arrives; TTFF includes resolution time from the selection tap or page commit (settle). Swipe and programmatic-page timing begins at commit; duplicate commits cannot reset it.
+Paging and opaque content IDs use `HMPlaylistSource` and `HMItemResolver`. See [playlist management](Sources/HotMicPlayer/HotMicPlayer.docc/PlaylistManagement.md) and [event/lifecycle contracts](docs/INTEGRATION.md).
 
-Terminal item failures emit an error and follow `HMPlayerConfiguration.failedItemPolicy`: `.skip` (default) tries the next nonfailed entry, then previous, then idle; `.stay` keeps the failed entry selected. Skips wait for a settled page and for dragging/scrubbing (`player.isInteracting`, read-only) to end. Failed entries remain in the playlist and are excluded from automatic traversal, so an all-failing list stops.
+## 2. Player + UI + your interaction source
 
-Use `play()`, `pause()`, `seek(to:)`, `next()`, `previous()`, `jump(toID:)` and `isMuted`. SwiftUI observes player state and immutable playback snapshots. Each `events` access creates an independent `AsyncStream<HMPlayerEvent>` subscription. Analytics hub/sinks remain available, including console and the optional host-provided Mux bridge.
+`MemorySource` below is your `HMInteractionSource`; [the compiled Example](Examples/PlayerWithUI/PlayerWithUI/MemorySource.swift) includes a complete in-memory implementation with chat, reactions and a poll.
 
-The default engine uses two native players and a bounded disk media cache. Partner presets are `default`, `instantStart` and `highQuality`. Experimental strategies, JSONL and benchmark controls require `@_spi(Benchmark) import HotMicPlayer`. Engine nodes, pools, video surfaces and loopback transport are internal.
-
-## Changelog
-
-### 0.4.1
-
-- Moderation source updates on `HMEngagement`: `removeMessage(id:)`, `upsertPoll(_:)`, `removePoll(id:)`, message-reaction count removal and stream-reaction removal by ID. `update(_:)` is deprecated and renamed to `upsertPoll(_:)`. Sources with reaction totals should prefer `updateReactions(_:forMessage:)`; reaction removal applies deltas.
-- Deletions remove incoming, confirmed-own and pending messages from the rail and waveform, close removed poll cards, and prevent late echoes or action completions from restoring moderated content. Immutable timelines are supported through filtered engagement queries and cached waveform aggregates.
-- Player-owned deletion records survive engagement eviction and rebuild. Removed poll IDs ignore later upserts; there is no reinstate API. Records are bounded per item to 4,096 IDs and 256 KiB of ID text; overflow hides engagement for that item rather than forgetting deletions. Records end when the item leaves the playlist or the player tears down.
-- Waveform/peak projections rebuild lazily on the next read after event mutations. Chat/reaction queries merge sorted lists without sorting each tick. Source density weighting is kept when its events already exclude deletions; otherwise moderation uses SDK aggregation.
-- Sample-only mock moderation controls: launch a Debug build with `--hm-moderation 1` to delete the newest incoming chat, the viewer's last message, the active poll or a peak's stream reactions. Add `--hm-moderation-eviction 1` to narrow the window, show rebuild evidence and send a late poll upsert.
-
-### 0.4.0
-
-- **Engagement data layer** in `HotMicPlayer`: `HMEngagement` (via `player.engagement(for:)`), `HMChatMessage`, `HMPoll`, `HMReactionEcho`, `HMEngagementCapabilities`, `HMEngagementError`. Actions are optimistic, roll back on failure, and land at the item's current media time.
-- **`HMInteractionSource` extended compatibly**: `capabilities(for:)` (default `.readOnly`), `polls(for:)` (default none), `react(_:toMessage:for:)` (default unsupported) and `engagementDidLoad(_:)` (default no-op). A 0.3 source compiles unchanged; its action controls stay hidden until it declares capabilities. `HMInteractionError` is now `LocalizedError`.
-- **Behavior change:** without an interaction source, the player now uses an empty, read-only source (no timeline events, no polls, no actions) instead of demo data. Demo engagement is opt-in Benchmark SPI: `HMPlayer(interactions: HMMockInteractionSource())`, as the Sample does.
-- The viewer's confirmed chat and stream reactions are kept by the engagement itself, so they survive scrubbing even on a timeline that ignores `append`; source echoes with the same ID are de-duplicated. Sources can return the confirmed server event from `sendChat(_ message: HMChatMessage, for:) -> HMTimelineEvent?` and `react(_ reaction: HMTimelineEvent, for:) -> HMTimelineEvent?` (both defaulted, returning nil); it replaces the local event under the server ID, so server reaction updates and echoes find it. `HMChatMessage.clientID`/`rowID` keep list identity stable across the swap.
-- Player-created engagements borrow the player's source weakly; engagements and per-item timelines follow the prefetch window (kept anywhere in the playlist once the viewer has acted in them), adopt the resolved item for references, and are cleared on `teardown()`. Items outside the playlist get an inert engagement.
-- The engagement scrubber's drag lives in gesture state: a drag cancelled by the feed, a page change or backgrounding never seeks and always ends the player interaction.
-- `HMTimelineEvent` gains optional `avatarURL`, `wallTime` and `reactions` (defaulted initializer parameters; source compatible).
-- **New product `HotMicPlayerUI`**: the components, `HMTheme`, `HMOverlayLayout`, `HMEngagementLayout`/`HMEngagementContext`, and `HMVerticalFeedView(player:transition:gravity:layout:)`.
-- Transient (connectivity) retries are jittered ±25% and only retry the current and next items while the error persists.
-- When the last item fails and paging retries are exhausted, the player falls back to the previous item instead of waiting for a page.
-
-### 0.3.1
-
-- Fixed delayed reference activation/rendering for HLS and MP4. Swipe and programmatic-page TTFF start at page commit, preserving comparison with 0.3.0.
-- Added `HMReadinessTier.resolving`. **Source compatibility:** exhaustive switches over readiness must handle this new case.
-- Added public `failedItemPolicy`: `.skip` by default or `.stay`. Terminal failures skip only after interaction ends; paging gets a chance to supply the next item before previous-item fallback.
-- Added read-only `isInteracting`, driven by feed touches and page motion. Host controls outside the feed can use `beginInteraction()` / `endInteraction()`; an unmatched begin expires after 30 seconds.
-- Connectivity/timeout errors stay selected and retry with bounded backoff. An owned `NWPathMonitor` clears remembered terminal failures when connectivity returns.
-- Added `currentIndex: Int?`, nil when idle. `activeIndex` keeps its compatibility value of zero while idle and must not be used alone to infer a current item.
-
-## Sample and Playlist lab
-
-```bash
-open Sample/HotMicPlayerDemo.xcodeproj
+```swift
+import SwiftUI
+import HotMicPlayer
+import HotMicPlayerUI
+@MainActor func partnerFeed(items: [HMMediaItem]) -> some View {
+    let player = HMPlayer(interactions: MemorySource())
+    var theme = HMTheme.default
+    theme.colors.accent = .orange
+    player.replaceAll(items)
+    return HMVerticalFeedView(player: player, layout: HMOverlayLayout.self).hmTheme(theme)
+}
 ```
 
-Select an iPhone simulator and run. The feed uses `HMOverlayLayout` with the mock interaction source. Launch options: `--hm-open-feed 0` opens the feed directly, `--hm-hud 0` hides the debug HUD, `--hm-appearance light` previews light mode, and `--hm-feed-hls-origin http://127.0.0.1:8088` mixes the HLS fixture (below) into the feed as item two. The sample uses the public API plus Benchmark SPI; `MinimalIntegration.swift` uses only the public API. Browse the bundled reel, open the feed, or tap **Playlist lab** to edit a playing list. The lab shows every operation, duplicate rejection, removal of current, empty state, navigation and delayed edits during a swipe. Paging race supplies delayed overlapping pages; the cursor and event logs prove progress through duplicates. It logs activation/position/frame continuity to `Documents/playlist-lab-operations.jsonl` and playback analytics to `Documents/BenchRuns/`.
+For a real screen, retain the player in state and tear it down as in level 1. Use `HMOverlayLayout.Options` and `.hmOverlayOptions(_:)` to choose regions, chat limits, insets and Share handling. Compose individual UI components or implement `HMEngagementLayout` for your own arrangement. See [theming](Sources/HotMicPlayerUI/HotMicPlayerUI.docc/Theming.md) and [custom sources](Sources/HotMicPlayer/HotMicPlayer.docc/EngagementAndCustomSources.md).
 
-For the lab's mixed MP4/HLS content, generate the HLS fixture from the bundled reel with an existing ffmpeg installation, then start the local bench origin:
+Without a source, engagement is empty and read-only. Sources declare supported actions, own current/next sessions, and supply media-clock timelines. Player-created engagements borrow the source weakly; sources must hold engagements weakly. Send confirmed server IDs to deduplicate echoes. Authoritative `updateReactions` counts survive engagement eviction; count-removal deltas are instance-local. Moderation deletions survive for the item's playlist lifetime, with overflow diagnostics in unified logs.
 
-```bash
-python3 bench/prepare_lab.py
-python3 bench/origin.py --root bench/generated --port 8088
+## 3. HotMic content + engagement
+
+Install [HotMicPlayerCore](https://github.com/hotmic-wp/hotmic-player-core-ios) separately and follow its README to construct its adapters. Once constructed, they plug into these public protocols:
+
+```swift
+import SwiftUI
+import HotMicPlayer
+import HotMicPlayerUI
+@MainActor func hotMicFeed(resolver: any HMItemResolver,
+                          source: any HMPlaylistSource,
+                          interactions: any HMInteractionSource) -> some View {
+    let player = HMPlayer(resolver: resolver, interactions: interactions)
+    player.playlistSource = source
+    return HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
+}
 ```
 
-The default origin field is `http://127.0.0.1:8088` for the simulator. On a physical device use the reachable address of your owned bench host. All media fixtures and results are ignored by Git. Backgrounding the lab pauses playback; returning resumes the prepared current item.
+Retain and tear down the player with the screen as in level 1. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
 
-For the delayed-reference repro, launch the Sample with `--hm-reference-lab 1` and serve the generated HLS fixture on port `18088`. The lab covers initial selection, jump, swipe and insert/next for HLS and MP4, plus resolution/media failures, `.stay`, interaction deferral and end fallback. Evidence is written to `Documents/reference-lab*.jsonl`.
+## Requirements and performance
 
-## Documentation and validation
+- Xcode 16+ / Swift 6 package tools. The package currently compiles in Swift 5 language mode.
+- iOS 17+ for the player and UI. The player/feed also compile for tvOS 17+. HotMicPlayerUI is iOS-only. macOS 14+ supports platform-independent models and tests.
+- Immutable public HTTP(S) or file VOD URLs. Live, DRM, authenticated-origin renewal and advanced HLS coverage are outside this release's supported contract.
 
-- [Moderation validation](docs/MODERATION_0.4.1_VALIDATION.md): 0.4.1 simulator evidence and build/test timings.
-- [Engagement UI validation](docs/ENGAGEMENT_UI_VALIDATION.md): 0.4.0 simulator walkthrough, screenshots, build/test timings.
-- [0.3.1 review-fix validation](docs/PLAYER_0.3.1_REVIEW_FIXES.md): current simulator evidence, commit-based TTFF and final build/test results.
-- [0.3.1 initial validation](docs/PLAYER_0.3.1_VALIDATION.md): historical before/after activation repro for the first review.
-- [Integration](docs/INTEGRATION.md): minimal adoption, paging, references, engagement and events.
-- [Architecture](docs/ARCHITECTURE.md): playback, prefetch, cache ownership and overlay-by-clock model.
-- [Public API inventory](docs/PUBLIC_API.md): every exported type and function.
-- [Benchmarking](docs/BENCHMARKING.md): milestone 1's benchmark mode and device workflows.
-- [Milestone 2 validation](docs/MILESTONE_2_VALIDATION.md): initial simulator evidence.
-- [Review fixes and validation](docs/MILESTONE_2_REVIEW_FIXES.md): all ten fixes, API visibility checks, simulator races and final build/test timings.
+Start with `HMPlayerConfiguration.default`, `.instantStart` or `.highQuality`. Defaults remain two players, a 128 MB disk cap and adaptive prefetch within app budgets. Tune window, prefix bytes/seconds, cache cap, concurrency, resolution horizon and startup bitrate using [prefetch and performance](Sources/HotMicPlayer/HotMicPlayer.docc/PrefetchAndPerformance.md). Set `managesAudioSession: false` when your host owns the audio session.
 
-`swift test` exercises platform-independent playlist, resolver, cache and timeline logic. The Sample app and simulator flow exercise the native iOS engine. Generic device builds can use `CODE_SIGNING_ALLOWED=NO`; no signing setup is required for compilation.
+Read the [benchmark guide](docs/BENCHMARKING.md) before drawing performance conclusions. Compare TTFF, stalls, bytes and memory on identical physical-device workloads; simulator smoke runs demonstrate correctness. `prefetchPlan` exposes the last applied plan and reason. Experimental thresholds, strategies and JSONL tooling require Benchmark SPI and are outside the partner contract.
 
-Paging failures use four total attempts with 1/2/4-second retry delays, then wait for navigation or an explicit `loadNextPage()`. `replaceAll` restarts the playlist source cursor at nil. Hosts that own `AVAudioSession` can use `HMPlayerConfiguration(managesAudioSession: false)`; `loops` and `startsMuted` are also public settings. See [integration contracts](docs/INTEGRATION.md).
+## Examples and documentation
+
+- [PlayerOnly](Examples/PlayerOnly): 40 lines, MP4 + HLS URLs and all five playlist buttons; public API only.
+- [PlayerWithUI](Examples/PlayerWithUI): overlay options, orange/yellow theme and an in-memory interaction source; public API only.
+- [Sample](Sample): full demo, playlist/reference labs and benchmark app. Uses Benchmark SPI deliberately. Open `Sample/HotMicPlayerDemo.xcodeproj`.
+- [Player DocC catalog](Sources/HotMicPlayer/HotMicPlayer.docc) and [UI DocC catalog](Sources/HotMicPlayerUI/HotMicPlayerUI.docc): build in Xcode with Product → Build Documentation.
+- [Public API inventory](docs/PUBLIC_API.md), [1.0 API decisions](docs/API_REVIEW_1.0.md), [release validation](docs/RELEASE_1.0_VALIDATION.md), [changelog](CHANGELOG.md).
+
+## Versioning and support
+
+From 1.0, public non-SPI API follows semantic versioning: patches fix behavior, minors add compatible API, and majors may remove or change contracts. Renames retain deprecated forwarding API with compiler fix-its. Additions to non-frozen enums should be handled with `@unknown default` in client switches. Benchmark SPI, private implementation and demo tooling may change without compatibility guarantees. Pre-release versions carry an explicit suffix and are for evaluation.
+
+Report SDK problems through [repository issues](https://github.com/hotmic-wp/hotmic-player-sdk/issues) or your HotMic partner contact. Include SDK/Xcode/iOS versions, a minimal reproduction, expected behavior, and relevant events. Use the Core package's support channel for adapter-specific issues. Remove credentials and private media URLs from shared reports.

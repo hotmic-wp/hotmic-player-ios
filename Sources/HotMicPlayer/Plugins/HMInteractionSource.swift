@@ -12,6 +12,10 @@ import Foundation
     func didLeave(_ item: HMMediaItem)
     /// Optional action; unsupported implementations throw `HMInteractionError.unsupportedAction`.
     func sendChat(_ text: String, for item: HMMediaItem) async throws
+    /// Sends the viewer's message with its client ID. Implement this instead of `sendChat(_:for:)`
+    /// to echo the message back through `HMEngagement.receive(_:)` with the same ID, which the
+    /// engagement de-duplicates. Defaults to `sendChat(message.text, for:)`.
+    func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws
     /// Optional reaction action.
     func react(_ emoji: String, for item: HMMediaItem) async throws
     /// Optional poll action.
@@ -43,6 +47,8 @@ public extension HMInteractionSource {
     func didLeave(_ item: HMMediaItem) {}
     /// Default action reports unsupported.
     func sendChat(_ text: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
+    /// Forwards to the text-only `sendChat(_:for:)`.
+    func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws { try await sendChat(message.text, for: item) }
     /// Default action reports unsupported.
     func react(_ emoji: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
     /// Default action reports unsupported.
@@ -56,8 +62,24 @@ public extension HMInteractionSource {
     /// Default sources push no updates.
     func engagementDidLoad(_ engagement: HMEngagement) {}
 }
+/// The source a player uses when none is supplied: no events, no polls, no actions.
+/// Partners never see invented engagement unless they opt into the demo source.
+@MainActor final class HMEmptyInteractionSource: HMInteractionSource {
+    func timeline(for item: HMMediaItem) -> HMStreamTimeline { HMEmptyTimeline(duration: item.durationHint ?? 0) }
+}
+
+/// A timeline with nothing on it. Appends are ignored, as the protocol default allows.
+@MainActor final class HMEmptyTimeline: HMStreamTimeline {
+    let duration: TimeInterval
+    init(duration: TimeInterval) { self.duration = max(0, duration) }
+    func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] { [] }
+    var density: [HMDensityBucket] { [] }
+    var markers: [HMTimelineMarker] { [] }
+}
+
 /// Deterministic demo engagement without network sessions: timelines, polls and
-/// every action, accepted after a short simulated round trip.
+/// every action, accepted after a short simulated round trip. Opt-in Benchmark SPI for
+/// demos; pass it as `HMPlayer(interactions:)` explicitly.
 @MainActor @_spi(Benchmark) public final class HMMockInteractionSource: HMInteractionSource {
     /// Actions the mock accepts; narrow it to preview capability gating.
     public var capabilities: HMEngagementCapabilities

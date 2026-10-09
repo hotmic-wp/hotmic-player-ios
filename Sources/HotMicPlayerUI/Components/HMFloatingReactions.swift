@@ -83,7 +83,7 @@ public struct HMFloatingReactions: View {
         // Ramp rather than switch, so the flow builds into a peak.
         let gain = (engagement.intensity(at: offset) - quietFloor) / (1 - quietFloor)
         guard gain > 0 else { pendingWeight = 0; return }
-        let reactions = engagement.timeline.events(in: lastSampledTime...offset).filter { $0.kind == .reaction }
+        let reactions = engagement.reactions(in: lastSampledTime...offset)
         guard !reactions.isEmpty else { return }
         pendingWeight += reactions.reduce(0) { $0 + Double($1.magnitude) } * gain
 

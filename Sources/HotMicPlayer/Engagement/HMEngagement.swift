@@ -6,15 +6,17 @@ import Observation
 ///
 /// This is the headless layer. `HotMicPlayerUI` renders it, but a partner with its
 /// own design reads the same state and calls the same actions. Get one from
-/// `HMPlayer.engagement(for:)`; it lives as long as its item stays in the playlist.
+/// `HMPlayer.engagement(for:)`; the player keeps it while its item is near the
+/// playhead, or while it holds the viewer's own messages, reactions or votes.
 ///
 /// Queries take a media time and return what belongs *at* that time, so scrubbing
 /// back replays the conversation exactly as it happened. Every query reads
 /// `revision`, so a SwiftUI body that calls one re-renders when the state changes.
 @MainActor @Observable public final class HMEngagement {
 
-    /// The item this state belongs to.
-    public let item: HMMediaItem
+    /// The item this state belongs to. Updated to the resolved item once a reference resolves,
+    /// so the source's actions receive the URL, format and metadata the resolver supplied.
+    public private(set) var item: HMMediaItem
     /// The underlying clock-indexed event store.
     @ObservationIgnored public let timeline: HMStreamTimeline
     /// Actions the source supports for this item.
@@ -37,9 +39,12 @@ import Observation
     /// read as doing nothing.
     public static let viewerReactionWeight = 4
 
-    /// Strong: a source passed straight to `init` (previews, tests) must outlive the call.
-    /// Sources keep the engagement weakly (see `engagementDidLoad`), so there is no cycle.
-    @ObservationIgnored private let source: HMInteractionSource?
+    /// Standalone engagements (previews, tests) retain their source, which must outlive the call.
+    /// Player-created ones don't: the player owns its source, and the source keeps engagements
+    /// weakly (see `engagementDidLoad`), so neither direction forms a cycle.
+    @ObservationIgnored private let retainedSource: HMInteractionSource?
+    @ObservationIgnored private weak var borrowedSource: HMInteractionSource?
+    private var source: HMInteractionSource? { retainedSource ?? borrowedSource }
     @ObservationIgnored private let mediaClock: @MainActor () -> TimeInterval
     private var pollOrder: [String] = []
     private var pollsByID: [String: HMPoll] = [:]
@@ -49,18 +54,33 @@ import Observation
     private var ownMessageReactions: [String: Set<String>] = [:]
     private var ownMessageIDs: Set<String> = []
     private var pendingMessages: [HMChatMessage] = []
+    /// The viewer's confirmed chat and stream reactions, by offset. Kept here as well as appended
+    /// to the timeline, because a timeline is free to ignore `append` (the protocol default does);
+    /// queries merge this list in and de-duplicate by ID, so a source echo can't double them.
+    private var ownEvents: [HMTimelineEvent] = []
+    private var ownEventIDs: Set<String> = []
     private var votesInFlight: Set<String> = []
+    private var votedPolls: Set<String> = []
     @ObservationIgnored private var nextLocalNumber = 0
     @ObservationIgnored private var echoNumber = 0
 
     /// Creates engagement state over a timeline. `HMPlayer.engagement(for:)` does this for you;
     /// call it directly to drive components without a player, for example in previews.
-    public init(item: HMMediaItem, timeline: HMStreamTimeline, source: HMInteractionSource?,
-                capabilities: HMEngagementCapabilities? = nil, polls: [HMPoll]? = nil,
-                mediaClock: @escaping @MainActor () -> TimeInterval = { 0 }) {
+    /// The engagement retains `source`.
+    public convenience init(item: HMMediaItem, timeline: HMStreamTimeline, source: HMInteractionSource?,
+                            capabilities: HMEngagementCapabilities? = nil, polls: [HMPoll]? = nil,
+                            mediaClock: @escaping @MainActor () -> TimeInterval = { 0 }) {
+        self.init(item: item, timeline: timeline, source: source, retainsSource: true, capabilities: capabilities,
+                  polls: polls, mediaClock: mediaClock)
+    }
+
+    init(item: HMMediaItem, timeline: HMStreamTimeline, source: HMInteractionSource?, retainsSource: Bool,
+         capabilities: HMEngagementCapabilities? = nil, polls: [HMPoll]? = nil,
+         mediaClock: @escaping @MainActor () -> TimeInterval = { 0 }) {
         self.item = item
         self.timeline = timeline
-        self.source = source
+        self.retainedSource = retainsSource ? source : nil
+        self.borrowedSource = source
         self.capabilities = capabilities ?? source?.capabilities(for: item) ?? .readOnly
         self.mediaClock = mediaClock
         for poll in polls ?? source?.polls(for: item) ?? [] { insert(poll) }
@@ -79,8 +99,10 @@ import Observation
     /// past the timeline (a looping clip whose duration hint is short) wraps, so
     /// the overlay replays rather than falling silent.
     public func timelineOffset(forMediaTime time: TimeInterval) -> TimeInterval {
+        guard time.isFinite, time > 0 else { return 0 }
+        // A timeline that doesn't know its length can't wrap; keep the media time.
         let span = timeline.duration
-        guard span > 0, time.isFinite, time > 0 else { return 0 }
+        guard span > 0 else { return time }
         return time <= span ? time : time.truncatingRemainder(dividingBy: span)
     }
 
@@ -105,13 +127,19 @@ import Observation
         guard limit > 0 else { return [] }
         let now = timelineOffset(forMediaTime: mediaTime)
         let window = max(0, now - max(0, lookback))...max(0, now)
-        var result = timeline.events(in: window).filter { $0.kind == .chat }.map(message(from:))
+        let chat = merged(timeline.events(in: window), own(in: window)).filter { $0.kind == .chat }
+        var result = chat.map(message(from:))
         let pending = pendingMessages.filter { window.contains($0.offset) }
-        if !pending.isEmpty {
-            result += pending
-            result.sort { $0.offset < $1.offset }
-        }
+        if !pending.isEmpty { result += pending }
+        if result.count > 1 { result.sort { $0.offset < $1.offset } }
         return Array(result.suffix(limit))
+    }
+
+    /// Stream reactions whose offset falls in a range of the engagement timeline, including the
+    /// viewer's own. This is what floating reactions sample as the playhead advances.
+    public func reactions(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
+        _ = revision
+        return merged(timeline.events(in: range), own(in: range)).filter { $0.kind == .reaction }
     }
 
     /// Polls on screen at a media time: open ones, then closed ones for `resultsLinger` seconds.
@@ -150,14 +178,14 @@ import Observation
                                     isOwn: true, delivery: .sending)
         pendingMessages.append(message); ownMessageIDs.insert(id); changed()
         do {
-            try await perform { try await $0.sendChat(trimmed, for: self.item) }
+            try await perform { try await $0.sendChat(message, for: self.item) }
         } catch {
             pendingMessages.removeAll { $0.id == id }; ownMessageIDs.remove(id); changed()
             throw fail(error)
         }
         pendingMessages.removeAll { $0.id == id }
-        timeline.append(HMTimelineEvent(id: id, offset: offset, kind: .chat, author: message.author,
-                                        text: trimmed, wallTime: message.wallTime))
+        keepOwn(HMTimelineEvent(id: id, offset: offset, kind: .chat, author: message.author,
+                                text: trimmed, wallTime: message.wallTime))
         succeeded()
     }
 
@@ -175,7 +203,7 @@ import Observation
         } catch { throw fail(error) }
         let event = HMTimelineEvent(id: localID("reaction"), offset: offset, kind: .reaction, emoji: emoji,
                                     magnitude: Self.viewerReactionWeight)
-        timeline.append(event); fold(event)
+        keepOwn(event); fold(event)
         succeeded()
     }
 
@@ -222,7 +250,7 @@ import Observation
             changed()
             throw fail(error)
         }
-        votesInFlight.remove(pollID)
+        votesInFlight.remove(pollID); votedPolls.insert(pollID)
         succeeded()
     }
 
@@ -230,8 +258,11 @@ import Observation
 
     /// Adds an event from the source, for example a message or reaction arriving over a socket.
     /// It lands on the timeline at its own offset and folds into every aggregate.
+    /// An echo of the viewer's own event (same ID) is not counted twice.
     public func receive(_ event: HMTimelineEvent) {
-        timeline.append(event); fold(event); changed()
+        timeline.append(event)
+        if !ownEventIDs.contains(event.id) { fold(event) }
+        changed()
     }
 
     /// Inserts or replaces a poll with the source's authoritative state (counts, closure).
@@ -272,8 +303,42 @@ import Observation
     }
 
     private func timelineEvent(_ id: String) -> HMTimelineEvent? {
+        if ownEventIDs.contains(id) { return ownEvents.first { $0.id == id } }
         // Message ids carry no offset, so this is a scan; it only runs on an action or a source update.
-        timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude).first { $0.id == id }
+        return timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude).first { $0.id == id }
+    }
+
+    private func own(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
+        ownEvents.isEmpty ? [] : ownEvents.filter { range.contains($0.offset) }
+    }
+
+    /// Source events first, then own events the source doesn't already have, by ID.
+    private func merged(_ source: [HMTimelineEvent], _ own: [HMTimelineEvent]) -> [HMTimelineEvent] {
+        guard !own.isEmpty else { return source }
+        let seen = Set(source.map(\.id))
+        let extra = own.filter { !seen.contains($0.id) }
+        return extra.isEmpty ? source : (source + extra).sorted { $0.offset < $1.offset }
+    }
+
+    private func keepOwn(_ event: HMTimelineEvent) {
+        let index = ownEvents.firstIndex { $0.offset > event.offset } ?? ownEvents.endIndex
+        ownEvents.insert(event, at: index); ownEventIDs.insert(event.id)
+        timeline.append(event)
+    }
+
+    // MARK: - Player support
+
+    /// Whether the viewer has sent, reacted or voted here, or has an action in flight. The player
+    /// keeps such engagements when their item leaves the window, so that state isn't lost.
+    var holdsViewerState: Bool {
+        !ownEvents.isEmpty || !pendingMessages.isEmpty || !votesInFlight.isEmpty || !votedPolls.isEmpty
+            || !ownMessageReactions.values.allSatisfy(\.isEmpty)
+    }
+
+    /// Adopts the resolved form of the same entry.
+    func updateItem(_ resolved: HMMediaItem) {
+        guard resolved.id == item.id, resolved != item else { return }
+        item = resolved
     }
 
     private func messageExists(_ id: String) -> Bool { timelineEvent(id)?.kind == .chat }

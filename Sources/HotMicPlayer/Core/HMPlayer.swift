@@ -118,6 +118,12 @@ import Observation
     @ObservationIgnored private var interactionNext: HMMediaItem?
     @ObservationIgnored private var timelines: [HMMediaItem: HMStreamTimeline] = [:]
     @ObservationIgnored private var engagements: [HMMediaItem: HMEngagement] = [:]
+    /// Inert stand-ins for items outside the playlist (a cell animating out), reused across body passes.
+    @ObservationIgnored private var detachedEngagements: [String: HMEngagement] = [:]
+    /// Playlist position by ID, rebuilt lazily after an edit; overlay bodies look items up on every tick.
+    @ObservationIgnored private var idIndex: [String: Int] = [:]
+    @ObservationIgnored private var itemsVersion = 0
+    @ObservationIgnored private var idIndexVersion = -1
     @ObservationIgnored private var subscribers: [UUID: AsyncStream<HMPlayerEvent>.Continuation] = [:]
     @ObservationIgnored private var proxy: HMCacheProxy?
     @ObservationIgnored private var transportTask: Task<Void, Never>?
@@ -147,8 +153,8 @@ import Observation
     public init(configuration: HMPlayerConfiguration = .default, resolver: HMItemResolver? = nil,
                 interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil) {
         self.configuration = configuration; self.resolver = resolver
-        // Without a source, demo engagement is display-only: no action controls a viewer could mistake for real.
-        self.interactions = interactions ?? HMMockInteractionSource(capabilities: .readOnly)
+        // Without a source there is no engagement: an empty, read-only timeline. Demo content is opt-in.
+        self.interactions = interactions ?? HMEmptyInteractionSource()
         self.analytics = analytics ?? HMAnalyticsHub(); isMuted = configuration.startsMuted
         pool = HMPlayerPool(configuration: configuration)
         pool.onEvent = { [weak self] event, item in self?.handle(event, item: item) }
@@ -188,7 +194,7 @@ import Observation
         // A playlist edit invalidates the automatic-failure request's provenance.
         if failurePageID != nil { requestedPageID = nil; pageRequestID = UUID() }
         failurePageID = nil; deferredFailureCommit = nil
-        playlist = result
+        playlist = result; itemsVersion += 1
         networkFailures = networkFailures.filter { items.contains($0.key) }
         terminalFailures.formIntersection(Set(items))
         if replacingCurrent { terminalFailures.removeAll(); networkFailures.removeAll(); failureIdle = false }
@@ -415,7 +421,13 @@ import Observation
         let currentIDs = Set(items.map(\.id))
         resumePositions = resumePositions.filter { currentIDs.contains($0.key) }
         timelines = timelines.filter { items.contains($0.key) }
-        engagements = engagements.filter { items.contains($0.key) }
+        // Engagement follows the window (plus the entry just behind current, for a swipe back). One
+        // the viewer has sent, reacted or voted in survives anywhere in the playlist so that isn't lost.
+        let keep = Set(window + [currentItem].compactMap { $0 } + (items.indices.contains(activeIndex - 1) ? [items[activeIndex - 1]] : []))
+        engagements = engagements.filter { items.contains($0.key) && (keep.contains($0.key) || $0.value.holdsViewerState) }
+        for (entry, engagement) in engagements {
+            if let resolved = resolutions.cached(entry) ?? resolutions.cached(entry, requireFormat: false) { engagement.updateItem(resolved) }
+        }
         resolutionFailures = resolutionFailures.filter { items.contains($0.key) }
         pool.trim(keeping: Set(([currentItem].compactMap { $0 } + configuration.warmOffsets.compactMap { offset in
             let i = activeIndex + offset; return items.indices.contains(i) ? items[i] : nil
@@ -589,23 +601,43 @@ import Observation
     public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.snapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
     /// Clock-indexed overlay data. Network session lifecycle belongs to the interaction hooks, not this accessor.
     public func timeline(for item: HMMediaItem) -> HMStreamTimeline {
-        let entry = items.first { $0.id == item.id } ?? item
+        let entry = entry(withID: item.id) ?? item
         if let existing = timelines[entry] { return existing }
         let created = interactions.timeline(for: resolutions.cached(entry) ?? entry); timelines[entry] = created; return created
     }
-    /// Observable chat, polls, reactions and actions for an entry, on its media clock. Created once per
-    /// entry and kept while it stays in the playlist; actions default to the entry's current playback time.
+    /// Observable chat, polls, reactions and actions for an entry, on its media clock; actions default
+    /// to the entry's current playback time. Kept while the entry is near the playhead, or anywhere in
+    /// the playlist once the viewer has acted in it; otherwise rebuilt (and `engagementDidLoad` called
+    /// again) when it comes back. An item that isn't in the playlist gets an inert, empty engagement.
     public func engagement(for item: HMMediaItem) -> HMEngagement {
-        let entry = items.first { $0.id == item.id } ?? item
+        guard let entry = entry(withID: item.id) else { return detachedEngagement(for: item) }
         if let existing = engagements[entry] { return existing }
-        let display = resolutions.cached(entry) ?? entry
-        let created = HMEngagement(item: display, timeline: timeline(for: entry), source: interactions) { [weak self] in
+        let display = resolutions.cached(entry) ?? resolutions.cached(entry, requireFormat: false) ?? entry
+        // The player owns the source; its engagements borrow it.
+        let created = HMEngagement(item: display, timeline: timeline(for: entry), source: interactions,
+                                   retainsSource: false) { [weak self] in
             self?.snapshot(for: entry).currentTime ?? 0
         }
-        // Entries outside the playlist are served but not cached, matching `timeline(for:)`'s lookup.
-        if items.contains(entry) { engagements[entry] = created }
+        engagements[entry] = created
         interactions.engagementDidLoad(created)
         return created
+    }
+    var cachedEngagementCount: Int { engagements.count }
+    private func detachedEngagement(for item: HMMediaItem) -> HMEngagement {
+        if let existing = detachedEngagements[item.id] { return existing }
+        if detachedEngagements.count >= 8 { detachedEngagements.removeAll() }
+        let inert = HMEngagement(item: item, timeline: HMEmptyTimeline(duration: item.durationHint ?? 0), source: nil,
+                                 retainsSource: false, capabilities: .readOnly, polls: [])
+        detachedEngagements[item.id] = inert
+        return inert
+    }
+    private func entry(withID id: String) -> HMMediaItem? {
+        if idIndexVersion != itemsVersion {
+            idIndex = Dictionary(items.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+            idIndexVersion = itemsVersion
+        }
+        guard let index = idIndex[id], items.indices.contains(index), items[index].id == id else { return nil }
+        return items[index]
     }
     var currentNode: HMPlayerNode? { currentItem.flatMap { resolutions.cached($0) }.flatMap { pool.existingNode(for: $0) } }
     func node(for item: HMMediaItem) -> HMPlayerNode? { resolutions.cached(item).flatMap { pool.existingNode(for: $0) } }
@@ -641,6 +673,7 @@ import Observation
         if let proxy { Task { _ = await proxy.finish() } }
         for node in pool.nodes { analytics.detach(playerKey: node.id) }; pool.releaseAll()
         finishSubscribers()
+        engagements.removeAll(); detachedEngagements.removeAll(); timelines.removeAll()
         if configuration.managesAudioSession { HMAudioSession.deactivate() }
     }
     private func stopWork() {
@@ -687,7 +720,7 @@ import Observation
         if event.kind == .viewStart || event.kind == .firstFrame { metrics["live_player_count"] = Double(pool.nodes.count); metrics["memory_bytes"] = HMMemorySample.footprint() }
         analytics.emit(HMPlaybackEvent(kind: event.kind, itemID: event.itemID, timestamp: event.timestamp,
             monotonicTime: event.monotonicTime, position: event.position, metrics: metrics, properties: event.properties), item: item)
-        let entry = items.first { $0.id == item.id } ?? item
+        let entry = entry(withID: item.id) ?? item
         switch event.kind {
         case .preloadReady:
             networkFailures[entry] = nil

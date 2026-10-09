@@ -180,4 +180,139 @@ struct EngagementTests {
         let mockPoll = try #require(mock.polls(for: HMMediaItem(id: "x", url: item.url!, durationHint: 10)).first)
         #expect(abs(mockPoll.opensAt - 2) < 1e-9 && abs((mockPoll.closesAt ?? 0) - 7) < 1e-9 && mockPoll.options.count >= 2)
     }
+
+    /// A partner timeline that keeps the protocol's default, ignoring `append`.
+    final class FixedTimeline: HMStreamTimeline {
+        let duration: TimeInterval
+        let fixed: [HMTimelineEvent]
+        init(duration: TimeInterval, events: [HMTimelineEvent]) { self.duration = duration; fixed = events }
+        func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] { fixed.filter { range.contains($0.offset) } }
+        var density: [HMDensityBucket] { [] }
+        var markers: [HMTimelineMarker] { [] }
+    }
+
+    final class EchoingSource: HMInteractionSource {
+        var sentIDs: [String] = []
+        func timeline(for item: HMMediaItem) -> HMStreamTimeline { FixedTimeline(duration: 30, events: []) }
+        func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { .all }
+        func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws { sentIDs.append(message.id) }
+        func react(_ emoji: String, for item: HMMediaItem) async throws {}
+    }
+
+    @Test("The viewer's sent chat and reactions persist on a timeline that ignores append, and echoes don't double them")
+    func ownEventsPersist() async throws {
+        let source = EchoingSource()
+        var clock: TimeInterval = 5
+        let engagement = HMEngagement(item: item, timeline: FixedTimeline(duration: 30, events: [chat(4, "c4")]),
+                                      source: source, mediaClock: { clock })
+        try await engagement.sendChat("still here")
+        try await engagement.react("🔥")
+        // The source got the client ID, so it can echo with it.
+        let id = try #require(source.sentIDs.first)
+        #expect(engagement.messages(near: 5, lookback: 2).map(\.text) == ["t-c4", "still here"])
+        // Scrub away and back: still there, although the timeline never stored it.
+        clock = 1
+        #expect(engagement.messages(near: 1, lookback: 2).isEmpty)
+        #expect(engagement.messages(near: 6, lookback: 2).map(\.id).contains(id))
+        #expect(engagement.reactions(in: 4...6).map(\.emoji) == ["🔥"])
+        #expect(engagement.reactionTotals == ["🔥": HMEngagement.viewerReactionWeight])
+        // The source echoes the message with the same ID: one copy, and a reaction echo isn't recounted.
+        engagement.receive(HMTimelineEvent(id: id, offset: 5, kind: .chat, author: "You", text: "still here"))
+        let reaction = try #require(engagement.reactions(in: 4...6).first)
+        engagement.receive(reaction)
+        #expect(engagement.messages(near: 6, lookback: 2).filter { $0.id == id }.count == 1)
+        #expect(engagement.reactionTotals == ["🔥": HMEngagement.viewerReactionWeight])
+        #expect(engagement.holdsViewerState)
+
+        // Ownership: a standalone engagement retains its source; a borrowed one does not.
+        var temporary: Source? = Source(.all)
+        let borrowed = HMEngagement(item: item, timeline: FixedTimeline(duration: 30, events: []), source: temporary,
+                                    retainsSource: false)
+        weak let released = temporary
+        temporary = nil
+        #expect(released == nil)
+        await #expect(throws: HMInteractionError.unsupportedAction) { try await borrowed.sendChat("gone") }
+    }
 }
+
+#if canImport(AVFoundation) && !os(macOS)
+@Suite("Player-owned engagement") @MainActor
+struct PlayerEngagementTests {
+    final class CountingSource: HMInteractionSource {
+        var loads: [String] = []
+        func timeline(for item: HMMediaItem) -> HMStreamTimeline { HMMockTimeline(itemID: item.id, duration: 10) }
+        func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { .all }
+        func sendChat(_ text: String, for item: HMMediaItem) async throws {}
+        func engagementDidLoad(_ engagement: HMEngagement) { loads.append(engagement.item.id) }
+    }
+    actor InstantResolver: HMItemResolver {
+        func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
+            HMResolvedItem(url: URL(fileURLWithPath: "/tmp/hotmic-040-\(ref.id).mp4"), format: .mp4)
+        }
+    }
+
+    private func items(_ count: Int) -> [HMMediaItem] {
+        (0..<count).map { HMMediaItem(id: "i\($0)", url: URL(fileURLWithPath: "/tmp/hotmic-040-i\($0).mp4")) }
+    }
+
+    @Test("No source means no content; engagements are cached, windowed, kept with viewer state and cleared on teardown")
+    func lifecycle() async throws {
+        var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false)
+        c.resolveAhead = 0
+        // Default: an inert source, never demo content.
+        let plain = HMPlayer(configuration: c)
+        plain.isFeedVisible = false
+        plain.replaceAll(items(2))
+        let empty = plain.engagement(for: plain.items[0])
+        #expect(empty.capabilities == .readOnly && empty.polls.isEmpty && empty.markers.isEmpty && empty.density.isEmpty)
+        #expect(empty.messages(near: 5, lookback: 60).isEmpty && empty.reactionTotals.isEmpty)
+        #expect(!(plain.timeline(for: plain.items[0]) is HMMockTimeline))
+        plain.teardown()
+
+        let source = CountingSource()
+        let player = HMPlayer(configuration: c, interactions: source)
+        defer { player.teardown() }
+        player.isFeedVisible = false
+        let list = items(6)
+        player.replaceAll(list)
+        let first = player.engagement(for: list[0])
+        #expect(player.engagement(for: list[0]) === first)
+        // Items outside the playlist get one inert engagement, reused, and never reach the source.
+        let stranger = HMMediaItem(id: "gone", url: URL(fileURLWithPath: "/tmp/gone.mp4"))
+        let inert = player.engagement(for: stranger)
+        #expect(player.engagement(for: stranger) === inert && inert.capabilities == .readOnly)
+        #expect(source.loads == ["i0"])
+
+        // Far entries are evicted on the next window refresh unless the viewer acted in them.
+        let far = player.engagement(for: list[4]), kept = player.engagement(for: list[5])
+        try await kept.sendChat("hold on to this")
+        player.jump(toID: "i1")
+        #expect(player.engagement(for: list[0]) === first) // Previous entry stays for a swipe back.
+        #expect(player.engagement(for: list[5]) === kept)
+        #expect(player.engagement(for: list[4]) !== far)
+        #expect(source.loads.filter { $0 == "i4" }.count == 2)
+        // Removing an entry drops its engagement even with viewer state.
+        player.remove(ids: ["i5"])
+        #expect(player.cachedEngagementCount <= 3)
+        player.teardown()
+        #expect(player.cachedEngagementCount == 0)
+    }
+
+    @Test("A reference's engagement adopts the resolved item")
+    func resolvedItem() async throws {
+        var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false, failedItemPolicy: .stay)
+        c.resolveAhead = 0
+        let source = CountingSource()
+        let player = HMPlayer(configuration: c, resolver: InstantResolver(), interactions: source)
+        defer { player.teardown() }
+        let reference = HMMediaItem.reference("hotmic", id: "ref")
+        player.replaceAll([reference])
+        let engagement = player.engagement(for: reference)
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while engagement.item.url == nil, ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(engagement.item.id == reference.id)
+        #expect(engagement.item.url?.lastPathComponent == "hotmic-040-ref.mp4")
+    }
+}
+#endif
+

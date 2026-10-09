@@ -65,3 +65,15 @@ Start with `.default`, `.instantStart` or `.highQuality`; see <doc:PrefetchAndPe
 For paging implement ``HMPlaylistSource``. For opaque identifiers use `.reference(namespace:id:)` items and an ``HMItemResolver``. See <doc:PlaylistManagement>. A player without an interaction source has empty, read-only engagement.
 
 Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Examples/PlayerOnly) for a complete 40-line app with all five operations. It links only public API and requires no backend.
+
+## Handle future enum cases
+
+Minor releases may add cases to non-frozen public enums such as `HMPlayerEvent` and `HMPlaybackState`. Use `@unknown default` in client switches to provide a fallback for future cases:
+
+```swift
+switch player.snapshot.state {
+case .playing: showPlaying()
+case .idle, .loading, .ready, .paused, .buffering, .failed: showOtherState()
+@unknown default: showOtherState()
+}
+```

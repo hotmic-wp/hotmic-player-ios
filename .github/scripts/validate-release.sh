@@ -17,6 +17,7 @@ run_step() {
   echo "$name: $((SECONDS - began))s"
   echo "::endgroup::"
 }
+run_step partner-docs bash .github/scripts/check-partner-docs.sh
 # Shared DerivedData reuses the dependency-free package across every app.
 run_step package xcodebuild build -scheme HotMicPlayer-Package \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" CODE_SIGNING_ALLOWED=NO
@@ -42,14 +43,16 @@ run_step docbuild xcodebuild docbuild -scheme HotMicPlayer-Package \
 run_step public-docs python3 bench/export_public_api.py \
   --module-dir "$derived/Build/Products/Debug-iphonesimulator" \
   --graphs "$validation_dir/symbolgraphs" --output "$validation_dir/PUBLIC_API.md"
+run_step public-api-drift diff -u docs/PUBLIC_API.md "$validation_dir/PUBLIC_API.md"
 if [ "${BUILD_ONLY:-0}" != 1 ]; then
   simulator_id="${SIMULATOR_UDID:-}"
   created_simulator=0
   if [ -z "$simulator_id" ]; then
     # A CI-owned device avoids choosing an unrelated developer simulator.
-    runtime=$(xcrun simctl list runtimes -j | python3 -c \
-      'import json,sys; r=[r for r in json.load(sys.stdin)["runtimes"] if r["isAvailable"] and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]; print(sorted(r,key=lambda r:tuple(map(int,r["version"].split("."))))[-1]["identifier"])')
-    simulator_id=$(xcrun simctl create HotMic-player-ci com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro "$runtime")
+    selection=$(xcrun simctl list -j | python3 .github/scripts/select-simulator.py)
+    runtime=${selection%%$'\n'*}
+    simulator_type=${selection#*$'\n'}
+    simulator_id=$(xcrun simctl create HotMic-player-ci "$simulator_type" "$runtime")
     created_simulator=1
     trap 'if [ "$created_simulator" = 1 ]; then xcrun simctl delete "$simulator_id"; fi' EXIT
     xcrun simctl boot "$simulator_id"

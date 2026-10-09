@@ -198,7 +198,7 @@ import Observation
     ///
     /// Access on the main actor.
     public func messages(near mediaTime: TimeInterval, lookback: TimeInterval = 20, limit: Int = 6) -> [HMChatMessage] {
-        _ = revision; synchronizeModeration()
+        _ = revision
         guard limit > 0 else { return [] }
         let now = timelineOffset(forMediaTime: mediaTime)
         let window = max(0, now - max(0, lookback))...max(0, now)
@@ -212,7 +212,7 @@ import Observation
     ///
     /// Access on the main actor.
     public func reactions(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
-        _ = revision; synchronizeModeration()
+        _ = revision
         return merged(timeline.events(in: range), own(in: range)).filter { $0.kind == .reaction }
     }
 

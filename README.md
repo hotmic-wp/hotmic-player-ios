@@ -104,10 +104,10 @@ Read the [benchmark guide](docs/BENCHMARKING.md) before drawing performance conc
 - [PlayerWithUI](Examples/PlayerWithUI): overlay options, orange/yellow theme and an in-memory interaction source; public API only.
 - [Sample](Sample): full demo, playlist/reference labs and benchmark app. Uses Benchmark SPI deliberately. Open `Sample/HotMicPlayerDemo.xcodeproj`.
 - [Player DocC catalog](Sources/HotMicPlayer/HotMicPlayer.docc) and [UI DocC catalog](Sources/HotMicPlayerUI/HotMicPlayerUI.docc): build in Xcode with Product → Build Documentation.
-- [Public API inventory](docs/PUBLIC_API.md), [1.0 API decisions](docs/API_REVIEW_1.0.md), [release validation](docs/RELEASE_1.0_VALIDATION.md), [changelog](CHANGELOG.md).
+- [Public API inventory](docs/PUBLIC_API.md), [1.0 API decisions](docs/API_REVIEW_1.0.md), [changelog](CHANGELOG.md).
 
 ## Versioning and support
 
-From 1.0, public non-SPI API follows semantic versioning: patches fix behavior, minors add compatible API, and majors may remove or change contracts. Renames retain deprecated forwarding API with compiler fix-its. Additions to non-frozen enums should be handled with `@unknown default` in client switches. Benchmark SPI, private implementation and demo tooling may change without compatibility guarantees. Pre-release versions carry an explicit suffix and are for evaluation.
+From 1.0, public non-SPI API follows semantic versioning: patches fix behavior, minors add compatible API, and majors may remove or change contracts. Renames retain deprecated forwarding API with compiler fix-its. New cases may be added to non-frozen public enums in minor releases; use `@unknown default` in client switches. Benchmark SPI, private implementation and demo tooling may change without compatibility guarantees. Pre-release versions carry an explicit suffix and are for evaluation.
 
 Report SDK problems through [repository issues](https://github.com/hotmic-wp/hotmic-player-sdk/issues) or your HotMic partner contact. Include SDK/Xcode/iOS versions, a minimal reproduction, expected behavior, and relevant events. Use the Core package's support channel for adapter-specific issues. Remove credentials and private media URLs from shared reports.

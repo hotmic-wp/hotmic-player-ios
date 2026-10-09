@@ -197,3 +197,15 @@ All source pushes and actions run on the main actor outside SwiftUI bodies. Shar
 Use `updateReactions(_:forMessage:)` for authoritative message-reaction totals, including viewer reactions. Those counts survive engagement eviction and can arrive before a message. `removeReaction(_:forMessage:count:isOwn:)` is an instance-local count delta: deliver it once, and follow with authoritative totals if moderation must survive eviction. Records share the 4,096-ID / 256 KiB per-item budget, counting UTF-8 IDs, emoji keys and integer payloads. Overflow hides engagement until the item leaves the playlist or teardown and emits one error in unified logs under subsystem `com.hotmic.player`, category `moderation`, including the item ID and limits.
 
 See [API review](API_REVIEW_1.0.md), the [DocC player guide](../Sources/HotMicPlayer/HotMicPlayer.docc/GettingStarted.md), and the [separate Core adapter](https://github.com/hotmic-wp/hotmic-player-core-ios).
+
+## Enum evolution
+
+New cases may be added to non-frozen public enums in minor releases. Include `@unknown default` in client switches so new events and states have a fallback, while the compiler can flag cases missing from your current SDK version:
+
+```swift
+switch player.snapshot.state {
+case .playing: showPlaying()
+case .idle, .loading, .ready, .paused, .buffering, .failed: showOtherState()
+@unknown default: showOtherState()
+}
+```

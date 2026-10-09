@@ -14,7 +14,7 @@ struct Player031Tests {
             return try await withCheckedThrowingContinuation { gate = $0 }
         }
         func complete(format: HMMediaItem.Format) {
-            gate?.resume(returning: HMResolvedItem(url: URL(fileURLWithPath: "/tmp/hotmic-031-fixture.\(format == .hls ? "m3u8" : "mp4")"), format: format))
+            gate?.resume(returning: HMResolvedItem(url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-fixture.\(format == .hls ? "m3u8" : "mp4")"), format: format))
             gate = nil
         }
     }
@@ -48,7 +48,7 @@ struct Player031Tests {
                 player.replaceAll([entry])
             } else {
                 player.isFeedVisible = false
-                player.replaceAll([HMMediaItem(id: "seed", url: URL(fileURLWithPath: "/tmp/hotmic-031-seed.mp4")), entry])
+                player.replaceAll([HMMediaItem(id: "seed", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-seed.mp4")), entry])
                 if mode == "programmatic" { player.requestPage(at: 1) }
                 try await Task.sleep(for: .milliseconds(150))
                 clock = ProcessInfo.processInfo.systemUptime
@@ -86,8 +86,8 @@ struct Player031Tests {
         c.resolveAhead = 0
         let player = HMPlayer(configuration: c, resolver: resolver)
         let bad = HMMediaItem.reference("hotmic", id: "bad")
-        let a = HMMediaItem(id: "a", url: URL(fileURLWithPath: "/tmp/hotmic-031-a.mp4"))
-        let b = HMMediaItem(id: "b", url: URL(fileURLWithPath: "/tmp/hotmic-031-b.mp4"))
+        let a = HMMediaItem(id: "a", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-a.mp4"))
+        let b = HMMediaItem(id: "b", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-b.mp4"))
         var errors = 0
         let events = player.events
         let consumer = Task { for await event in events { if case .error = event { errors += 1 } } }
@@ -222,8 +222,8 @@ struct Player031Tests {
         c.resolveAhead = 0
         let player = HMPlayer(configuration: c)
         defer { player.teardown() }
-        let a = HMMediaItem(id: "a", url: URL(fileURLWithPath: "/tmp/hotmic-040-a.mp4"))
-        let b = HMMediaItem(id: "b", url: URL(fileURLWithPath: "/tmp/hotmic-040-b.mp4"))
+        let a = HMMediaItem(id: "a", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-040-a.mp4"))
+        let b = HMMediaItem(id: "b", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-040-b.mp4"))
         let source = FailingPages()
         player.isFeedVisible = false
         player.playlistSource = source
@@ -244,7 +244,7 @@ struct Player031Tests {
         func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
             calls += 1
             if offline { throw URLError(.notConnectedToInternet) }
-            return HMResolvedItem(url: URL(fileURLWithPath: "/tmp/hotmic-031-recovered.mp4"))
+            return HMResolvedItem(url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-recovered.mp4"))
         }
     }
     actor GatedPage: HMPlaylistSource {

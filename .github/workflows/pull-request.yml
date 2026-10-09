@@ -17,12 +17,12 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - name: Build package, Examples, Sample, DocC; then run the unit suite once
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check partner docs and API; build products and run the unit suite once
         run: bash .github/scripts/validate-release.sh
       - name: Upload validation evidence on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: player-validation-failure
           path: |

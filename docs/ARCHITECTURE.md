@@ -14,7 +14,7 @@ Partner edits preserve pending page fetches and the cursor. Source pages drop ov
 
 ## Hybrid two-player engine and prefetch
 
-Default S3 has one active native player and one prepared next player, plus an independent bounded data window. S0 has one direct player, S1 adds data prefetch, and S2 preserves the warm-pool comparison. No adaptive policy is implemented in this milestone.
+Default S3 has one active native player and one prepared next player, plus an independent bounded data window. S0 has one direct player, S1 adds data prefetch, and S2 preserves the warm-pool comparison. The default adaptive policy reduces speculative work within app budgets using measured throughput, latency, readiness, dwell and buffer health; see [Adaptive prefetch](ADAPTIVE_PREFETCH.md).
 
 The resolution window is current plus configured data/warm offsets. `HMResolutionStore` coalesces pending tasks for an immutable entry, caches completed metadata for the player session, and cancels unfinished resolution when the entry leaves the window. Current and next resolution use user-initiated priority; other neighbours use utility priority. A higher-priority waiter promotes existing work as roles change. Errors retry with capped backoff and a three-attempt budget, reset on current activation. Direct extensionless `.auto` URLs use a HEAD response to distinguish HLS from MP4, falling back to a streamed GET of bytes 0–1 if HEAD fails. Explicit formats and known extensions avoid that request.
 

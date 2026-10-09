@@ -38,7 +38,7 @@ struct EngagementTests {
         func timeline(for item: HMMediaItem) -> HMStreamTimeline { FixtureTimeline(duration: 1, events: []) }
     }
 
-    private let item = HMMediaItem(id: "clip", url: URL(fileURLWithPath: "/tmp/clip.mp4"))
+    private let item = HMMediaItem(id: "clip", url: FileManager.default.temporaryDirectory.appendingPathComponent("clip.mp4"))
 
     private func chat(_ offset: TimeInterval, _ id: String) -> HMTimelineEvent {
         HMTimelineEvent(id: id, offset: offset, kind: .chat, author: "a-\(id)", text: "t-\(id)", reactions: ["🔥": 2])
@@ -524,12 +524,12 @@ struct PlayerEngagementTests {
     }
     actor InstantResolver: HMItemResolver {
         func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
-            HMResolvedItem(url: URL(fileURLWithPath: "/tmp/hotmic-040-\(ref.id).mp4"), format: .mp4)
+            HMResolvedItem(url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-040-\(ref.id).mp4"), format: .mp4)
         }
     }
 
     private func items(_ count: Int) -> [HMMediaItem] {
-        (0..<count).map { HMMediaItem(id: "i\($0)", url: URL(fileURLWithPath: "/tmp/hotmic-040-i\($0).mp4")) }
+        (0..<count).map { HMMediaItem(id: "i\($0)", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-040-i\($0).mp4")) }
     }
 
     @Test("No source means no content; engagements are cached, windowed, kept with viewer state and cleared on teardown")
@@ -555,7 +555,7 @@ struct PlayerEngagementTests {
         let first = player.engagement(for: list[0])
         #expect(player.engagement(for: list[0]) === first)
         // Items outside the playlist get one inert engagement, reused, and never reach the source.
-        let stranger = HMMediaItem(id: "gone", url: URL(fileURLWithPath: "/tmp/gone.mp4"))
+        let stranger = HMMediaItem(id: "gone", url: FileManager.default.temporaryDirectory.appendingPathComponent("gone.mp4"))
         let inert = player.engagement(for: stranger)
         #expect(player.engagement(for: stranger) === inert && inert.capabilities == .readOnly)
         #expect(player.timeline(for: stranger) === inert.timeline)

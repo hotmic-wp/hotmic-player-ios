@@ -22,7 +22,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build generic iOS app and XCTest runner, unsigned
         run: |
           set -euo pipefail
@@ -106,19 +106,19 @@ jobs:
             --products .bench/DeviceFarm/Build/Products/Debug-iphoneos \
             --output .bench/DeviceFarmArtifacts
       - name: Upload app IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hotmic-benchmark-ios-app
           path: .bench/DeviceFarmArtifacts/HotMicPlayerDemo.ipa
           if-no-files-found: error
       - name: Upload XCTest UI runner ZIP
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hotmic-benchmark-xctest-ui
           path: .bench/DeviceFarmArtifacts/HotMicPlayerDemoUITests.zip
           if-no-files-found: error
       - name: Upload build notes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hotmic-benchmark-build-notes
           path: .bench/DeviceFarmArtifacts/README.txt

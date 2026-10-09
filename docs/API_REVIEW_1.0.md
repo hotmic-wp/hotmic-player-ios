@@ -1,6 +1,6 @@
 # API review for 1.0.0-rc.1
 
-Reviewed the complete `docs/PUBLIC_API.md` inventory, source declarations and behavior from base `84452f3` (origin/main, 0.4.1), with the 0.4.0 tag as the compatibility reference. The candidate keeps the two-product split: HotMicPlayer for playback/data and HotMicPlayerUI for optional iOS rendering. HotMicPlayerCore remains a [separate adapter package](https://github.com/hotmic-wp/hotmic-player-core-ios).
+Reviewed the complete `docs/PUBLIC_API.md` inventory, source declarations and behavior against 0.4.1, with 0.4.0 as the compatibility reference. The candidate keeps the two-product split: HotMicPlayer for playback/data and HotMicPlayerUI for optional iOS rendering. HotMicPlayerCore remains a [separate adapter package](https://github.com/hotmic-wp/hotmic-player-core-ios).
 
 ## Compatibility decisions
 
@@ -41,6 +41,4 @@ The existing parameterized moderation test now checks authoritative-count persis
 
 The two DocC catalogs cover each integration level, playlist editing, performance/benchmark interpretation, engagement/custom sources and theming. Strict `xcodebuild docbuild` uses `--warnings-as-errors --analyze`; the symbol-graph exporter independently rejects any undocumented explicit non-SPI public symbol. The compiled Examples enforce ordinary public imports, and the Sample intentionally retains benchmark access.
 
-The README documents final-release SPM selection and exact candidate selection, requirements, support and semantic versioning. From 1.0, public non-SPI API follows semver; renames preserve deprecated forwarding entry points. Benchmark SPI/private implementation and demo tooling are excluded. Consumers should use `@unknown default` for non-frozen enums.
-
-See [release validation](RELEASE_1.0_VALIDATION.md) for final public-symbol counts, build/test wall times, DocC results and simulator evidence. The manager owns independent review, push, merge and `1.0.0-rc.1` tagging; this worktree does not perform those actions.
+The README documents final-release SPM selection and exact candidate selection, requirements, support and semantic versioning. From 1.0, public non-SPI API follows semver; renames preserve deprecated forwarding entry points. Benchmark SPI/private implementation and demo tooling are excluded. New cases may arrive in minor releases of non-frozen public enums. Consumers should use `@unknown default` in switches to remain compatible.

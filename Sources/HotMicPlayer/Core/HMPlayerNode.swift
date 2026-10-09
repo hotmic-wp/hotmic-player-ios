@@ -20,6 +20,9 @@ final class HMPlayerNode: Identifiable {
 
     private(set) var item: HMMediaItem?
     private(set) var snapshot = HMPlaybackSnapshot()
+    /// A seek invalidates visible-frame continuity even when the layer stays ready.
+    private(set) var displayRevision = 0
+    @ObservationIgnored private(set) var isSeekingFrame = false
 
     /// Set by the pool; drives eviction order.
     @ObservationIgnored var lastTouched = Date.distantPast
@@ -101,6 +104,7 @@ final class HMPlayerNode: Identifiable {
         isActive = false
         teardownItemObservers()
         item = newItem
+        displayRevision += 1; isSeekingFrame = false
         snapshot = HMPlaybackSnapshot()
         snapshot.isMuted = player.isMuted
         snapshot.state = .loading
@@ -162,18 +166,21 @@ final class HMPlayerNode: Identifiable {
         stallCount10 = 0; stallTime10 = 0; didReportSummary = false
         snapshot.stallCount = 0; snapshot.totalStallDuration = 0
         startupWidth = 0; startupHeight = 0; startupBitrate = 0; startupResolutionSource = "unknown"
+        if let position, position > 0.1 {
+            seekForDisplay(to: CMTime(seconds: position, preferredTimescale: 600), toleranceAfter: .positiveInfinity)
+        }
         // A warmed item may have logged its rendition before activation.
         syncVariant()
         syncBufferHealth()
         let status = player.currentItem?.status.rawValue ?? 0
-        let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
+        let warmReady = !isSeekingFrame && status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
         let budget = configuration.prefetch.bytesPerItem
         let minimum = min(max(1, configuration.minimumCachedStartBytes), budget > 0 ? budget : Int.max)
         let readiness = HMReadinessTier.atActivation(warm: warmReady, cachedBytes: cachedBytes, minimumBytes: minimum)
         let tier = readiness.rawValue
         snapshot.readinessTier = readiness
         snapshot.wasPreloaded = readiness == .warmPlayer || readiness == .cachedBytes
-        snapshot.isFrameReady = playerLayer.isReadyForDisplay
+        snapshot.isFrameReady = !isSeekingFrame && playerLayer.isReadyForDisplay
         setLayerVisible(snapshot.isFrameReady)
         summaryTask?.cancel()
         summaryTask = Task { [weak self] in
@@ -189,10 +196,6 @@ final class HMPlayerNode: Identifiable {
 
         emit(.viewStart, item: item, metrics: ["buffered_ahead_s": snapshot.bufferedAhead, "cached_bytes": Double(cachedBytes), "item_status": Double(status), "request_monotonic_s": requestedAt, "warm_started_monotonic_s": warmStartedAt ?? requestedAt, "preroll_complete": prerollComplete ? 1 : 0], properties: ["readiness_tier": tier, "transport": (player.currentItem?.asset as? AVURLAsset)?.url.host == "127.0.0.1" && (player.currentItem?.asset as? AVURLAsset)?.url != item.url ? "loopback" : "direct"])
 
-        if let position, position > 0.1 {
-            player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
-                        toleranceBefore: .zero, toleranceAfter: .positiveInfinity)
-        }
         wantsPlayback = true
         player.play()
         emit(.play, item: item)
@@ -209,7 +212,7 @@ final class HMPlayerNode: Identifiable {
         wantsPlayback = false
         player.pause()
         if !retainingPosition {
-            player.seek(to: .zero)
+            seekForDisplay(to: .zero)
             snapshot.currentTime = 0
         }
         player.currentItem?.preferredForwardBufferDuration = configuration.prefetch.warmBufferDuration
@@ -231,6 +234,7 @@ final class HMPlayerNode: Identifiable {
         player.replaceCurrentItem(with: nil)
         videoOutput = nil
         item = nil
+        displayRevision += 1; isSeekingFrame = false
         isActive = false
         snapshot = HMPlaybackSnapshot()
     }
@@ -240,6 +244,23 @@ final class HMPlayerNode: Identifiable {
         CATransaction.setDisableActions(true)
         playerLayer.opacity = visible ? 1 : 0
         CATransaction.commit()
+    }
+
+    private func seekForDisplay(to time: CMTime, toleranceAfter: CMTime = .zero) {
+        guard let currentItem = player.currentItem else { return }
+        displayRevision += 1
+        let revision = displayRevision
+        isSeekingFrame = true; snapshot.isFrameReady = false; setLayerVisible(false)
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: toleranceAfter) { [weak self, weak currentItem] finished in
+            Task { @MainActor [weak self] in
+                guard finished, let self, let currentItem, self.player.currentItem === currentItem,
+                      self.displayRevision == revision else { return }
+                self.displayRevision += 1; self.isSeekingFrame = false
+                self.snapshot.isFrameReady = self.playerLayer.isReadyForDisplay
+                self.setLayerVisible(self.snapshot.isFrameReady)
+                self.onBufferChanged?()
+            }
+        }
     }
 
     // MARK: - Transport
@@ -346,7 +367,7 @@ final class HMPlayerNode: Identifiable {
         observations.append(playerLayer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.snapshot.isFrameReady = self.playerLayer.isReadyForDisplay
+                self.snapshot.isFrameReady = !self.isSeekingFrame && self.playerLayer.isReadyForDisplay
                 self.setLayerVisible(self.snapshot.isFrameReady)
                 self.onBufferChanged?()
             }
@@ -528,7 +549,7 @@ final class HMPlayerNode: Identifiable {
     /// Called only by a visible surface at a display-link boundary after its
     /// layer was ready and committed. Never called by the media progress tick.
     func didDisplayFrame(activation: String, at time: TimeInterval) {
-        guard isActive, activation == activationID, !hasReportedFirstFrame,
+        guard isActive, activation == activationID, !hasReportedFirstFrame, !isSeekingFrame,
               playerLayer.isReadyForDisplay, player.currentItem?.status == .readyToPlay, let item, let activationTime else { return }
         hasReportedFirstFrame = true
         if let buffer = videoOutput?.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
@@ -597,9 +618,10 @@ final class HMPlayerNode: Identifiable {
             replacement.preferredPeakBitRate = didLiftStartupCap ? configuration.steadyPeakBitRate : configuration.startupPeakBitRate
             replacement.preferredForwardBufferDuration = isActive ? configuration.steadyBufferDuration : configuration.prefetch.warmBufferDuration
             installItemObservers(for: replacement); player.replaceCurrentItem(with: replacement)
-            videoOutput = nil; didPreroll = false; snapshot.state = .loading
+            videoOutput = nil; didPreroll = false; prerollComplete = false; snapshot.state = .loading
+            displayRevision += 1; isSeekingFrame = false; snapshot.isFrameReady = false
             loadDuration(from: asset, for: item.id)
-            if position > 0 { player.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
+            if position > 0 { seekForDisplay(to: CMTime(seconds: position, preferredTimescale: 600)) }
             emit(.loadStart, item: item, metrics: ["proxy_fallback": 1], properties: ["transport": "direct-fallback",
                 "error_domain": error?.domain ?? "unknown", "error_code": String(error?.code ?? -1),
                 "error_message": error?.localizedDescription ?? "Playback failed"])

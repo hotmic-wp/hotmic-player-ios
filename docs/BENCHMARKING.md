@@ -483,7 +483,11 @@ ready and visible across the preceding and current boundaries, it can report
 that frame on the first boundary after page commit. Previously the detector
 started observing only after activation propagated through SwiftUI, then waited
 for two more boundaries. Offscreen, detached, recycled, hidden and unready layers
-clear continuity. No preroll timestamp is reported as TTFF: the request clock is
+clear continuity. Inactive observation is limited to the immediate ±1 pages;
+other attached cells do not run display links. The hosted layer must exactly
+match the surface bounds. Resume seeks hide the old frame, invalidate continuity
+at both seek start and completion, and require fresh display boundaries after
+completion. No pre-seek frame or preroll timestamp is reported as TTFF: the request clock is
 still the settled page callback, and firstFrame uses the current post-commit
 display boundary. HMPlayerNode still validates activation identity, native item
 status and layer readiness. Cold frames retain the two-boundary requirement.

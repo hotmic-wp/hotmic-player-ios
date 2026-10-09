@@ -5,11 +5,6 @@ import Foundation
 @Suite("Prefetch policy")
 struct PrefetchPolicyTests {
 
-    @Test("Off produces no warm window")
-    func offIsEmpty() {
-        #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
-    }
-
     @Test("Nearest neighbours are warmed first")
     func interleavesNearestFirst() {
         // Order matters: whichever item is warmed first gets the bandwidth.
@@ -21,6 +16,7 @@ struct PrefetchPolicyTests {
     func asymmetric() {
         #expect(HMPrefetchPolicy(ahead: 3, behind: 0).windowOffsets == [1, 2, 3])
         #expect(HMPrefetchPolicy(ahead: 0, behind: 2).windowOffsets == [-1, -2])
+        #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
         #expect(HMPrefetchPolicy(ahead: -1, behind: -2).windowOffsets.isEmpty)
         #expect(HMPlayerConfiguration.default.warmOffsets == [1])
         #expect(HMPlayerConfiguration.preset(.S0).warmOffsets.isEmpty)

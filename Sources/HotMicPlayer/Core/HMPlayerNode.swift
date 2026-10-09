@@ -135,6 +135,11 @@ final class HMPlayerNode: Identifiable {
         emit(.preloadStart, item: newItem)
     }
 
+    /// Change only the startup phase; never reapply a ceiling after it was lifted.
+    func applyStartingBitRate(_ cap: Double) {
+        if !didLiftStartupCap { player.currentItem?.preferredPeakBitRate = cap }
+    }
+
     /// Promote this node to the on-screen item and begin playback.
     func activate(startingAt position: TimeInterval? = nil, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, reason: String = "play", cachedBytes: Int = 0) {
         guard let item else { return }
@@ -153,7 +158,7 @@ final class HMPlayerNode: Identifiable {
         syncBufferHealth()
         let status = player.currentItem?.status.rawValue ?? 0
         let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
-        let tier = warmReady ? "warmPlayer" : cachedBytes > 0 ? "cachedBytes" : "cold"
+        let tier = warmReady ? "warmPlayer" : cachedBytes > 0 ? "cachedBytes" : "resolved"
         snapshot.readinessTier = HMReadinessTier(rawValue: tier) ?? .cold
         snapshot.wasPreloaded = warmReady || cachedBytes > 0
         snapshot.isFrameReady = playerLayer.isReadyForDisplay

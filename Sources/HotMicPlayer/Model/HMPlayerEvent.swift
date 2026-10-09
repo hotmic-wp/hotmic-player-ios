@@ -4,6 +4,8 @@ import Foundation
 public enum HMReadinessTier: String, Sendable {
     /// No reusable media bytes or decoded player.
     case cold
+    /// URL and poster metadata resolved; no downloaded start or decoded player.
+    case resolved
     /// Media bytes were cached, but the player was not ready to display.
     case cachedBytes
     /// A ready player with a decoded frame was reused.

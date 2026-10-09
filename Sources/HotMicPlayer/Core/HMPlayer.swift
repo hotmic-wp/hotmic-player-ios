@@ -32,6 +32,12 @@ import Observation
     }
     /// Playback and prefetch settings. Updating these may resize the engine pool.
     public var configuration: HMPlayerConfiguration { didSet { applyConfiguration() } }
+    /// Replaceable measured-performance policy. Fixed mode bypasses custom providers.
+    @ObservationIgnored public var prefetchPolicy: any HMPrefetchPolicyProviding = HMAdaptivePrefetchPolicy() {
+        didSet { prefetchIdentity = ""; updatePrefetch(force: true) }
+    }
+    /// Last applied, app-clamped decision, including its reason.
+    public private(set) var prefetchPlan: HMPrefetchPlan?
     /// Mutes every current and prepared player synchronously.
     public var isMuted: Bool { didSet { for node in pool.nodes { node.setMuted(isMuted) } } }
     /// Pause when hidden or backgrounded. Resume is synchronous for a resolved, prepared current item.
@@ -78,6 +84,10 @@ import Observation
     @ObservationIgnored private var pagingRetryTask: Task<Void, Never>?
     @ObservationIgnored private var pageTaskID = UUID()
     @ObservationIgnored private var prefetchIdentity = ""
+    @ObservationIgnored private var measurements = HMPrefetchMeasurements()
+    @ObservationIgnored private var activatedAt: TimeInterval?
+    @ObservationIgnored private var arrivalDwell: TimeInterval?
+    @ObservationIgnored private var lastDecisionAt = -Double.infinity
     @ObservationIgnored private var nextCursor: String?
     @ObservationIgnored private var hasStarted = false
     @ObservationIgnored private var ended = false
@@ -133,7 +143,7 @@ import Observation
         // latest playlist on arrival. replaceAll resets the cursor and ignores an old
         // response without cancelling its fetch. Source assignment or teardown cancels it.
         if replacingCurrent { resetPagingCursor(); resumePositions.removeAll(); pool.releaseAll() }
-        if oldWindow != windowItems { proxy?.cancelPrefetch(); prefetchSafe = false }
+        if oldWindow != windowItems { proxy?.cancelPrefetch(); prefetchSafe = false; prefetchIdentity = "" }
         if changesCurrent {
             if let currentItem { resolutionFailures[currentItem] = nil }
             requestTime = ProcessInfo.processInfo.systemUptime; requestReason = "play"
@@ -165,10 +175,12 @@ import Observation
     }
     private func navigate(to index: Int, reason: String = "play", requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard items.indices.contains(index), !ended else { return }
-        if index != activeIndex { resetPagingRetry(); saveAndDeactivate(); playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
+        if index != activeIndex {
+            arrivalDwell = index == activeIndex + 1 ? activatedAt.map { max(0, requestedAt - $0) } : nil
+            resetPagingRetry(); saveAndDeactivate(); playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
         if let currentItem { resolutionFailures[currentItem] = nil }
         requestedPageID = nil; requestTime = requestedAt; requestReason = reason
-        prefetchSafe = false; proxy?.cancelPrefetch(); refreshWindow(); checkEnd()
+        prefetchSafe = false; prefetchIdentity = ""; proxy?.cancelPrefetch(); refreshWindow(); checkEnd()
     }
     /// Requests a view-driven animated page move; activation waits until scrolling settles.
     @_spi(Benchmark) public func requestPage(at index: Int) {
@@ -294,7 +306,9 @@ import Observation
         transportTask = nil
     }
     private var windowItems: [HMMediaItem] {
-        playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + configuration.warmOffsets)
+        let resolved = max(0, min(32, configuration.resolveAhead))
+        return playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + configuration.warmOffsets +
+            (resolved > 0 ? Array(1...resolved) : []))
     }
 
     private func refreshWindow() {
@@ -324,6 +338,7 @@ import Observation
         guard !ended, isFeedVisible else { return }
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
         for item in windowItems {
+            guard item == currentItem || !configuration.adaptive || prefetchSafe else { continue }
             let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
             if urgent { resolutions.promote(item) }
             guard resolutions.cached(item) == nil, resolutionTasks[item] == nil,
@@ -380,33 +395,80 @@ import Observation
             if !wantsPlayback { node.pause() }
         } else if wantsPlayback && node.snapshot.state == .paused { node.play() }
     }
-    private func updatePrefetch() {
-        guard isFeedVisible, !ended, let node = currentNode, node.isActive else { return }
-        let wasSafe = prefetchSafe
-        let safe = configuration.strategy == .S2 || HMBufferSafety.isSafe(ahead: node.snapshot.bufferedAhead,
-            remaining: max(0, node.snapshot.duration - node.snapshot.currentTime), hasDuration: node.snapshot.duration > 0,
-            threshold: max(0, configuration.prefetch.startThreshold), wasSafe: wasSafe)
-        prefetchSafe = safe
-        if !safe {
-            prefetchIdentity = ""
-            if wasSafe { proxy?.cancelPrefetch() }
-            if configuration.strategy == .S3, node.snapshot.timeToFirstFrame != nil { pool.trim(keeping: Set(currentItem.flatMap { resolutions.cached($0) }.map { [$0] } ?? [])) }
+    private func updatePrefetch(force: Bool = false) {
+        guard isFeedVisible, !ended, let node = currentNode, node.isActive, let item = currentItem else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let t = configuration.adaptiveThresholds
+        let dangerous = node.snapshot.state == .buffering || !node.snapshot.bufferedAhead.isFinite ||
+            node.snapshot.bufferedAhead < max(nonnegative(t.safetyBufferSeconds), nonnegative(configuration.prefetch.startThreshold) * 0.5)
+        // Evaluate on the existing 100ms buffer ticks at most four times/sec;
+        // safety transitions bypass the cadence and are applied immediately.
+        guard force || now - lastDecisionAt >= 0.25 || (prefetchSafe && dangerous) else { return }
+        lastDecisionAt = now
+        let inputs = HMPrefetchInputs(throughputBytesPerSecond: measurements.throughput,
+            latencySeconds: measurements.latency, readyHitRate: measurements.hitRate, dwellSeconds: measurements.dwell,
+            bufferedAheadSeconds: node.snapshot.bufferedAhead,
+            remainingSeconds: node.snapshot.duration > 0 ? max(0, node.snapshot.duration - node.snapshot.currentTime) : nil,
+            isStalling: node.snapshot.state == .buffering, wasPaused: !prefetchSafe,
+            elapsedOnItemSeconds: max(0, now - (activatedAt ?? now)))
+        var plan = (configuration.adaptive ? prefetchPolicy.decide(inputs, configuration: configuration) :
+                    HMAdaptivePrefetchPolicy().decide(inputs, configuration: configuration)).clamped(to: configuration)
+        // The safety gate is enforced even for a custom provider. Fixed mode
+        // preserves the existing benchmark threshold/hysteresis and S2 control.
+        let safety = HMAdaptivePrefetchPolicy().decide(inputs, configuration: configuration).paused
+        if configuration.adaptive { plan.paused = plan.paused || safety }
+        else {
+            plan.paused = configuration.strategy != .S2 && !HMBufferSafety.isSafe(ahead: inputs.bufferedAheadSeconds,
+                remaining: inputs.remainingSeconds ?? 0, hasDuration: inputs.remainingSeconds != nil,
+                threshold: nonnegative(configuration.prefetch.startThreshold), wasSafe: prefetchSafe)
+            plan.paused = plan.paused || inputs.isStalling
+        }
+        if plan.paused && !plan.reason.contains("buffer-safety") && !plan.reason.contains("stall") {
+            plan.reason += inputs.isStalling ? "+stall" : "+buffer-safety"
+        }
+        plan = plan.clamped(to: configuration)
+        let changed = prefetchPlan?.workIdentity != plan.workIdentity
+        let recovered = !prefetchSafe && !plan.paused
+        prefetchPlan = plan; prefetchSafe = !plan.paused
+        analytics.emit(HMPlaybackEvent(kind: .prefetchDecision, itemID: item.id, metrics: [
+            "plan_changed": changed ? 1 : 0, "budget_bytes": Double(plan.bytesPerItem),
+            "items_ahead": Double(plan.itemsAhead), "items_behind": Double(plan.itemsBehind),
+            "paused": plan.paused ? 1 : 0, "concurrency": Double(plan.concurrency),
+            "starting_bitrate": plan.startingBitRate, "ready_hit_rate": measurements.hitRate ?? -1,
+            "throughput_bytes_s": measurements.throughput ?? -1, "latency_s": measurements.latency ?? -1,
+            "dwell_s": measurements.dwell ?? -1, "buffered_ahead_s": inputs.bufferedAheadSeconds
+        ], properties: ["inputs": json(inputs), "plan": json(plan), "reason": plan.reason,
+                         "policy": configuration.adaptive ? String(reflecting: type(of: prefetchPolicy)) : "fixed"]), item: item)
+        var effective = configuration; effective.startupPeakBitRate = plan.startingBitRate
+        pool.configuration = effective; pool.applyConfiguration()
+        for node in pool.nodes { node.applyStartingBitRate(plan.startingBitRate) }
+        let deferred = inputs.elapsedOnItemSeconds < plan.startAfterSeconds
+        let warmOffsets = plan.keepReadyPlayer && !deferred ? configuration.warmOffsets : []
+        let warmItems = warmOffsets.compactMap { offset -> HMMediaItem? in
+            let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
+        }
+        pool.trim(keeping: Set([resolutions.cached(item)].compactMap { $0 } + warmItems))
+        if plan.paused || deferred {
+            if plan.paused && configuration.adaptive {
+                resolutions.retain(Set([currentItem].compactMap { $0 }))
+                for (entry, task) in resolutionTasks where entry != currentItem { task.cancel(); resolutionTasks[entry] = nil }
+            }
+            if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
+            if recovered && !plan.paused { refreshWindowAfterTransport() }
             return
         }
-        let identity = configuration.fingerprint + "|" + windowItems.compactMap { resolutions.cached($0) }.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|")
-        guard !wasSafe || identity != prefetchIdentity else { return }
+        let data = plan.windowOffsets.compactMap { offset -> HMMediaItem? in
+            let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
+        }
+        let identity = plan.workIdentity + "|" + item.id + "|" + data.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|")
+        guard identity != prefetchIdentity else { if recovered { refreshWindowAfterTransport() }; return }
         prefetchIdentity = identity
-        // Newly resolved/edited entries change identity immediately.
-        for offset in configuration.warmOffsets {
-            let i = activeIndex + offset
-            guard items.indices.contains(i), let item = resolutions.cached(items[i]), pool.existingNode(for: item) == nil else { continue }
+        for item in warmItems where pool.existingNode(for: item) == nil {
             let warm = pool.node(for: item, protecting: Set([currentItem?.id].compactMap { $0 }), playbackURL: proxy?.url(for: item))
             warm.onBufferChanged = { [weak self] in self?.updatePrefetch() }; warm.setMuted(isMuted)
         }
-        let data = configuration.prefetch.windowOffsets.compactMap { offset -> HMMediaItem? in
-            let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
-        }
-        proxy?.prefetch(data, keeping: windowItems.compactMap { resolutions.cached($0) })
+        proxy?.prefetch(data, keeping: windowItems.compactMap { resolutions.cached($0) }, plan: plan)
+        if recovered { refreshWindowAfterTransport() }
     }
     private func updateInteractions() {
         let current = isFeedVisible ? currentItem : nil
@@ -435,7 +497,7 @@ import Observation
     /// Seeks to a fraction of the current VOD duration.
     public func seek(toProgress progress: Double) { guard progress.isFinite else { report(.invalidSeek); return }; seek(to: snapshot.duration * min(1, max(0, progress))) }
     private func pauseAll() {
-        proxy?.cancelPrefetch(); prefetchSafe = false
+        proxy?.cancelPrefetch(); prefetchSafe = false; prefetchIdentity = ""
         for node in pool.nodes where node.isActive { node.pause() }
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
         resolutions.cancelAll()
@@ -475,10 +537,27 @@ import Observation
         pool.configuration = configuration
         for node in pool.nodes.dropFirst(max(1, min(4, configuration.poolSize))) { analytics.detach(playerKey: node.id) }
         pool.resize(to: configuration.poolSize); proxy?.configuration = configuration; prefetchSafe = false
+        prefetchIdentity = ""; lastDecisionAt = -Double.infinity
         refreshWindow(); checkEnd()
     }
     private func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+        if event.kind == .transferSample {
+            measurements.transfer(bytes: event.metrics["sample_bytes"] ?? 0, seconds: event.metrics["receive_s"] ?? 0,
+                ttfb: event.metrics["ttfb_s"], alpha: configuration.adaptiveThresholds.ewmaAlpha)
+        }
+        let nextArrival = event.kind == .viewStart && arrivalDwell != nil
+        if event.kind == .viewStart {
+            if let dwell = arrivalDwell {
+                measurements.arrival(hit: ["warmPlayer", "cachedBytes"].contains(event.properties["readiness_tier"] ?? ""),
+                    dwell: dwell, alpha: configuration.adaptiveThresholds.ewmaAlpha)
+            }
+            arrivalDwell = nil; activatedAt = event.monotonicTime; lastDecisionAt = -Double.infinity
+        }
         var metrics = event.metrics
+        if event.kind == .viewStart {
+            metrics["next_arrival"] = nextArrival ? 1 : 0
+            metrics["ready_by_swipe_hit"] = ["warmPlayer", "cachedBytes"].contains(event.properties["readiness_tier"] ?? "") ? 1 : 0
+        }
         if event.kind == .viewStart || event.kind == .firstFrame { metrics["live_player_count"] = Double(pool.nodes.count); metrics["memory_bytes"] = HMMemorySample.footprint() }
         analytics.emit(HMPlaybackEvent(kind: event.kind, itemID: event.itemID, timestamp: event.timestamp,
             monotonicTime: event.monotonicTime, position: event.position, metrics: metrics, properties: event.properties), item: item)
@@ -486,8 +565,8 @@ import Observation
         switch event.kind {
         case .preloadReady: emit(.itemReady(entry))
         case .firstFrame: emit(.firstFrame(entry, ttff: (event.metrics["ttff_ms"] ?? 0) / 1000, readiness: currentNode?.snapshot.readinessTier ?? .cold))
-        case .rebufferStart: emit(.stallStarted(entry))
-        case .rebufferEnd: emit(.stallEnded(entry))
+        case .rebufferStart: emit(.stallStarted(entry)); updatePrefetch(force: true)
+        case .rebufferEnd: emit(.stallEnded(entry)); updatePrefetch(force: true)
         case .error, .transportError: report(.playback(event.properties["error_message"] ?? event.properties["message"] ?? "Playback failed"), item: entry)
         default: break
         }

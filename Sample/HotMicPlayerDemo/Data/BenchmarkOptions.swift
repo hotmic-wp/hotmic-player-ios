@@ -42,6 +42,29 @@ struct BenchmarkOptions {
         if let n = try number("steady-bitrate", 0...100_000_000) { c.steadyPeakBitRate = n }
         if let n = try number("steady-buffer", 0...600) { c.steadyBufferDuration = n }
         if let n = try number("warm-buffer", 0...600) { c.prefetch.warmBufferDuration = n }
+        if let n = try number("adaptive", 0...1) { guard n == 0 || n == 1 else { throw Invalid("adaptive") }; c.adaptive = n == 1 }
+        if let n = try number("prefetch-concurrency", 0...4) { guard n.rounded() == n else { throw Invalid("prefetch-concurrency") }; c.maxPrefetchConcurrency = Int(n) }
+        if let n = try number("resolve-ahead", 0...32) { guard n.rounded() == n else { throw Invalid("resolve-ahead") }; c.resolveAhead = Int(n) }
+        if let n = try number("adaptive-slow-bytes-per-second", 0...100_000_000) { c.adaptiveThresholds.slowBytesPerSecond = n }
+        if let n = try number("adaptive-fast-bytes-per-second", 0...100_000_000) { c.adaptiveThresholds.fastBytesPerSecond = n }
+        if let n = try number("adaptive-high-latency-seconds", 0...100_000_000) { c.adaptiveThresholds.highLatencySeconds = n }
+        if let n = try number("adaptive-low-hit-rate", 0...1) { c.adaptiveThresholds.lowHitRate = n }
+        if let n = try number("adaptive-binge-dwell-seconds", 0...100_000_000) { c.adaptiveThresholds.bingeDwellSeconds = n }
+        if let n = try number("adaptive-long-dwell-seconds", 0...100_000_000) { c.adaptiveThresholds.longDwellSeconds = n }
+        if let n = try number("adaptive-safety-buffer-seconds", 0...100_000_000) { c.adaptiveThresholds.safetyBufferSeconds = n }
+        if let n = try number("adaptive-recovery-buffer-seconds", 0...100_000_000) { c.adaptiveThresholds.recoveryBufferSeconds = n }
+        if let n = try number("adaptive-slow-budget-fraction", 0...1) { c.adaptiveThresholds.slowBudgetFraction = n }
+        if let n = try number("adaptive-medium-budget-fraction", 0...1) { c.adaptiveThresholds.mediumBudgetFraction = n }
+        if let n = try number("adaptive-binge-budget-multiplier", 0...100_000_000) { c.adaptiveThresholds.bingeBudgetMultiplier = n }
+        if let n = try number("adaptive-long-dwell-budget-multiplier", 0...100_000_000) { c.adaptiveThresholds.longDwellBudgetMultiplier = n }
+        if let n = try number("adaptive-long-dwell-delay-fraction", 0...1) { c.adaptiveThresholds.longDwellDelayFraction = n }
+        if let n = try number("adaptive-maximum-delay-seconds", 0...100_000_000) { c.adaptiveThresholds.maximumDelaySeconds = n }
+        if let n = try number("adaptive-slow-ahead", 0...32) { guard n.rounded() == n else { throw Invalid("adaptive-slow-ahead") }; c.adaptiveThresholds.slowAhead = Int(n) }
+        if let n = try number("adaptive-medium-ahead", 0...32) { guard n.rounded() == n else { throw Invalid("adaptive-medium-ahead") }; c.adaptiveThresholds.mediumAhead = Int(n) }
+        if let n = try number("adaptive-slow-bit-rate", 0...100_000_000) { c.adaptiveThresholds.slowBitRate = n }
+        if let n = try number("adaptive-medium-bit-rate", 0...100_000_000) { c.adaptiveThresholds.mediumBitRate = n }
+        if let n = try number("adaptive-fast-bit-rate", 0...100_000_000) { c.adaptiveThresholds.fastBitRate = n }
+        if let n = try number("adaptive-ewma-alpha", 0...1) { c.adaptiveThresholds.ewmaAlpha = n }
         if enabled { c.startsMuted = true; c.restoresPlaybackPosition = false }
         return c
     }

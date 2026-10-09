@@ -28,7 +28,7 @@ import Observation
     public private(set) var playlistRevision = 0
     /// Optional paging adapter. Assigning a different source resets its cursor and invalidates its pending page.
     public var playlistSource: HMPlaylistSource? {
-        didSet { pageGeneration += 1; loadTask?.cancel(); loadTask = nil; pageTaskID = UUID(); nextCursor = nil; isLoadingPage = false; hasMoreContent = playlistSource != nil }
+        didSet { pageGeneration += 1; loadTask?.cancel(); loadTask = nil; pageTaskID = UUID(); isLoadingPage = false; resetPagingCursor() }
     }
     /// Playback and prefetch settings. Updating these may resize the engine pool.
     public var configuration: HMPlayerConfiguration { didSet { applyConfiguration() } }
@@ -73,6 +73,9 @@ import Observation
     @ObservationIgnored private var transportTask: Task<Void, Never>?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var pageGeneration = 0
+    @ObservationIgnored private var cursorGeneration = 0
+    @ObservationIgnored private var pagingRetry = HMPagingRetry()
+    @ObservationIgnored private var pagingRetryTask: Task<Void, Never>?
     @ObservationIgnored private var pageTaskID = UUID()
     @ObservationIgnored private var prefetchIdentity = ""
     @ObservationIgnored private var nextCursor: String?
@@ -98,7 +101,8 @@ import Observation
         for node in pool.nodes { node.onBufferChanged = { [weak self] in self?.updatePrefetch() } }
     }
 
-    /// Switches to `items[startAt]`. An empty list with startAt zero becomes idle. Invalid edits return false and emit an error.
+    /// Switches to `items[startAt]` and resets the source cursor to nil, including its retry budget.
+    /// A pending page finishes but is ignored. Empty with startAt zero becomes idle; invalid edits return false and emit an error.
     @discardableResult public func replaceAll(_ items: [HMMediaItem], startAt: Int = 0) -> Bool {
         mutate(replacingCurrent: true) { try $0.replaceAll(items, startAt: startAt) }
     }
@@ -126,8 +130,9 @@ import Observation
         playlist = result; loadError = nil; playlistRevision += 1
         if !preservesMove { requestedPageID = nil; pageRequestID = UUID() }
         // Edits do not supersede a source request: its page is merged against the
-        // latest playlist on arrival. Only assigning a source or teardown cancels it.
-        if replacingCurrent { resumePositions.removeAll(); pool.releaseAll() }
+        // latest playlist on arrival. replaceAll resets the cursor and ignores an old
+        // response without cancelling its fetch. Source assignment or teardown cancels it.
+        if replacingCurrent { resetPagingCursor(); resumePositions.removeAll(); pool.releaseAll() }
         if oldWindow != windowItems { proxy?.cancelPrefetch(); prefetchSafe = false }
         if changesCurrent {
             if let currentItem { resolutionFailures[currentItem] = nil }
@@ -160,7 +165,7 @@ import Observation
     }
     private func navigate(to index: Int, reason: String = "play", requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard items.indices.contains(index), !ended else { return }
-        if index != activeIndex { saveAndDeactivate(); playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
+        if index != activeIndex { resetPagingRetry(); saveAndDeactivate(); playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
         if let currentItem { resolutionFailures[currentItem] = nil }
         requestedPageID = nil; requestTime = requestedAt; requestReason = reason
         prefetchSafe = false; proxy?.cancelPrefetch(); refreshWindow(); checkEnd()
@@ -193,40 +198,80 @@ import Observation
     public func start() async {
         guard !ended else { return }
         let firstStart = !hasStarted; hasStarted = true
-        if playlistSource != nil, firstStart || items.isEmpty { await loadNextPage() }
+        if playlistSource != nil, firstStart || items.isEmpty { await fetchNextPage() }
         refreshWindow()
     }
-    /// Requests one page and appends atomically through the same validation path as `append`.
+    /// Requests one page, resetting the automatic retry budget. Concurrent calls while loading do nothing.
+    /// Failed pages retry automatically after 1, 2 and 4 seconds near the end, then stop until navigation or another explicit call.
     public func loadNextPage() async {
-        guard !isLoadingPage, hasMoreContent, let source = playlistSource, !ended else { return }
-        let generation = pageGeneration
+        guard !isLoadingPage, hasMoreContent, playlistSource != nil, !ended else { return }
+        resetPagingRetry()
+        await fetchNextPage()
+    }
+    private func resetPagingRetry() {
+        pagingRetryTask?.cancel(); pagingRetryTask = nil
+        pagingRetry = HMPagingRetry(); loadError = nil
+    }
+    private func resetPagingCursor() {
+        cursorGeneration += 1; nextCursor = nil
+        hasMoreContent = playlistSource != nil
+        resetPagingRetry()
+    }
+    private func fetchNextPage() async {
+        guard !isLoadingPage, hasMoreContent, let source = playlistSource, !ended,
+              pagingRetry.canRetry(at: ProcessInfo.processInfo.systemUptime) else { return }
+        let generation = pageGeneration, cursorVersion = cursorGeneration
         isLoadingPage = true
-        defer { if generation == pageGeneration { isLoadingPage = false } }
+        defer {
+            if generation == pageGeneration {
+                isLoadingPage = false
+                if loadTask == nil { checkEnd() }
+            }
+        }
         do {
             let page = try await source.loadPage(cursor: nextCursor)
             try Task.checkCancellation()
-            guard generation == pageGeneration, !ended else { return }
+            guard generation == pageGeneration, cursorVersion == cursorGeneration, !ended else { return }
             let filtered = playlist.filterSourcePage(page.items)
-            if appendItems(filtered.items, fromSource: true) {
-                let previousCursor = nextCursor
-                nextCursor = page.nextCursor; hasMoreContent = page.nextCursor != nil && page.nextCursor != previousCursor
-                if !filtered.duplicates.isEmpty { emit(.sourcePageDuplicates(ids: filtered.duplicates)) }
-            }
-
+            // Validate before the mutation path so a rejected page records one failure
+            // and one error, just like a thrown source error.
+            var validated = playlist
+            try validated.append(filtered.items)
+            guard appendItems(filtered.items, fromSource: true) else { return }
+            let previousCursor = nextCursor
+            nextCursor = page.nextCursor; hasMoreContent = page.nextCursor != nil && page.nextCursor != previousCursor
+            resetPagingRetry()
+            if !filtered.duplicates.isEmpty { emit(.sourcePageDuplicates(ids: filtered.duplicates)) }
         } catch is CancellationError { }
-        catch { if generation == pageGeneration { report(.playlistSource(error.localizedDescription)) } }
+        catch {
+            if generation == pageGeneration, cursorVersion == cursorGeneration, !ended {
+                pagingRetry.failed(at: ProcessInfo.processInfo.systemUptime)
+                report(.playlistSource(error.localizedDescription))
+            }
+        }
     }
     private func checkEnd() {
-        guard currentItem != nil else { return }
-        let remaining = items.count - activeIndex - 1
+        guard !ended else { return }
+        let remaining = max(0, items.count - activeIndex - 1)
         guard remaining <= max(0, configuration.lowWaterMark) else { nearingEndKey = ""; return }
         let key = "\(playlistRevision):\(activeIndex)"
-        if key != nearingEndKey { nearingEndKey = key; emit(.nearingEnd(remaining: remaining)) }
-        guard hasMoreContent, !isLoadingPage, loadTask == nil else { return }
+        if currentItem != nil, key != nearingEndKey { nearingEndKey = key; emit(.nearingEnd(remaining: remaining)) }
+        guard hasMoreContent, !isLoadingPage, loadTask == nil, !pagingRetry.exhausted else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard pagingRetry.canRetry(at: now) else {
+            guard pagingRetryTask == nil else { return }
+            let delay = pagingRetry.nextAttempt - now
+            pagingRetryTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                guard let self else { return }
+                pagingRetryTask = nil; checkEnd()
+            }
+            return
+        }
         let token = UUID(); pageTaskID = token
         loadTask = Task { [weak self] in
             guard let self else { return }
-            await loadNextPage()
+            await fetchNextPage()
             if pageTaskID == token { loadTask = nil; checkEnd() }
         }
     }
@@ -418,6 +463,7 @@ import Observation
     }
     private func stopWork() {
         pageGeneration += 1; loadTask?.cancel(); isLoadingPage = false
+        pagingRetryTask?.cancel(); pagingRetryTask = nil
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
         resolutions.cancelAll(); for task in resolutionTasks.values { task.cancel() }; resolutionTasks.removeAll()
         for item in Set([interactionCurrent, interactionNext].compactMap { $0 }) { interactions.didLeave(item) }

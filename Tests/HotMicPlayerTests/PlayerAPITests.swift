@@ -281,3 +281,117 @@ struct PlayerNativeReviewTests {
     }
 }
 #endif
+
+@Suite("Paging retry policy")
+struct PlayerPagingPolicyTests {
+    @Test("Four failures exhaust paging with bounded exponential waits; reset restores eligibility")
+    func budget() {
+        var retry = HMPagingRetry()
+        for (now, delay) in [(10.0, 1.0), (11, 2), (13, 4)] {
+            retry.failed(at: now)
+            #expect(retry.nextAttempt == now + delay)
+            #expect(!retry.canRetry(at: now + delay - 0.01))
+            #expect(retry.canRetry(at: now + delay))
+        }
+        retry.failed(at: 17); #expect(retry.exhausted); #expect(!retry.canRetry(at: 100))
+        retry = HMPagingRetry(); #expect(retry.canRetry(at: 0))
+        #expect(HMPlaybackEvent.Kind(rawValue: "transfer") == .transfer)
+        #expect(HMPlaybackEvent.Kind(rawValue: "runEnd")?.rawValue == "runEnd")
+        #expect(HMPlaybackEvent.Kind(rawValue: "unknown") == nil)
+    }
+}
+
+#if canImport(AVFoundation) && !os(macOS)
+@Suite("Native paging retry regressions") @MainActor
+struct PlayerPagingRetryTests {
+    actor FailingSource: HMPlaylistSource {
+        var calls = 0
+        let rejected: Bool
+        init(rejected: Bool) { self.rejected = rejected }
+        func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+            calls += 1
+            if rejected { return HMPlaylistPage(items: [HMMediaItem(id: "invalid", url: URL(string: "ftp://example.com/file.mp4")!)], nextCursor: "bad") }
+            throw URLError(.notConnectedToInternet)
+        }
+    }
+    @Test("Thrown and rejected pages back off, emit one error per attempt, cap, and reset", arguments: [false, true])
+    func failures(rejected: Bool) async throws {
+        let player = HMPlayer(configuration: HMPlayerConfiguration(managesAudioSession: false)); player.isFeedVisible = false
+        let source = FailingSource(rejected: rejected)
+        var errors = 0
+        let events = player.events
+        let consumer = Task { for await event in events { if case .error = event { errors += 1 } } }
+        defer { player.teardown(); consumer.cancel() }
+        player.replaceAll([.reference("test", id: "a"), .reference("test", id: "b")])
+        player.playlistSource = source
+        await player.loadNextPage()
+        #expect(await source.calls == 1)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await source.calls == 1); #expect(errors == 1)
+        let deadline = Date().addingTimeInterval(9)
+        while await source.calls < 4, Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
+        #expect(await source.calls == 4)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(errors == 4); #expect(!player.isLoadingPage); #expect(player.hasMoreContent)
+        // start and unrelated edits must not reset the exhausted budget.
+        await player.start(); player.append([.reference("test", id: "c")])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await source.calls == 4)
+        player.next()
+        while await source.calls < 5, Date() < deadline { await Task.yield() }
+        #expect(await source.calls == 5)
+        while player.isLoadingPage, Date() < deadline { await Task.yield() }
+        await player.loadNextPage()
+        #expect(await source.calls == 6)
+        try await Task.sleep(for: .milliseconds(25)); #expect(errors == 6)
+    }
+    @Test("Public audio ownership opt-out survives playback, foreground resume and teardown")
+    func audioOwnership() async throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.ambient, mode: .default)
+        let player = HMPlayer(configuration: HMPlayerConfiguration(loops: false, startsMuted: true, managesAudioSession: false))
+        #expect(player.isMuted); #expect(!player.configuration.loops)
+        player.replaceAll([.reference("test", id: "owned-session")])
+        await player.requestPlay(at: 0)
+        #expect(session.category == .ambient)
+        player.isFeedVisible = false; player.isFeedVisible = true
+        #expect(session.category == .ambient)
+        player.teardown()
+        #expect(session.category == .ambient)
+    }
+    actor CursorSource: HMPlaylistSource {
+        var requests: [String] = []
+        var gate: CheckedContinuation<Void, Never>?
+        func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+            requests.append(cursor ?? "nil")
+            if requests.count == 2 { await withCheckedContinuation { gate = $0 } }
+            return HMPlaylistPage(items: [.reference("test", id: "page-\(requests.count)", playlistID: "page-\(requests.count)")], nextCursor: "cursor-\(requests.count)")
+        }
+        func resume() { gate?.resume(); gate = nil }
+    }
+    @Test("replaceAll resets a settled cursor and discards an in-flight old page without cancelling it")
+    func cursorReset() async throws {
+        let player = HMPlayer(configuration: HMPlayerConfiguration(managesAudioSession: false)); player.isFeedVisible = false
+        defer { player.teardown() }
+        var configuration = player.configuration; configuration.lowWaterMark = 0; player.configuration = configuration
+        // Stay outside the automatic window to drive one explicit page at a time.
+        let seeds: [HMMediaItem] = [.reference("test", id: "a", playlistID: "a"), .reference("test", id: "b", playlistID: "b")]
+        player.replaceAll(seeds)
+        let source = CursorSource(); player.playlistSource = source
+        await player.loadNextPage()
+        let pending = Task { await player.loadNextPage() }
+        let deadline = Date().addingTimeInterval(2)
+        while await source.requests.count < 2, Date() < deadline { await Task.yield() }
+        #expect(await source.requests == ["nil", "cursor-1"])
+        #expect(!player.replaceAll(seeds, startAt: 99)) // invalid replacement leaves cursor intact
+        player.replaceAll(seeds)
+        await source.resume(); await pending.value
+        #expect(player.items.map(\.id) == ["a", "b"])
+        await player.loadNextPage()
+        #expect(await source.requests == ["nil", "cursor-1", "nil"])
+        #expect(player.items.map(\.id) == ["a", "b", "page-3"])
+        player.replaceAll(seeds); await player.loadNextPage()
+        #expect(await source.requests.last == "nil")
+    }
+}
+#endif

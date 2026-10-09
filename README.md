@@ -63,3 +63,5 @@ The default origin field is `http://127.0.0.1:8088` for the simulator. On a phys
 - [Review fixes and validation](docs/MILESTONE_2_REVIEW_FIXES.md): all ten fixes, API visibility checks, simulator races and final build/test timings.
 
 `swift test` exercises platform-independent playlist, resolver, cache and timeline logic. The Sample app and simulator flow exercise the native iOS engine. Generic device builds can use `CODE_SIGNING_ALLOWED=NO`; no signing setup is required for compilation.
+
+Paging failures use four total attempts with 1/2/4-second retry delays, then wait for navigation or an explicit `loadNextPage()`. `replaceAll` restarts the playlist source cursor at nil. Hosts that own `AVAudioSession` can use `HMPlayerConfiguration(managesAudioSession: false)`; `loops` and `startsMuted` are also public settings. See [integration contracts](docs/INTEGRATION.md).

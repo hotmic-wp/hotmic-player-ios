@@ -10,6 +10,7 @@ struct PlaylistLabScreen: View {
     @State private var origin = BenchmarkOptions().values["lab-origin"] ?? "http://127.0.0.1:8088"
     @State private var delayed: Task<Void, Never>?
     @State private var sink: HMJSONLFileSink?
+    @State private var offlineRun: String?
     @Environment(\.scenePhase) private var scenePhase
     @State private var changes: [String] = []
 
@@ -49,6 +50,14 @@ struct PlaylistLabScreen: View {
                     Button("Paging race") { startPagingRace() }.accessibilityIdentifier("lab-paging-race")
                     Button("Append in swipe") { editDuringSwipe(replace: false) }.accessibilityIdentifier("lab-append-swipe")
                     operationButton("No-op", "no-op") { player.append([]) && player.insertNext([]) && player.remove(ids: ["unknown"]) }
+                }
+                HStack {
+                    Button("Offline paging") { startOfflinePaging() }.accessibilityIdentifier("lab-offline-paging")
+                    Button("Retry page") {
+                        LabEvidence.append(["run": offlineRun ?? "", "phase": "explicit-retry", "monotonic": ProcessInfo.processInfo.systemUptime], to: "playlist-lab-offline.jsonl")
+                        Task { await player.loadNextPage() }
+                    }.accessibilityIdentifier("lab-retry-page")
+                    Text(player.isLoadingPage ? "Loading page" : "Page idle").accessibilityIdentifier("lab-page-state")
                 }
                 HStack {
                     Button("Previous") { player.previous() }
@@ -122,10 +131,31 @@ struct PlaylistLabScreen: View {
         }
         status = "Paging race: swipe while loading; each page overlaps. Cursor log in Documents."
     }
+    private func startOfflinePaging() {
+        delayed?.cancel(); player.playlistSource = nil
+        var configuration = player.configuration
+        configuration.prefetch = .off; configuration.lowWaterMark = 1
+        player.configuration = configuration
+        serial += 1
+        let seeds = DemoContent.reel.prefix(4).enumerated().map { offset, clip in
+            HMMediaItem(id: "offline-\(serial)-\(offset)", source: clip.source, title: clip.title, durationHint: clip.durationHint)
+        }
+        player.replaceAll(seeds, startAt: max(0, seeds.count - 2))
+        let run = UUID().uuidString; offlineRun = run
+        // An unavailable local paging origin reproduces a real URLSession failure
+        // without changing the simulator or host's shared network settings.
+        player.playlistSource = LabOfflinePlaylistSource(url: URL(string: origin + "/offline-playlist.json")!, run: run)
+        Task { await player.loadNextPage() }
+        status = "Offline origin: four attempts with 1/2/4s waits, then idle. Next or Retry page resets the cap."
+    }
     private func recordEvent(_ event: HMPlayerEvent) {
         let row: [String: Any] = ["event": String(describing: event), "current": player.currentItem?.id ?? "",
             "items": player.items.map(\.id), "loading": player.isLoadingPage, "monotonic": ProcessInfo.processInfo.systemUptime]
         LabEvidence.append(row, to: "playlist-lab-events.jsonl")
+        if let offlineRun, case let .error(_, kind) = event {
+            LabEvidence.append(["run": offlineRun, "phase": "error-event", "error": kind.localizedDescription,
+                "monotonic": ProcessInfo.processInfo.systemUptime], to: "playlist-lab-offline.jsonl")
+        }
     }
     private func operationButton(_ title: String, _ id: String, action: @escaping () -> Bool) -> some View {
         Button(title) { perform(id, action: action) }.accessibilityIdentifier("lab-\(id)")
@@ -171,6 +201,30 @@ private actor LabPlaylistSource: HMPlaylistSource {
         let page = pages[index]
         LabEvidence.append(["cursor": cursor ?? "nil", "next": page.nextCursor ?? "end", "phase": "response", "ids": page.items.map(\.id), "monotonic": ProcessInfo.processInfo.systemUptime], to: "playlist-lab-pages.jsonl")
         return page
+    }
+}
+
+private actor LabOfflinePlaylistSource: HMPlaylistSource {
+    let url: URL
+    let run: String
+    private var attempts = 0
+    init(url: URL, run: String) { self.url = url; self.run = run }
+    func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+        attempts += 1
+        let row: [String: Any] = ["run": run, "attempt": attempts, "cursor": cursor ?? "nil",
+            "phase": "request", "monotonic": ProcessInfo.processInfo.systemUptime]
+        LabEvidence.append(row, to: "playlist-lab-offline.jsonl")
+        do {
+            var request = URLRequest(url: url); request.timeoutInterval = 1
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            return HMPlaylistPage(items: [], nextCursor: nil)
+        } catch {
+            var failure = row; failure["phase"] = "failure"; failure["error"] = String(describing: error)
+            failure["monotonic"] = ProcessInfo.processInfo.systemUptime
+            LabEvidence.append(failure, to: "playlist-lab-offline.jsonl")
+            throw error
+        }
     }
 }
 

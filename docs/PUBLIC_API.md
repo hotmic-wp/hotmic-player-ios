@@ -255,6 +255,7 @@ case variantChanged
 case viewEnd
 case viewStart
 enum Kind
+var rawValue: String { get }
 ```
 
 ## HMPlaybackSnapshot
@@ -337,15 +338,18 @@ enum HMPlaybackState
 ## HMPlayerConfiguration
 
 ```swift
-init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(), cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000, playlistTTL: TimeInterval = 30)
+init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(), cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000, playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false, managesAudioSession: Bool = true)
 static let `default`: HMPlayerConfiguration
 static let highQuality: HMPlayerConfiguration
 static let instantStart: HMPlayerConfiguration
 struct HMPlayerConfiguration
 var cacheCapacityBytes: Int
+var loops: Bool
+var managesAudioSession: Bool
 var playlistTTL: TimeInterval
 var poolSize: Int
 var prefetch: HMPrefetchPolicy
+var startsMuted: Bool
 var startupPeakBitRate: Double
 ```
 

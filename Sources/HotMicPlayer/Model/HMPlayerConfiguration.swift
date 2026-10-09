@@ -87,11 +87,12 @@ public struct HMPlayerConfiguration: Sendable {
     /// Seconds after activation before lifting the startup ceiling.
     @_spi(Benchmark) public var startupBitRateWindow: TimeInterval
     /// Whether an item loops when it reaches its end.
-    @_spi(Benchmark) public var loops: Bool
+    public var loops: Bool
     /// Initial global mute state.
-    @_spi(Benchmark) public var startsMuted: Bool
-    /// Whether the SDK activates and deactivates the app audio session.
-    @_spi(Benchmark) public var managesAudioSession: Bool
+    public var startsMuted: Bool
+    /// Whether the SDK configures, activates and deactivates the app audio session (default true).
+    /// Set false before presenting the player when the host app owns AVAudioSession; teardown also leaves it alone.
+    public var managesAudioSession: Bool
     /// Whether revisiting an entry restores its last playhead.
     @_spi(Benchmark) public var restoresPlaybackPosition: Bool
 
@@ -114,9 +115,11 @@ public struct HMPlayerConfiguration: Sendable {
     /// Creates stable partner settings. Start with default, instantStart or highQuality, then adjust these budgets.
     public init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(),
                 cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000,
-                playlistTTL: TimeInterval = 30) {
+                playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false,
+                managesAudioSession: Bool = true) {
         self.init(strategy: .S3, poolSize: poolSize, prefetch: prefetch, cacheCapacityBytes: cacheCapacityBytes,
-                  startupPeakBitRate: startupPeakBitRate, playlistTTL: playlistTTL)
+                  startupPeakBitRate: startupPeakBitRate, loops: loops, startsMuted: startsMuted,
+                  managesAudioSession: managesAudioSession, playlistTTL: playlistTTL)
     }
     /// Creates the settings for one benchmark strategy.
     @_spi(Benchmark) public static func preset(_ strategy: HMPlaybackStrategy) -> Self {

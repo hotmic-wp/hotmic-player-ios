@@ -6,7 +6,7 @@ import Foundation
 public struct HMPlaybackEvent: Sendable, Identifiable {
 
     /// Categories of playback telemetry.
-    public enum Kind: String, Sendable, CaseIterable {
+    public enum Kind: Sendable, Hashable {
         /// A view (one item impression) began. Mux: `videochange` / new view.
         case viewStart
         /// The viewer left the item. Carries watch time in `metrics`.
@@ -51,6 +51,62 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         @_spi(Benchmark) case startupSummary
         /// Benchmark session completed, including wasted speculative bytes.
         @_spi(Benchmark) case runEnd
+
+        /// Stable category name for analytics sinks. Category enumeration and decoding are not partner API.
+        public var rawValue: String {
+            switch self {
+            case .viewStart: return "viewStart"
+            case .viewEnd: return "viewEnd"
+            case .loadStart: return "loadStart"
+            case .firstFrame: return "firstFrame"
+            case .play: return "play"
+            case .playing: return "playing"
+            case .pause: return "pause"
+            case .seeking: return "seeking"
+            case .seeked: return "seeked"
+            case .rebufferStart: return "rebufferStart"
+            case .rebufferEnd: return "rebufferEnd"
+            case .variantChanged: return "variantChanged"
+            case .ended: return "ended"
+            case .error: return "error"
+            case .preloadStart: return "preloadStart"
+            case .preloadReady: return "preloadReady"
+            case .playerRecycled: return "playerRecycled"
+            case .transfer: return "transfer"
+            case .prefetchError: return "prefetchError"
+            case .transportError: return "transportError"
+            case .startupSummary: return "startupSummary"
+            case .runEnd: return "runEnd"
+            }
+        }
+        /// Decodes recorded benchmark categories, including experimental events.
+        @_spi(Benchmark) public init?(rawValue: String) {
+            switch rawValue {
+            case "viewStart": self = .viewStart
+            case "viewEnd": self = .viewEnd
+            case "loadStart": self = .loadStart
+            case "firstFrame": self = .firstFrame
+            case "play": self = .play
+            case "playing": self = .playing
+            case "pause": self = .pause
+            case "seeking": self = .seeking
+            case "seeked": self = .seeked
+            case "rebufferStart": self = .rebufferStart
+            case "rebufferEnd": self = .rebufferEnd
+            case "variantChanged": self = .variantChanged
+            case "ended": self = .ended
+            case "error": self = .error
+            case "preloadStart": self = .preloadStart
+            case "preloadReady": self = .preloadReady
+            case "playerRecycled": self = .playerRecycled
+            case "transfer": self = .transfer
+            case "prefetchError": self = .prefetchError
+            case "transportError": self = .transportError
+            case "startupSummary": self = .startupSummary
+            case "runEnd": self = .runEnd
+            default: return nil
+            }
+        }
     }
 
     /// Stable identity for this value.

@@ -76,3 +76,16 @@ struct HMResolutionRetry {
     }
     func canRetry(at now: TimeInterval) -> Bool { attempts < Self.maximumAttempts && now >= nextAttempt }
 }
+
+/// Four total attempts, with 1/2/4-second waits. Navigation or explicit loading resets the budget.
+struct HMPagingRetry {
+    static let maximumAttempts = 4
+    var attempts = 0
+    var nextAttempt: TimeInterval = 0
+    var exhausted: Bool { attempts >= Self.maximumAttempts }
+    mutating func failed(at now: TimeInterval) {
+        attempts += 1
+        nextAttempt = now + min(4, pow(2, Double(attempts - 1)))
+    }
+    func canRetry(at now: TimeInterval) -> Bool { !exhausted && now >= nextAttempt }
+}

@@ -36,7 +36,13 @@ struct FeedScreen: View {
 
 [MinimalIntegration.swift](../Sample/HotMicPlayerDemo/Integration/MinimalIntegration.swift) compiles this shape in the Sample app with only `import HotMicPlayer`. The overlay gets the item (including resolved metadata fallbacks) and an observable snapshot with state, position, duration, buffer, bitrate, stalls, TTFF and readiness tier. Use `snapshot.currentTime` to query `player.timeline(for: item)`; overlays render from the media clock, so seeking rewinds engagement along with video.
 
-Use `player.isFeedVisible = false` when the host disappears or backgrounds. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. The default player manages its playback audio session; experimental audio-session tuning is Benchmark SPI.
+Use `player.isFeedVisible = false` when the host disappears or backgrounds. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. The default player configures and activates `AVAudioSession` for playback, and deactivates it on teardown. If your app owns the session, set `managesAudioSession: false` before creating/presenting the player. With that flag false, playback, foreground resume and teardown leave your session category and activation alone. `startsMuted` sets the initial mute state; `loops` controls repeating at the end of a VOD. All three are stable public settings:
+
+```swift
+let configuration = HMPlayerConfiguration(loops: false, startsMuted: true, managesAudioSession: false)
+let player = HMPlayer(configuration: configuration)
+// The host configures and activates its own AVAudioSession when appropriate.
+```
 
 ## Atomic editing and navigation
 
@@ -67,7 +73,9 @@ struct ClipPlaylist: HMPlaylistSource {
 }
 ```
 
-Assign `player.playlistSource`, then `await player.start()`. Pages drop already-loaded IDs and within-page repetitions, emit the non-fatal `.sourcePageDuplicates(ids:)` event, and append new entries through the usual prefetch path. The cursor advances even on an all-duplicate page. Partner-called operations still reject duplicates atomically. Paging triggers when three entries remain after current (the low-water tuning is Benchmark SPI). A nil next cursor ends the source; a repeated cursor ends automatic paging to prevent a request loop. Partner edits, including `replaceAll`, preserve an in-flight source request and cursor; the returned page merges against the latest list. Assigning a new source resets the cursor and invalidates the old request. Manual `loadNextPage()` can retry a paging failure. `HMStaticPlaylistSource` supports samples/tests, finite lists and looping lists with distinct IDs.
+Assign `player.playlistSource`, then `await player.start()`. Pages drop already-loaded IDs and within-page repetitions, emit the non-fatal `.sourcePageDuplicates(ids:)` event, and append new entries through the usual prefetch path. The cursor advances even on an all-duplicate page. Partner-called operations still reject duplicates atomically. Paging triggers when three entries remain after current (the low-water tuning is Benchmark SPI). A nil next cursor ends the source; a repeated cursor ends automatic paging to prevent a request loop. Append, insert, upcoming replacement and removal preserve an in-flight source request and cursor; the returned page merges against the latest list. A successful `replaceAll` resets the source cursor to nil, restores source availability and clears the retry budget. A page already in flight finishes without cancellation, but its old-cursor result is ignored; subsequent paging starts from nil. An invalid `replaceAll` leaves the cursor intact. Assigning a new source resets the cursor and cancels the old request.
+
+Thrown source errors and rejected pages each emit one `.error` event and update `loadError` per failed attempt. Near the end, paging allows four total attempts, waiting 1, 2 and 4 seconds between them. After the fourth failure it stops automatic requests while `hasMoreContent` stays true. Moving to another current item or explicitly calling `loadNextPage()` resets the budget; repeated `start()` calls and unrelated playlist edits do not. Explicit loads during an existing fetch do nothing. Successful pages clear the error and retry budget. `HMStaticPlaylistSource` supports samples/tests, finite lists and looping lists with distinct IDs.
 
 ## Optional reference resolution
 
@@ -102,7 +110,7 @@ Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)`
 
 Each access to `events` creates an independent ordered subscription, buffering the newest 256 events; slow consumers can lose older events. Cancelling the consuming task releases that subscription. Observation clients can read `items`, `activeIndex`, `currentItem`, `snapshot`, paging state, `loadError` and `lastEvent`. Snapshots expose getters with internal setters; activation/frame flags are Benchmark SPI diagnostics. Subscribe before mutation when the first edit matters. TTFF is seconds in `HMPlayerEvent`; analytics `ttff_ms` remains milliseconds. Readiness (`cold`, `cachedBytes`, `warmPlayer`) is measured at activation, not retroactively after decoding.
 
-Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existing `HMAnalyticsSink`, `HMConsoleSink` and `HMMuxAnalyticsSink` contracts remain. JSONL, mock timelines and the logging Mux bridge are Benchmark SPI. The real Mux bridge belongs to the host; see [Mux integration](../Integrations/Mux/README.md). `finishRun()` and transfer/prefetch-error/startup-summary/run-end telemetry are Benchmark SPI.
+Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existing `HMAnalyticsSink`, `HMConsoleSink` and `HMMuxAnalyticsSink` contracts remain. JSONL, mock timelines and the logging Mux bridge are Benchmark SPI. The real Mux bridge belongs to the host; see [Mux integration](../Integrations/Mux/README.md). `finishRun()` and transfer/prefetch-error/startup-summary/run-end telemetry are Benchmark SPI. `HMPlaybackEvent.Kind.rawValue` remains a stable string for sinks; the kind has no public `CaseIterable` or `RawRepresentable` conformance. Decoding recorded categories requires Benchmark SPI.
 
 ## Transport settings and limits
 
@@ -112,7 +120,7 @@ Use versioned VOD paths. Query parameters are preserved in cache identity; volat
 
 ## Stable configuration
 
-Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), and `playlistTTL` (memory-only, seconds). `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
+Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), `playlistTTL` (memory-only, seconds), `loops`, `startsMuted` and `managesAudioSession`. `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
 
 ```swift
 var configuration = HMPlayerConfiguration.instantStart

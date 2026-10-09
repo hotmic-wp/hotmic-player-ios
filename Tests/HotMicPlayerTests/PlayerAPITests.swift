@@ -313,8 +313,10 @@ struct PlayerNativeReviewTests {
         // must reach the client before the upstream range completes.
         let origin = try PrefixOrigin()
         defer { origin.listener.cancel() }
-        while origin.listener.port == nil, Date() < deadline { await Task.yield() }
+        // NWListener can publish .any (rawValue 0) before it is ready.
+        while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { await Task.yield() }
         let port = try #require(origin.listener.port)
+        try #require(port.rawValue != 0)
         let media = URL(string: "http://127.0.0.1:\(port.rawValue)/slow.mp4")!
         let entry = HMMediaItem(id: "progressive", url: media)
         let cache = HMDiskCache.shared(directory: directory, capacity: 128_000_000)
@@ -343,8 +345,9 @@ struct PlayerNativeReviewTests {
             let fixture = try PrefixOrigin(mode: mode)
             defer { fixture.listener.cancel() }
             let readyDeadline = Date().addingTimeInterval(2)
-            while fixture.listener.port == nil, Date() < readyDeadline { await Task.yield() }
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < readyDeadline { await Task.yield() }
             let fixturePort = try #require(fixture.listener.port)
+            try #require(fixturePort.rawValue != 0)
             let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/bounded.mp4")!
             let bounded = HMMediaItem(id: "bounded-\(fixturePort)", url: url)
             await cache.put(key: url.absoluteString, start: 31, data: Data([7]), total: 32,

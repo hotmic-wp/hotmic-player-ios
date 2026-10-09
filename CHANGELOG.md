@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0-rc.3
+
+- Prioritize active playback over prefetch during startup and stalls. Stream cache misses progressively, hold inactive proxy requests without forcing direct fallback, and handle short or oversized origin range replies.
+- Start and retain the next item's small head and preroll with buffer hysteresis, bound the warm-frame wait, and reduce adaptive prefetch and HLS startup bitrate on slow links. Preserve existing warm neighbours and the S2 benchmark control.
+- Keep incoming warm video layers attached through page transitions. Require a visible frame at a display boundary, guard pending seeks against stale frames, limit inactive display links to neighbouring pages, and preserve native rewind tolerances when recycling players.
+- Split benchmark analysis into first-video and swipe TTFF, including the percentage at or below 150 ms. Document the detector and prefetch changes. Simulator smoke validates the flow; physical-device performance remains unverified for this round.
+
 ## 1.0.0-rc.2
 
 - Replace private terms in the partner documentation checker with generic patterns and an optional environment denylist. Report file names only and pass the optional denylist from CI. No public API or playback behavior changes.

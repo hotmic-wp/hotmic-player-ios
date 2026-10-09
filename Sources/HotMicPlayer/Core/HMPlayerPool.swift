@@ -51,7 +51,7 @@ final class HMPlayerPool {
 
     /// The node already responsible for `item`, if any. Does not allocate.
     func existingNode(for item: HMMediaItem) -> HMPlayerNode? {
-        guard let node = assignments[item.id], node.item == item else { return nil }
+        guard let node = assignments[item.id], node.item?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true else { return nil }
         return node
     }
 
@@ -62,6 +62,7 @@ final class HMPlayerPool {
     @discardableResult
     func node(for item: HMMediaItem, protecting protectedItemIDs: Set<String>, playbackURL: URL? = nil) -> HMPlayerNode {
         if let existing = existingNode(for: item) {
+            existing.updateMetadata(item)
             existing.lastTouched = Date()
             return existing
         }
@@ -92,7 +93,10 @@ final class HMPlayerPool {
     /// Release every node not in `keepItemIDs`. Called after each page change.
     func trim(keeping keepItems: Set<HMMediaItem>) {
         for node in nodes {
-            guard let item = node.item, !keepItems.contains(item) else { continue }
+            guard let item = node.item else { continue }
+            if let updated = keepItems.first(where: { $0.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) }) {
+                node.updateMetadata(updated); continue
+            }
             willRecycle?(node, item)
             assignments[item.id] = nil
             node.release()

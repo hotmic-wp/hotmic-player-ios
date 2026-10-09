@@ -98,6 +98,18 @@ public enum HMFailedItemPolicy: String, Sendable {
     case stay
 }
 
+/// Behavior when a playlist edit removes the current entry.
+/// Use from any task; this is a Sendable value.
+public enum HMRemovedCurrentPolicy: String, Sendable, Equatable {
+    /// Select the next survivor, then previous; idle if none remain. The default.
+    case advanceNow
+    /// Retain current until its next natural end, suppress looping, then remove and advance.
+    /// A swipe away removes it immediately. Other removals apply immediately.
+    /// Failed, failure-idle or already-ended current entries advance immediately.
+    /// Reconciliation with no upcoming entries goes idle instead of replaying history.
+    case finishThenAdvance
+}
+
 /// Playback, paging and cache settings for an HMPlayer.
 ///
 /// Use from any task; mutate only an exclusively owned value.
@@ -108,7 +120,7 @@ public struct HMPlayerConfiguration: Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public var playlistTTL: TimeInterval = 30
-    /// Exact query parameter names to remove from cache identity. Empty is safe by default.
+    /// Exact query parameter names to remove from cache and playback identity. Empty is safe by default.
     @_spi(Benchmark) public var volatileSigningQueryParameters: [String] = []
     /// Benchmark playback strategy; S3 is the default hybrid.
     @_spi(Benchmark) public var strategy: HMPlaybackStrategy
@@ -155,6 +167,9 @@ public struct HMPlayerConfiguration: Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public var failedItemPolicy: HMFailedItemPolicy = .skip
+    /// Removal behavior for `remove(ids:)` and a ranked refresh missing current.
+    /// Access from any task; mutate only an exclusively owned value.
+    public var removedCurrentPolicy: HMRemovedCurrentPolicy = .advanceNow
     /// Whether an item loops when it reaches its end.
     ///
     /// Use from any task; mutate only an exclusively owned value.
@@ -243,6 +258,7 @@ public struct HMPlayerConfiguration: Sendable {
     /// Complete experimental configuration serialization, excluded from partner imports.
     struct BenchmarkRecord: Codable, Sendable {
         private let failedItemPolicy: FailedItemPolicyRecord?
+        private let removedCurrentPolicy: String?
         private let adaptive: Bool
         private let adaptiveThresholds: HMAdaptivePrefetchThresholds
         private let maxPrefetchConcurrency: Int
@@ -265,6 +281,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
             failedItemPolicy = c.failedItemPolicy == .skip ? .skip : .stay
+            removedCurrentPolicy = c.removedCurrentPolicy.rawValue
             adaptive = c.adaptive; adaptiveThresholds = c.adaptiveThresholds
             maxPrefetchConcurrency = c.maxPrefetchConcurrency; resolveAhead = c.resolveAhead; minimumCachedStartBytes = c.minimumCachedStartBytes
             lowWaterMark = c.lowWaterMark; playlistTTL = c.playlistTTL
@@ -284,6 +301,7 @@ public struct HMPlayerConfiguration: Sendable {
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
             c.failedItemPolicy = failedItemPolicy == .stay ? .stay : .skip
+            c.removedCurrentPolicy = removedCurrentPolicy.flatMap(HMRemovedCurrentPolicy.init(rawValue:)) ?? .advanceNow
             c.adaptive = adaptive; c.adaptiveThresholds = adaptiveThresholds
             c.maxPrefetchConcurrency = maxPrefetchConcurrency; c.resolveAhead = resolveAhead; c.minimumCachedStartBytes = minimumCachedStartBytes
             c.volatileSigningQueryParameters = volatileSigningQueryParameters

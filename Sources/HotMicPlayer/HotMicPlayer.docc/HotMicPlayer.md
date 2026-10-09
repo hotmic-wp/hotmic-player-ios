@@ -23,6 +23,7 @@ All player, timeline, source, and engagement access is isolated to the main acto
 - <doc:HotMicIntegration>
 - <doc:PlaylistManagement>
 - <doc:PrefetchAndPerformance>
+- <doc:EncodingForFastStart>
 - <doc:EngagementAndCustomSources>
 
 ### Playback and playlists

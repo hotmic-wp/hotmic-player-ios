@@ -74,9 +74,11 @@ The default engine uses two native players and a bounded disk media cache. Partn
 
 ### 0.4.1
 
-- Moderation source updates on `HMEngagement`: `removeMessage(id:)`, `upsertPoll(_:)`, `removePoll(id:)`, message-reaction count removal and stream-reaction removal by ID. `update(_:)` remains an alias for poll upsert.
+- Moderation source updates on `HMEngagement`: `removeMessage(id:)`, `upsertPoll(_:)`, `removePoll(id:)`, message-reaction count removal and stream-reaction removal by ID. `update(_:)` is deprecated and renamed to `upsertPoll(_:)`. Sources with reaction totals should prefer `updateReactions(_:forMessage:)`; reaction removal applies deltas.
 - Deletions remove incoming, confirmed-own and pending messages from the rail and waveform, close removed poll cards, and prevent late echoes or action completions from restoring moderated content. Immutable timelines are supported through filtered engagement queries and cached waveform aggregates.
-- Sample-only mock moderation controls: launch a Debug build with `--hm-moderation 1` to delete the newest incoming chat, the viewer's last message, the active poll or a peak's stream reactions.
+- Player-owned deletion records survive engagement eviction and rebuild. Removed poll IDs ignore later upserts; there is no reinstate API. Records are bounded per item to 4,096 IDs and 256 KiB of ID text; overflow hides engagement for that item rather than forgetting deletions. Records end when the item leaves the playlist or the player tears down.
+- Waveform/peak projections rebuild lazily on the next read after event mutations. Chat/reaction queries merge sorted lists without sorting each tick. Source density weighting is kept when its events already exclude deletions; otherwise moderation uses SDK aggregation.
+- Sample-only mock moderation controls: launch a Debug build with `--hm-moderation 1` to delete the newest incoming chat, the viewer's last message, the active poll or a peak's stream reactions. Add `--hm-moderation-eviction 1` to narrow the window, show rebuild evidence and send a late poll upsert.
 
 ### 0.4.0
 

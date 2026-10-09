@@ -29,7 +29,8 @@ final class EngagementWalkthroughUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0"]
         if let origin = env["HM_FEED_HLS_ORIGIN"] { app.launchArguments += ["--hm-feed-hls-origin", origin] }
-        if mode == "moderation" { app.launchArguments += ["--hm-moderation", "1"] }
+        if mode.hasPrefix("moderation") { app.launchArguments += ["--hm-moderation", "1"] }
+        if mode == "moderation-eviction" { app.launchArguments += ["--hm-moderation-eviction", "1"] }
         if mode == "light" { app.launchArguments += ["--hm-appearance", "light"] }
         if mode == "xl" { app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXL"] }
         app.launch()
@@ -44,12 +45,12 @@ final class EngagementWalkthroughUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1.2)
         togglePlayback()
         Thread.sleep(forTimeInterval: 0.6)
-        if mode == "moderation" {
+        if mode.hasPrefix("moderation") {
             XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 3), "moderation walkthrough must stay paused")
         }
 
         switch mode {
-        case "moderation":
+        case "moderation", "moderation-eviction":
             try moderationWalkthrough()
             return
         case "light":
@@ -152,6 +153,31 @@ final class EngagementWalkthroughUITests: XCTestCase {
         XCTAssertEqual(status.label, "Deleted peak reactions")
         XCTAssertNotEqual(peaks.allElementsBoundByIndex.map(\.label), before, "waveform peaks did not update")
         shot("moderation-peak-removed")
+
+        if ProcessInfo.processInfo.environment["HM_WALK_MODE"] == "moderation-eviction" {
+            let remainingPeaks = peaks.allElementsBoundByIndex.map(\.label)
+            let item = app.staticTexts["moderation-item"]
+            // A narrow window keeps current and previous only. Real swipes to index 3
+            // evict item 0; compare engagement identity on return to prove a rebuild.
+            for index in 1...3 {
+                app.swipeUp(velocity: .fast)
+                XCTAssertTrue(waitFor(item, "\(index)|original", timeout: 5))
+            }
+            shot("moderation-out-of-window")
+            for index in stride(from: 2, through: 0, by: -1) {
+                app.swipeDown(velocity: .fast)
+                XCTAssertTrue(waitFor(item, "\(index)|\(index == 0 ? "rebuilt" : "original")", timeout: 5))
+            }
+            XCTAssertFalse(app.otherElements["Poll"].firstMatch.exists)
+            XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", deletedText)).firstMatch.exists)
+            XCTAssertEqual(app.staticTexts["moderation-survivors"].label, "chat:0 reactions:0 poll:0")
+            XCTAssertEqual(peaks.allElementsBoundByIndex.map(\.label), remainingPeaks)
+            shot("moderation-rebuilt")
+            app.buttons["moderation-late-poll"].tap()
+            XCTAssertEqual(status.label, "Late poll ignored")
+            XCTAssertFalse(app.otherElements["Poll"].firstMatch.exists)
+            shot("moderation-late-poll-ignored")
+        }
     }
 
     /// Scrub cancellation: a drag on the scrubber that turns into a page swipe, a drag that returns
@@ -228,7 +254,7 @@ final class EngagementWalkthroughUITests: XCTestCase {
 
     /// Taps empty video above the overlay content, which toggles playback.
     private func togglePlayback() {
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.32)).tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.38)).tap()
     }
 
     private func shot(_ name: String) {

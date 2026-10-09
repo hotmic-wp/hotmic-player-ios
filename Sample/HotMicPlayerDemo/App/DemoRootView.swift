@@ -153,6 +153,13 @@ struct DemoRootView: View {
             created?.configuration = configuration
         }
         if !benchmark.enabled { settings.rebuildConfiguration() }
+        #if DEBUG
+        if benchmark.values["moderation-eviction"] == "1" {
+            var narrow = created.configuration
+            narrow.resolveAhead = 0; narrow.prefetch = .off; narrow.poolSize = 1; narrow.adaptive = false
+            created.configuration = narrow
+        }
+        #endif
         if benchmark.values["hud"] == "0" { settings.showsHUD = false }
         else { settings.showsOverlays = false; settings.showsHUD = false }
         controller = created

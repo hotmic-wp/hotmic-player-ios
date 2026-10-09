@@ -118,6 +118,7 @@ import Observation
     @ObservationIgnored private var interactionNext: HMMediaItem?
     @ObservationIgnored private var timelines: [HMMediaItem: HMStreamTimeline] = [:]
     @ObservationIgnored private var engagements: [HMMediaItem: HMEngagement] = [:]
+    @ObservationIgnored private var moderationByItemID: [String: HMModerationState] = [:]
     /// Inert stand-ins for items outside the playlist (a cell animating out), reused across body passes.
     @ObservationIgnored private var detachedEngagements: [String: HMEngagement] = [:]
     /// Playlist position by ID, rebuilt lazily after an edit; overlay bodies look items up on every tick.
@@ -420,6 +421,7 @@ import Observation
         for (item, task) in resolutionTasks where !window.contains(item) { task.cancel(); resolutionTasks[item] = nil }
         let currentIDs = Set(items.map(\.id))
         resumePositions = resumePositions.filter { currentIDs.contains($0.key) }
+        moderationByItemID = moderationByItemID.filter { currentIDs.contains($0.key) }
         // Engagement follows the window (plus the entry just behind current, for a swipe back). One
         // the viewer has sent, reacted or voted in survives anywhere in the playlist so that isn't lost.
         let keep = Set(window + [currentItem].compactMap { $0 } + (items.indices.contains(activeIndex - 1) ? [items[activeIndex - 1]] : []))
@@ -611,13 +613,18 @@ import Observation
     /// to the entry's current playback time. Kept while the entry is near the playhead, or anywhere in
     /// the playlist once the viewer has acted in it; otherwise rebuilt (and `engagementDidLoad` called
     /// again) when it comes back. An item that isn't in the playlist gets an inert, empty engagement.
+    /// Bounded deletion records are kept separately per item ID until playlist removal or teardown,
+    /// so rebuilt engagements cannot restore moderated events or polls.
     public func engagement(for item: HMMediaItem) -> HMEngagement {
         guard let entry = entry(withID: item.id) else { return detachedEngagement(for: item) }
         if let existing = engagements[entry] { return existing }
         let display = resolutions.cached(entry) ?? resolutions.cached(entry, requireFormat: false) ?? entry
+        // Deletion records outlive this cache entry, but never outlive the playlist item.
+        let moderation = moderationByItemID[entry.id] ?? HMModerationState()
+        moderationByItemID[entry.id] = moderation
         // The player owns the source; its engagements borrow it.
         let created = HMEngagement(item: display, timeline: timeline(for: entry), source: interactions,
-                                   retainsSource: false) { [weak self] in
+                                   retainsSource: false, moderation: moderation) { [weak self] in
             self?.snapshot(for: entry).currentTime ?? 0
         }
         engagements[entry] = created
@@ -676,7 +683,7 @@ import Observation
         if let proxy { Task { _ = await proxy.finish() } }
         for node in pool.nodes { analytics.detach(playerKey: node.id) }; pool.releaseAll()
         finishSubscribers()
-        engagements.removeAll(); detachedEngagements.removeAll(); timelines.removeAll()
+        engagements.removeAll(); detachedEngagements.removeAll(); timelines.removeAll(); moderationByItemID.removeAll()
         if configuration.managesAudioSession { HMAudioSession.deactivate() }
     }
     private func stopWork() {

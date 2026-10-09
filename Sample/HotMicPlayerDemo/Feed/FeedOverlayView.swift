@@ -38,7 +38,8 @@ struct FeedOverlayView: View {
             #if DEBUG
             if isActive && BenchmarkOptions().values["moderation"] == "1" {
                 VStack {
-                    ModerationDebugView(engagement: controller.engagement(for: item), mediaTime: snapshot.currentTime)
+                    ModerationDebugView(engagement: controller.engagement(for: item), mediaTime: snapshot.currentTime,
+                                        player: controller, session: settings.moderation)
                     Spacer()
                 }
                 .padding(.top, safeArea.top + 48)

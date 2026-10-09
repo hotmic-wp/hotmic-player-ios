@@ -1,0 +1,31 @@
+name: Partner release checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: player-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: macos-26
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package, Examples, Sample, DocC; then run the unit suite once
+        run: bash .github/scripts/validate-release.sh
+      - name: Upload validation evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-validation-failure
+          path: |
+            .bench/release/*.log
+            .bench/release/UnitTests.xcresult
+          retention-days: 7

@@ -420,11 +420,12 @@ import Observation
         for (item, task) in resolutionTasks where !window.contains(item) { task.cancel(); resolutionTasks[item] = nil }
         let currentIDs = Set(items.map(\.id))
         resumePositions = resumePositions.filter { currentIDs.contains($0.key) }
-        timelines = timelines.filter { items.contains($0.key) }
         // Engagement follows the window (plus the entry just behind current, for a swipe back). One
         // the viewer has sent, reacted or voted in survives anywhere in the playlist so that isn't lost.
         let keep = Set(window + [currentItem].compactMap { $0 } + (items.indices.contains(activeIndex - 1) ? [items[activeIndex - 1]] : []))
         engagements = engagements.filter { items.contains($0.key) && (keep.contains($0.key) || $0.value.holdsViewerState) }
+        // Same rule for timelines; a kept engagement keeps its timeline so both stay one instance.
+        timelines = timelines.filter { items.contains($0.key) && (keep.contains($0.key) || engagements[$0.key] != nil) }
         for (entry, engagement) in engagements {
             if let resolved = resolutions.cached(entry) ?? resolutions.cached(entry, requireFormat: false) { engagement.updateItem(resolved) }
         }
@@ -601,7 +602,8 @@ import Observation
     public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.snapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
     /// Clock-indexed overlay data. Network session lifecycle belongs to the interaction hooks, not this accessor.
     public func timeline(for item: HMMediaItem) -> HMStreamTimeline {
-        let entry = entry(withID: item.id) ?? item
+        // Outside the playlist: the inert engagement's empty timeline, not a fresh source call per body pass.
+        guard let entry = entry(withID: item.id) else { return detachedEngagement(for: item).timeline }
         if let existing = timelines[entry] { return existing }
         let created = interactions.timeline(for: resolutions.cached(entry) ?? entry); timelines[entry] = created; return created
     }
@@ -623,6 +625,7 @@ import Observation
         return created
     }
     var cachedEngagementCount: Int { engagements.count }
+    var cachedTimelineCount: Int { timelines.count }
     private func detachedEngagement(for item: HMMediaItem) -> HMEngagement {
         if let existing = detachedEngagements[item.id] { return existing }
         if detachedEngagements.count >= 8 { detachedEngagements.removeAll() }

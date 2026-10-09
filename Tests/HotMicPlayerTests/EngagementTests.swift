@@ -191,37 +191,66 @@ struct EngagementTests {
         var markers: [HMTimelineMarker] { [] }
     }
 
-    final class EchoingSource: HMInteractionSource {
+    /// Confirms with server IDs, like HotMicCore's sendChatMessage. Optionally echoes a reaction
+    /// through `receive(_:)` before confirming, to race the confirmation.
+    final class ServerSource: HMInteractionSource {
         var sentIDs: [String] = []
+        weak var engagement: HMEngagement?
+        var echoReactionFirst = false
+        var reactions = 0
         func timeline(for item: HMMediaItem) -> HMStreamTimeline { FixedTimeline(duration: 30, events: []) }
         func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { .all }
-        func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws { sentIDs.append(message.id) }
-        func react(_ emoji: String, for item: HMMediaItem) async throws {}
+        func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+            sentIDs.append(message.id)
+            return HMTimelineEvent(id: "srv-\(sentIDs.count)", offset: 999, kind: .chat, author: "mara_v", text: message.text,
+                                   wallTime: Date(timeIntervalSince1970: 1), reactions: ["💜": 1])
+        }
+        func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+            reactions += 1
+            let confirmed = HMTimelineEvent(id: "srv-rx-\(reactions)", offset: reaction.offset, kind: .reaction,
+                                            emoji: reaction.emoji, magnitude: 1)
+            if echoReactionFirst { engagement?.receive(confirmed) }
+            return confirmed
+        }
     }
 
-    @Test("The viewer's sent chat and reactions persist on a timeline that ignores append, and echoes don't double them")
+    @Test("Sent chat and reactions persist on a timeline that ignores append, adopt server IDs, and echoes don't double them")
     func ownEventsPersist() async throws {
-        let source = EchoingSource()
+        let source = ServerSource()
         var clock: TimeInterval = 5
         let engagement = HMEngagement(item: item, timeline: FixedTimeline(duration: 30, events: [chat(4, "c4")]),
                                       source: source, mediaClock: { clock })
+        source.engagement = engagement
         try await engagement.sendChat("still here")
         try await engagement.react("🔥")
-        // The source got the client ID, so it can echo with it.
-        let id = try #require(source.sentIDs.first)
-        #expect(engagement.messages(near: 5, lookback: 2).map(\.text) == ["t-c4", "still here"])
+        // The confirmed server message replaces the local one, at the offset it was sent.
+        let localID = try #require(source.sentIDs.first)
+        let mine = try #require(engagement.messages(near: 5, lookback: 2).last)
+        #expect(mine.id == "srv-1" && mine.offset == 5 && mine.author == "mara_v" && mine.isOwn)
+        #expect(mine.wallTime == Date(timeIntervalSince1970: 1) && mine.reactions == ["💜": 1])
+        #expect(mine.clientID == localID && mine.rowID == localID && mine.delivery == .sent)
+        #expect(engagement.messages(near: 6, lookback: 30).allSatisfy { $0.id != localID })
         // Scrub away and back: still there, although the timeline never stored it.
         clock = 1
         #expect(engagement.messages(near: 1, lookback: 2).isEmpty)
-        #expect(engagement.messages(near: 6, lookback: 2).map(\.id).contains(id))
-        #expect(engagement.reactions(in: 4...6).map(\.emoji) == ["🔥"])
+        #expect(engagement.messages(near: 6, lookback: 2).map(\.id) == ["c4", "srv-1"])
+        #expect(engagement.reactions(in: 4...6).map(\.id) == ["srv-rx-1"])
         #expect(engagement.reactionTotals == ["🔥": HMEngagement.viewerReactionWeight])
-        // The source echoes the message with the same ID: one copy, and a reaction echo isn't recounted.
-        engagement.receive(HMTimelineEvent(id: id, offset: 5, kind: .chat, author: "You", text: "still here"))
-        let reaction = try #require(engagement.reactions(in: 4...6).first)
-        engagement.receive(reaction)
-        #expect(engagement.messages(near: 6, lookback: 2).filter { $0.id == id }.count == 1)
+        // Server updates by the server ID find the message; echoes by it show and count once.
+        engagement.updateReactions(["💜": 7], forMessage: "srv-1")
+        #expect(engagement.messages(near: 6, lookback: 2).last?.reactions == ["💜": 7])
+        engagement.receive(HMTimelineEvent(id: "srv-1", offset: 5, kind: .chat, author: "mara_v", text: "still here"))
+        engagement.receive(HMTimelineEvent(id: "srv-rx-1", offset: 5, kind: .reaction, emoji: "🔥", magnitude: 1))
+        #expect(engagement.messages(near: 6, lookback: 2).filter { $0.text == "still here" }.count == 1)
+        #expect(engagement.reactions(in: 4...6).count == 1)
         #expect(engagement.reactionTotals == ["🔥": HMEngagement.viewerReactionWeight])
+        // An echo that arrives before the confirmation isn't counted twice either.
+        source.echoReactionFirst = true
+        clock = 5
+        try await engagement.react("🔥")
+        #expect(engagement.reactions(in: 4...6).map(\.id) == ["srv-rx-1", "srv-rx-2"])
+        // The echo was folded first, with the server's weight; the confirmation doesn't add the local one.
+        #expect(engagement.reactionTotals == ["🔥": HMEngagement.viewerReactionWeight + 1])
         #expect(engagement.holdsViewerState)
 
         // Ownership: a standalone engagement retains its source; a borrowed one does not.
@@ -240,7 +269,11 @@ struct EngagementTests {
 struct PlayerEngagementTests {
     final class CountingSource: HMInteractionSource {
         var loads: [String] = []
-        func timeline(for item: HMMediaItem) -> HMStreamTimeline { HMMockTimeline(itemID: item.id, duration: 10) }
+        var timelineCalls: [String] = []
+        func timeline(for item: HMMediaItem) -> HMStreamTimeline {
+            timelineCalls.append(item.id)
+            return HMMockTimeline(itemID: item.id, duration: 10)
+        }
         func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { .all }
         func sendChat(_ text: String, for item: HMMediaItem) async throws {}
         func engagementDidLoad(_ engagement: HMEngagement) { loads.append(engagement.item.id) }
@@ -281,21 +314,27 @@ struct PlayerEngagementTests {
         let stranger = HMMediaItem(id: "gone", url: URL(fileURLWithPath: "/tmp/gone.mp4"))
         let inert = player.engagement(for: stranger)
         #expect(player.engagement(for: stranger) === inert && inert.capabilities == .readOnly)
-        #expect(source.loads == ["i0"])
+        #expect(player.timeline(for: stranger) === inert.timeline)
+        #expect(source.loads == ["i0"] && !source.timelineCalls.contains("gone"))
 
         // Far entries are evicted on the next window refresh unless the viewer acted in them.
         let far = player.engagement(for: list[4]), kept = player.engagement(for: list[5])
+        let farTimeline = player.timeline(for: list[4]), lone = player.timeline(for: list[3])
+        #expect(far.timeline === farTimeline)
         try await kept.sendChat("hold on to this")
         player.jump(toID: "i1")
+        // Timelines follow the same rule: evicted outside the window unless their engagement is kept.
+        #expect(player.timeline(for: list[3]) !== lone)
+        #expect(player.timeline(for: list[5]) === kept.timeline)
         #expect(player.engagement(for: list[0]) === first) // Previous entry stays for a swipe back.
         #expect(player.engagement(for: list[5]) === kept)
-        #expect(player.engagement(for: list[4]) !== far)
+        #expect(player.engagement(for: list[4]) !== far && player.timeline(for: list[4]) !== farTimeline)
         #expect(source.loads.filter { $0 == "i4" }.count == 2)
         // Removing an entry drops its engagement even with viewer state.
         player.remove(ids: ["i5"])
         #expect(player.cachedEngagementCount <= 3)
         player.teardown()
-        #expect(player.cachedEngagementCount == 0)
+        #expect(player.cachedEngagementCount == 0 && player.cachedTimelineCount == 0)
     }
 
     @Test("A reference's engagement adopts the resolved item")

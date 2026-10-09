@@ -1,4 +1,4 @@
-# HotMicPlayer 0.3.0
+# HotMicPlayer 0.3.1
 
 A zero-dependency partner SDK for iOS 17+ apps embedding a vertical VOD playlist. MP4 and HLS can share one playlist. `HMPlayer` owns playlist edits, playback and events; `HMVerticalFeedView` renders video with your overlay.
 
@@ -32,6 +32,10 @@ URL items play directly. Opaque `.reference(namespace: "partner", id: "clip")` i
 
 Edits are atomic on the main actor, return a success Boolean and emit clear errors for duplicates or invalid inputs. Swipes commit by item ID. An edit cancels the move only when current or destination changes position; appends preserve it. Empty append/insert and unknown removals are silent no-ops. Completed resolutions are session-cached; pending resolutions and speculative downloads leave with their window. Removed entries release their cache ownership while shared known resources remain reusable.
 
+A current reference starts automatically when resolution completes, including its video surface. Its readiness is `resolving` until the URL/format arrives; TTFF includes resolution time from the original user action.
+
+Terminal item failures emit an error and follow `HMPlayerConfiguration.failedItemPolicy`: `.skip` (default) tries the next nonfailed entry, then previous, then idle; `.stay` keeps the failed entry selected. Skips wait for a settled page and for custom dragging/scrubbing (`player.isInteracting`) to end. Failed entries remain in the playlist and are excluded from automatic traversal, so an all-failing list stops.
+
 Use `play()`, `pause()`, `seek(to:)`, `next()`, `previous()`, `jump(toID:)` and `isMuted`. SwiftUI observes player state and immutable playback snapshots. Each `events` access creates an independent `AsyncStream<HMPlayerEvent>` subscription. Analytics hub/sinks remain available, including console and the optional host-provided Mux bridge.
 
 The default engine uses two native players and a bounded disk media cache. Partner presets are `default`, `instantStart` and `highQuality`. Experimental strategies, JSONL and benchmark controls require `@_spi(Benchmark) import HotMicPlayer`. Engine nodes, pools, video surfaces and loopback transport are internal.
@@ -53,8 +57,11 @@ python3 bench/origin.py --root bench/generated --port 8088
 
 The default origin field is `http://127.0.0.1:8088` for the simulator. On a physical device use the reachable address of your owned bench host. All media fixtures and results are ignored by Git. Backgrounding the lab pauses playback; returning resumes the prepared current item.
 
+For the delayed-reference repro, launch the Sample with `--hm-reference-lab 1` and serve the generated HLS fixture on port `18088`. The lab covers initial selection, jump, swipe and insert/next for HLS and MP4, plus resolution/media failures, `.stay`, interaction deferral and end fallback. Evidence is written to `Documents/reference-lab*.jsonl`.
+
 ## Documentation and validation
 
+- [0.3.1 validation](docs/PLAYER_0.3.1_VALIDATION.md): before/after simulator flows and final build/test results.
 - [Integration](docs/INTEGRATION.md): minimal adoption, paging, references, engagement and events.
 - [Architecture](docs/ARCHITECTURE.md): playback, prefetch, cache ownership and overlay-by-clock model.
 - [Public API inventory](docs/PUBLIC_API.md): every exported type and function.

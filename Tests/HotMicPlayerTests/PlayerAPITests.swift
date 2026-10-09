@@ -154,6 +154,7 @@ struct PlayerReviewTests {
     @Test("Only the benchmark record owns configuration Codable, preserving the complete fingerprint")
     func benchmarkCoding() throws {
         var c = HMPlayerConfiguration.highQuality
+        c.failedItemPolicy = .stay
         c.lowWaterMark = 7; c.volatileSigningQueryParameters = ["token"]
         let data = try JSONEncoder().encode(c.benchmarkRecord)
         let restored = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: data).configuration

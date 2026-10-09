@@ -11,9 +11,9 @@ import Observation
     /// Loaded playlist entries, in display order.
     public var items: [HMMediaItem] { playlist.items }
     /// Index of the last committed current item; zero while idle.
-    public var activeIndex: Int { playlist.index }
+    public var activeIndex: Int { failureIdle ? 0 : playlist.index }
     /// Last committed current entry, or nil while idle.
-    public var currentItem: HMMediaItem? { playlist.current }
+    public var currentItem: HMMediaItem? { failureIdle ? nil : playlist.current }
     /// Current playback state, observed by SwiftUI through the underlying snapshot.
     public var snapshot: HMPlaybackSnapshot { currentNode?.snapshot ?? pendingSnapshot }
     /// True while requesting a page from the optional playlist source.
@@ -60,6 +60,17 @@ import Observation
     }
     /// Number of engine slots holding media; intended for diagnostics, without exposing native players.
     @_spi(Benchmark) public var preparedItemCount: Int { pool.busyCount }
+
+    /// Set true while a custom overlay or host control is dragging/scrubbing.
+    /// Set false on release or cancellation to allow a deferred failed-item skip.
+    public var isInteracting = false { didSet { if !isInteracting { scheduleFailedItemAdvance() } } }
+    private var failureIdle = false
+    @ObservationIgnored private var terminalFailures: Set<HMMediaItem> = []
+    @ObservationIgnored private var failureAdvanceTask: Task<Void, Never>?
+    @ObservationIgnored private var feedSurfaces = 0
+    @ObservationIgnored private var pageIsMoving = false
+    @ObservationIgnored private var failurePageID: String?
+    @ObservationIgnored private var pageRequestedAt: TimeInterval?
 
     var requestedPageID: String?
     var requestedPageIndex: Int? { requestedPageID.flatMap { id in items.firstIndex { $0.id == id } } }
@@ -137,7 +148,11 @@ import Observation
             current: old?.id, destination: requestedPageID)
         let changesCurrent = replacingCurrent || old != result.current
         if changesCurrent { saveAndDeactivate() }
-        playlist = result; loadError = nil; playlistRevision += 1
+        playlist = result
+        terminalFailures.formIntersection(Set(items))
+        if replacingCurrent { terminalFailures.removeAll(); failureIdle = false }
+        else if changesCurrent { failureIdle = false }
+        loadError = nil; playlistRevision += 1
         if !preservesMove { requestedPageID = nil; pageRequestID = UUID() }
         // Edits do not supersede a source request: its page is merged against the
         // latest playlist on arrival. replaceAll resets the cursor and ignores an old
@@ -151,7 +166,7 @@ import Observation
             emit(.currentItemChanged(currentItem))
         }
         emit(.playlistChanged(items))
-        refreshWindow(); checkEnd()
+        refreshWindow(); checkEnd(); scheduleFailedItemAdvance()
         return true
     }
 
@@ -173,23 +188,51 @@ import Observation
         guard let index = items.firstIndex(where: { $0.id == id }) else { report(.invalidIndex(-1)); return }
         navigate(to: index)
     }
-    private func navigate(to index: Int, reason: String = "play", requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    private func navigate(to index: Int, reason: String = "play", requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, retryFailed: Bool = true) {
         guard items.indices.contains(index), !ended else { return }
-        if index != activeIndex {
+        let changesCurrent = failureIdle || index != activeIndex
+        if changesCurrent {
             arrivalDwell = index == activeIndex + 1 ? activatedAt.map { max(0, requestedAt - $0) } : nil
-            resetPagingRetry(); saveAndDeactivate(); playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
-        if let currentItem { resolutionFailures[currentItem] = nil }
-        requestedPageID = nil; requestTime = requestedAt; requestReason = reason
-        prefetchSafe = false; prefetchIdentity = ""; proxy?.cancelPrefetch(); refreshWindow(); checkEnd()
+            resetPagingRetry(); saveAndDeactivate(); failureIdle = false; playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
+        if retryFailed, let currentItem {
+            let hadResolutionFailure = resolutionFailures.removeValue(forKey: currentItem) != nil
+            let wasTerminal = terminalFailures.remove(currentItem) != nil
+            if wasTerminal { currentNode?.release() }
+            if hadResolutionFailure || wasTerminal { pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading }
+        }
+        requestedPageID = nil; failurePageID = nil; pageRequestedAt = nil; requestTime = requestedAt; requestReason = reason
+        prefetchSafe = false; prefetchIdentity = ""; proxy?.cancelPrefetch(); refreshWindow(); checkEnd(); scheduleFailedItemAdvance()
     }
     /// Requests a view-driven animated page move; activation waits until scrolling settles.
     @_spi(Benchmark) public func requestPage(at index: Int) {
         guard items.indices.contains(index), index != activeIndex else { return }
-        requestedPageID = items[index].id; pageRequestID = UUID()
+        requestedPageID = items[index].id; pageRequestID = UUID(); pageRequestedAt = ProcessInfo.processInfo.systemUptime
     }
     func commitPage(toID id: String, requestedAt: TimeInterval) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        navigate(to: index, reason: "swipe", requestedAt: requestedAt)
+        // Native settle and SwiftUI's quiet fallback may both report this page.
+        // A duplicate must not replace the original action clock during resolution.
+        guard id != currentItem?.id else {
+            requestedPageID = nil; failurePageID = nil; pageRequestedAt = nil
+            return
+        }
+        let failedMove = failurePageID == id
+        let actionTime = requestedPageID == id ? pageRequestedAt ?? requestedAt : requestedAt
+        navigate(to: index, reason: failedMove ? "failed-item" : "swipe",
+                 requestedAt: actionTime, retryFailed: false)
+    }
+    func attachFeed() { feedSurfaces += 1 }
+    func detachFeed() {
+        feedSurfaces = max(0, feedSurfaces - 1)
+        pageIsMoving = false
+        if feedSurfaces == 0, let id = requestedPageID, failurePageID == id {
+            commitPage(toID: id, requestedAt: pageRequestedAt ?? ProcessInfo.processInfo.systemUptime)
+        }
+        scheduleFailedItemAdvance()
+    }
+    func setPageMoving(_ moving: Bool) {
+        pageIsMoving = moving
+        if !moving { scheduleFailedItemAdvance() }
     }
     /// Prepares transport before presenting a selected playlist index, preserving the request clock for analytics.
     @_spi(Benchmark) public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
@@ -306,6 +349,7 @@ import Observation
         transportTask = nil
     }
     private var windowItems: [HMMediaItem] {
+        guard !failureIdle else { return [] }
         let resolved = max(0, min(32, configuration.resolveAhead))
         let warm = configuration.strategy == .S2 || configuration.prefetch.ahead > 0 ? configuration.warmOffsets : []
         return playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + warm +
@@ -314,6 +358,10 @@ import Observation
 
     private func refreshWindow() {
         guard !ended else { return }
+        if let currentItem, resolutions.cached(currentItem) == nil {
+            pendingSnapshot.readinessTier = .resolving
+            if terminalFailures.contains(currentItem) { pendingSnapshot.state = .failed }
+        }
         updateInteractions()
         let window = windowItems
         resolutions.retain(Set(window))
@@ -344,7 +392,7 @@ import Observation
             let metadataOnly = item != currentItem && (!prefetchSafe || !mediaIDs.contains(item.id))
             let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
             if urgent { resolutions.promote(item) }
-            guard resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item] == nil,
+            guard !terminalFailures.contains(item), resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item] == nil,
                   resolutionFailures[item]?.canRetry(at: ProcessInfo.processInfo.systemUptime) != false else { continue }
             resolutionTasks[item] = Task(priority: urgent ? .userInitiated : .utility) { [weak self] in
                 guard let self else { return }
@@ -362,8 +410,12 @@ import Observation
                     var failure = resolutionFailures[item] ?? HMResolutionRetry()
                     failure.failed(at: ProcessInfo.processInfo.systemUptime); resolutionFailures[item] = failure
                     let kind = error as? HMPlayerError ?? .resolution(error.localizedDescription)
-                    if currentItem == item { pendingSnapshot.state = .failed; pendingSnapshot.errorDescription = kind.localizedDescription }
+                    if currentItem == item {
+                        pendingSnapshot.state = failure.attempts >= HMResolutionRetry.maximumAttempts ? .failed : .loading
+                        pendingSnapshot.errorDescription = kind.localizedDescription
+                    }
                     report(kind, item: item)
+                    if failure.attempts >= HMResolutionRetry.maximumAttempts { markTerminalFailure(item) }
                     scheduleResolutionRetry()
                 }
             }
@@ -385,7 +437,7 @@ import Observation
         }
     }
     private func resumeActive() {
-        guard isFeedVisible, !ended, let original = currentItem, let item = resolutions.cached(original), let url = item.url else { return }
+        guard isFeedVisible, !ended, let original = currentItem, !terminalFailures.contains(original), let item = resolutions.cached(original), let url = item.url else { return }
         guard ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
         let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
@@ -519,6 +571,7 @@ import Observation
         if configuration.managesAudioSession { HMAudioSession.deactivate() }
     }
     private func stopWork() {
+        failureAdvanceTask?.cancel(); failureAdvanceTask = nil
         pageGeneration += 1; loadTask?.cancel(); isLoadingPage = false
         pagingRetryTask?.cancel(); pagingRetryTask = nil
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
@@ -535,7 +588,7 @@ import Observation
         for node in pool.nodes.dropFirst(max(1, min(4, configuration.poolSize))) { analytics.detach(playerKey: node.id) }
         pool.resize(to: configuration.poolSize); proxy?.configuration = configuration; prefetchSafe = false
         prefetchIdentity = ""; lastDecisionAt = -Double.infinity
-        refreshWindow(); checkEnd()
+        refreshWindow(); checkEnd(); scheduleFailedItemAdvance()
     }
     private func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
         if event.kind == .transferSample {
@@ -564,8 +617,46 @@ import Observation
         case .firstFrame: emit(.firstFrame(entry, ttff: (event.metrics["ttff_ms"] ?? 0) / 1000, readiness: currentNode?.snapshot.readinessTier ?? .cold))
         case .rebufferStart: emit(.stallStarted(entry)); updatePrefetch(force: true)
         case .rebufferEnd: emit(.stallEnded(entry)); updatePrefetch(force: true)
-        case .error, .transportError: report(.playback(event.properties["error_message"] ?? event.properties["message"] ?? "Playback failed"), item: entry)
+        case .error, .transportError:
+            report(.playback(event.properties["error_message"] ?? event.properties["message"] ?? "Playback failed"), item: entry)
+            // Transport errors can recover via the node's direct-URL fallback.
+            // Only the native terminal error marks the entry unplayable.
+            if event.kind == .error, resolutions.cached(entry) == item { markTerminalFailure(entry) }
         default: break
+        }
+    }
+    private func markTerminalFailure(_ item: HMMediaItem) {
+        terminalFailures.insert(item)
+        scheduleFailedItemAdvance()
+    }
+    private func scheduleFailedItemAdvance() {
+        guard !ended, failureAdvanceTask == nil else { return }
+        failureAdvanceTask = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            failureAdvanceTask = nil
+            advancePastFailure()
+        }
+    }
+    private func advancePastFailure() {
+        guard !ended, configuration.failedItemPolicy == .skip, !isInteracting, !pageIsMoving,
+              requestedPageID == nil, let failed = currentItem ?? (failureIdle ? playlist.current : nil),
+              terminalFailures.contains(failed) else { return }
+        let index = playlist.index
+        let candidates = Array(items.indices.dropFirst(index + 1)) + Array(items.indices.prefix(index).reversed())
+        guard let next = candidates.first(where: { !terminalFailures.contains(items[$0]) }) else {
+            guard !failureIdle else { return }
+            saveAndDeactivate(); failureIdle = true; pendingSnapshot = HMPlaybackSnapshot()
+            proxy?.cancelPrefetch(); pool.releaseAll(); refreshWindow()
+            emit(.currentItemChanged(nil))
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if feedSurfaces > 0, !failureIdle {
+            requestPage(at: next); failurePageID = items[next].id
+        } else {
+            failurePageID = items[next].id
+            commitPage(toID: items[next].id, requestedAt: now)
         }
     }
     private func emit(_ event: HMPlayerEvent) { lastEvent = event; for continuation in subscribers.values { continuation.yield(event) } }

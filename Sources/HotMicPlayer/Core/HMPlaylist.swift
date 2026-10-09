@@ -65,7 +65,7 @@ enum HMPagePosition {
     }
 }
 
-/// Three automatic attempts, with capped exponential backoff; activation resets the budget.
+/// Three total automatic attempts, with exponential backoff; explicit selection resets the budget.
 struct HMResolutionRetry {
     static let maximumAttempts = 3
     var attempts = 0

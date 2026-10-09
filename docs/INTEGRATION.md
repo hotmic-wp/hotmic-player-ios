@@ -1,4 +1,4 @@
-# Integrating HotMicPlayer 0.3.0
+# Integrating HotMicPlayer 0.3.1
 
 The SDK is a source Swift package with no third-party dependencies, for iOS 17+. Playback supports immutable VOD MP4 and HLS; hosts supply their catalogue, overlays and optional adapters.
 
@@ -90,7 +90,21 @@ let player = HMPlayer(resolver: CatalogueResolver())
 player.replaceAll([.reference("partner", id: "episode-7")])
 ```
 
-Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window, hiding or teardown. Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Transient failures retry up to three automatic attempts with 1/2/4-second capped backoff; becoming current resets the budget. Pending work is promoted to user-initiated priority when its item becomes current or next, without a second resolver call. Already-resolved entries activate synchronously. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The future Core adapter will use namespace `hotmic` in a separate package.
+Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window or teardown (hiding pauses media work but allows in-flight resolution to finish). Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Transient failures use three total automatic attempts, waiting 1 and 2 seconds between them. Explicit navigation to a failed entry resets its budget; automatic skips and duplicate page-settle callbacks do not. Pending work is promoted to user-initiated priority when its item becomes current or next, without a second resolver call. Already-resolved entries activate synchronously. A current unresolved reference activates and attaches its video surface automatically when its result arrives, including after initial selection, jump, swipe and insert/next. Its snapshot reports `.loading` with readiness `.resolving` until resolution succeeds. TTFF includes resolution and media loading from the original selection/drag action; duplicate settle callbacks do not reset that clock. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The future Core adapter will use namespace `hotmic` in a separate package.
+
+## Terminal item failures
+
+`HMPlayerConfiguration.failedItemPolicy` is `.skip` by default. After resolution exhausts its three attempts, or a native player reports a terminal media failure, the player emits `.error(item:kind:)` and advances to the first nonfailed entry after current. If none follows, it tries preceding entries in reverse order; if none remains, `currentItem` becomes nil and the snapshot becomes `.idle`. Entries remain in `items`. Automatic traversal remembers failed immutable entries and never resets their retry budgets, so all-failing playlists terminate. An untried candidate may itself fail; the same bounded traversal continues. Paging errors and recoverable cache-transport errors do not skip items.
+
+```swift
+let player = HMPlayer(configuration: HMPlayerConfiguration(failedItemPolicy: .stay))
+// Or change an existing player's policy:
+player.configuration.failedItemPolicy = .skip
+```
+
+`.stay` keeps the failed entry current and still emits the error. Explicit `jump(toID:)` (including the same ID), `next()` or `previous()` retries the selected failed entry; `replaceAll` starts a fresh failure traversal. Changing a failed item's immutable source/metadata makes it a new entry for this purpose. Merely editing another part of the playlist does not retry known failures.
+
+With `HMVerticalFeedView`, automatic skips use the animated page request and commit only after scrolling settles. Dragging, deceleration and page animations defer skipping. Custom overlay/host scrubbers must set `player.isInteracting = true` on drag begin and reset it to false on release, cancellation or dismissal; a deferred skip resumes then. The Sample's scrubber wires this callback. A player with no feed surface commits the same navigation directly after interaction ends.
 
 ## Optional engagement
 
@@ -108,7 +122,7 @@ Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)`
 }
 ```
 
-Each access to `events` creates an independent ordered subscription, buffering the newest 256 events; slow consumers can lose older events. Cancelling the consuming task releases that subscription. Observation clients can read `items`, `activeIndex`, `currentItem`, `snapshot`, paging state, `loadError` and `lastEvent`. Snapshots expose getters with internal setters; activation/frame flags are Benchmark SPI diagnostics. Subscribe before mutation when the first edit matters. TTFF is seconds in `HMPlayerEvent`; analytics `ttff_ms` remains milliseconds. Readiness (`cold`, `cachedBytes`, `warmPlayer`) is measured at activation, not retroactively after decoding.
+Each access to `events` creates an independent ordered subscription, buffering the newest 256 events; slow consumers can lose older events. Cancelling the consuming task releases that subscription. Observation clients can read `items`, `activeIndex`, `currentItem`, `snapshot`, paging state, `loadError` and `lastEvent`. Snapshots expose getters with internal setters; activation/frame flags are Benchmark SPI diagnostics. Subscribe before mutation when the first edit matters. TTFF is seconds in `HMPlayerEvent`; analytics `ttff_ms` remains milliseconds. Readiness is `resolving` while awaiting URL/format resolution. On activation it becomes `resolved`, `cachedBytes` or `warmPlayer`, preserved through the first frame; `cold` is the idle/unprepared default.
 
 Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existing `HMAnalyticsSink`, `HMConsoleSink` and `HMMuxAnalyticsSink` contracts remain. JSONL, mock timelines and the logging Mux bridge are Benchmark SPI. The real Mux bridge belongs to the host; see [Mux integration](../Integrations/Mux/README.md). `finishRun()` and transfer/prefetch-error/startup-summary/run-end telemetry are Benchmark SPI. `HMPlaybackEvent.Kind.rawValue` remains a stable string for sinks; the kind has no public `CaseIterable` or `RawRepresentable` conformance. Decoding recorded categories requires Benchmark SPI.
 
@@ -120,7 +134,7 @@ Use versioned VOD paths. Query parameters are preserved in cache identity; volat
 
 ## Stable configuration
 
-Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), `playlistTTL` (memory-only, seconds), `loops`, `startsMuted` and `managesAudioSession`. `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
+Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), `playlistTTL` (memory-only, seconds), `loops`, `startsMuted`, `managesAudioSession` and `failedItemPolicy`. `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
 
 ```swift
 var configuration = HMPlayerConfiguration.instantStart

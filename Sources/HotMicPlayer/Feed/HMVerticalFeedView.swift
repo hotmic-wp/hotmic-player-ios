@@ -10,7 +10,7 @@ import SwiftUI
 /// poster, which is exactly what you want for items outside the warm window.
 public struct HMVerticalFeedView<Overlay: View>: View {
 
-    private let controller: HMFeedController
+    private let controller: HMPlayer
     private let transition: HMPageTransition
     private let gravity: AVLayerVideoGravity
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
@@ -19,18 +19,20 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
 
+    /// Creates a vertical VOD feed with a partner overlay for each entry and snapshot.
     public init(
-        controller: HMFeedController,
+        player: HMPlayer,
         transition: HMPageTransition = .none,
         gravity: AVLayerVideoGravity = .resizeAspectFill,
         @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay
     ) {
-        self.controller = controller
+        self.controller = player
         self.transition = transition
         self.gravity = gravity
         self.overlay = overlay
     }
 
+    /// Renders the vertical feed and its overlays.
     public var body: some View {
         // Outer reader still sits inside the safe area, so it can measure the
         // insets; the inner one is expanded to full bleed. Overlays read the
@@ -40,6 +42,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
 
             GeometryReader { proxy in
                 let pageHeight = proxy.size.height
+                let revision = controller.playlistRevision
 
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
@@ -53,9 +56,9 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe(targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { index, time in
+                    .background(HMPageCommitProbe(revision: revision, anchorIndex: controller.activeIndex, targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { index, time in
                         fallbackCommit?.cancel()
-                        controller.commitPage(at: index, requestedAt: time)
+                        controller.commitPage(at: index, requestedAt: time, revision: revision)
                     })
                 }
                 .scrollTargetBehavior(.paging)
@@ -67,15 +70,19 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                     guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
                     fallbackCommit = Task { @MainActor in
                         do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-                        guard scrolledID == id, index != controller.activeIndex else { return }
+                        guard revision == controller.playlistRevision, scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
                         let now = ProcessInfo.processInfo.systemUptime
                         if let scroll = scrollReference.scroll {
                             guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
                         }
-                        controller.commitPage(at: index, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now)
+                        controller.commitPage(at: index, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now, revision: revision)
                     }
                 }
                 .onDisappear { fallbackCommit?.cancel() }
+                .onChange(of: controller.playlistRevision) { _, _ in
+                    fallbackCommit?.cancel()
+                    scrolledID = controller.currentItem?.id
+                }
                 .onChange(of: controller.activeIndex) { _, newIndex in
                     // Keep the scroll position in sync when the index is driven
                     // programmatically (deep link, "next" button, autoadvance).
@@ -101,12 +108,13 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     @ViewBuilder
     private func cell(for item: HMMediaItem, pageHeight: Double) -> some View {
         let node = controller.node(for: item)
-        let snapshot = node?.snapshot ?? HMPlaybackSnapshot()
+        let snapshot = controller.snapshot(for: item)
+        let displayItem = controller.displayItem(item)
 
         ZStack {
             Color.black
 
-            if let posterURL = item.posterURL {
+            if let posterURL = displayItem.posterURL {
                 // Poster stays underneath so the first frame cross-dissolves in
                 // rather than punching through black.
                 HMPosterView(url: posterURL)
@@ -115,7 +123,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
             HMVideoSurface(node: node, gravity: gravity)
 
 
-            overlay(item, snapshot)
+            overlay(displayItem, snapshot)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
@@ -161,12 +169,13 @@ private struct PageTransitionEffect: ViewModifier {
 }
 
 public extension HMVerticalFeedView where Overlay == EmptyView {
+    /// Creates a vertical feed without an overlay.
     init(
-        controller: HMFeedController,
+        player: HMPlayer,
         transition: HMPageTransition = .none,
         gravity: AVLayerVideoGravity = .resizeAspectFill
     ) {
-        self.init(controller: controller, transition: transition, gravity: gravity) { _, _ in EmptyView() }
+        self.init(player: player, transition: transition, gravity: gravity) { _, _ in EmptyView() }
     }
 }
 

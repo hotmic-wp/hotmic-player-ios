@@ -12,19 +12,19 @@ import QuartzCore
 /// keeps beacon-style analytics SDKs attached across a recycle.
 @MainActor
 @Observable
-public final class HMPlayerNode: Identifiable {
+final class HMPlayerNode: Identifiable {
 
-    public let id: String
-    @ObservationIgnored public let player: AVPlayer
-    @ObservationIgnored public let playerLayer: AVPlayerLayer
+    let id: String
+    @ObservationIgnored let player: AVPlayer
+    @ObservationIgnored let playerLayer: AVPlayerLayer
 
-    public private(set) var item: HMMediaItem?
-    public private(set) var snapshot = HMPlaybackSnapshot()
+    private(set) var item: HMMediaItem?
+    private(set) var snapshot = HMPlaybackSnapshot()
 
     /// Set by the pool; drives eviction order.
     @ObservationIgnored var lastTouched = Date.distantPast
     /// True once this node is the on-screen item rather than a warmed neighbour.
-    @ObservationIgnored public private(set) var isActive = false
+    @ObservationIgnored private(set) var isActive = false
 
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     @ObservationIgnored var onBufferChanged: (() -> Void)?
@@ -91,7 +91,7 @@ public final class HMPlayerNode: Identifiable {
     /// This is the preload path. Buffer target and bitrate ceiling are kept low
     /// so warming a neighbour never competes with the item on screen.
     func warm(with newItem: HMMediaItem, playbackURL: URL? = nil) {
-        guard item?.id != newItem.id else { return }
+        guard item?.id != newItem.id, let mediaURL = newItem.url else { return }
 
         let recycledFrom = item
         wantsPlayback = false
@@ -114,7 +114,7 @@ public final class HMPlayerNode: Identifiable {
         warmStartedAt = ProcessInfo.processInfo.systemUptime
 
         let asset = AVURLAsset(
-            url: playbackURL ?? newItem.url,
+            url: playbackURL ?? mediaURL,
             options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
         )
         let playerItem = AVPlayerItem(asset: asset)
@@ -154,6 +154,7 @@ public final class HMPlayerNode: Identifiable {
         let status = player.currentItem?.status.rawValue ?? 0
         let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
         let tier = warmReady ? "warmPlayer" : cachedBytes > 0 ? "cachedBytes" : "cold"
+        snapshot.readinessTier = HMReadinessTier(rawValue: tier) ?? .cold
         snapshot.wasPreloaded = warmReady || cachedBytes > 0
         snapshot.isFrameReady = playerLayer.isReadyForDisplay
         setLayerVisible(snapshot.isFrameReady)
@@ -223,33 +224,33 @@ public final class HMPlayerNode: Identifiable {
 
     // MARK: - Transport
 
-    public func play() {
+    func play() {
         guard let item else { return }
         wantsPlayback = true
         player.play()
         emit(.play, item: item)
     }
 
-    public func pause() {
+    func pause() {
         guard let item else { return }
         wantsPlayback = false
         player.pause()
         emit(.pause, item: item)
     }
 
-    public func togglePlayPause() {
+    func togglePlayPause() {
         player.timeControlStatus == .paused ? play() : pause()
     }
 
-    public func setMuted(_ muted: Bool) {
+    func setMuted(_ muted: Bool) {
         player.isMuted = muted
         snapshot.isMuted = muted
     }
 
-    public func seek(toProgress progress: Double) {
+    func seek(to seconds: TimeInterval) {
         guard let item, snapshot.seekableDuration > 0 else { return }
         // Map into the seekable window so this stays correct on DVR.
-        let target = snapshot.seekableStart + snapshot.seekableDuration * min(1, max(0, progress))
+        let target = min(snapshot.duration, max(0, seconds))
         emit(.seeking, item: item, position: snapshot.currentTime)
         player.seek(
             to: CMTime(seconds: target, preferredTimescale: 600),
@@ -514,7 +515,7 @@ public final class HMPlayerNode: Identifiable {
         if let output = videoOutput { player.currentItem?.remove(output); videoOutput = nil }
         let ttff = max(0, time - activationTime)
         snapshot.timeToFirstFrame = ttff
-        emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary"], occurredAt: time)
+        emit(.firstFrame, item: item, metrics: ["ttff_ms": ttff * 1000, "preloaded": snapshot.wasPreloaded ? 1 : 0], properties: ["detector": "layer-ready+visible-display-boundary", "readiness_tier": snapshot.readinessTier.rawValue], occurredAt: time)
     }
 
     private func reportStartupSummary() {
@@ -558,13 +559,13 @@ public final class HMPlayerNode: Identifiable {
 
     private func handleFailure(_ error: NSError?) {
         guard let item else { return }
-        if let asset = player.currentItem?.asset as? AVURLAsset, asset.url.host == "127.0.0.1", asset.url != item.url {
+        if let mediaURL = item.url, let asset = player.currentItem?.asset as? AVURLAsset, asset.url.host == "127.0.0.1", asset.url != item.url {
             // A dead listener or host ATS policy must not strand playback. The
             // direct retry keeps this activation and its original request clock.
             let position = snapshot.currentTime
             let resume = isActive && wantsPlayback
             teardownItemObservers(); setLayerVisible(false)
-            let asset = AVURLAsset(url: item.url)
+            let asset = AVURLAsset(url: mediaURL)
             let replacement = AVPlayerItem(asset: asset)
             replacement.preferredPeakBitRate = didLiftStartupCap ? configuration.steadyPeakBitRate : configuration.startupPeakBitRate
             replacement.preferredForwardBufferDuration = isActive ? configuration.steadyBufferDuration : configuration.prefetch.warmBufferDuration

@@ -7,27 +7,40 @@ import Foundation
 /// and draw what comes back. Live, DVR and VOD then share one code path.
 public struct HMTimelineEvent: Identifiable, Sendable, Equatable {
 
+    /// Supported clock-indexed engagement categories.
     public enum Kind: String, Sendable, CaseIterable {
+        /// A chat message.
         case chat
+        /// An emoji reaction.
         case reaction
+        /// A vote event.
         case vote
+        /// A poll event.
         case poll
+        /// A question event.
         case question
+        /// A tip event.
         case tip
         /// An authored highlight (winner reveal, round change, sponsor beat).
         case marker
     }
 
+    /// Stable identity for this value.
     public let id: String
     /// Seconds from the start of the stream.
     public let offset: TimeInterval
+    /// Event category.
     public let kind: Kind
+    /// Optional author display name.
     public let author: String?
+    /// Optional event text.
     public let text: String?
     /// Emoji for reactions/votes; also what the scrubber rail renders.
     public let emoji: String?
+    /// Engagement weight used in density aggregation.
     public let magnitude: Int
 
+    /// Creates a media-clock event or precomputed engagement aggregate.
     public init(
         id: String = UUID().uuidString,
         offset: TimeInterval,
@@ -53,7 +66,9 @@ public struct HMTimelineEvent: Identifiable, Sendable, Equatable {
 /// time tick. Today it is built once when the mock timeline is generated; in
 /// production this is what a `GET /streams/:id/timeline` endpoint would return.
 public struct HMDensityBucket: Sendable, Equatable, Identifiable {
+    /// Stable identity for this value.
     public var id: Int { index }
+    /// Zero-based density bucket index.
     public let index: Int
     /// Normalised 0...1 position along the stream.
     public let position: Double
@@ -61,8 +76,10 @@ public struct HMDensityBucket: Sendable, Equatable, Identifiable {
     public let intensity: Double
     /// Emoji that dominated this bucket, if any.
     public let dominantEmoji: String?
+    /// Number of events folded into this bucket.
     public let eventCount: Int
 
+    /// Creates a media-clock event or precomputed engagement aggregate.
     public init(index: Int, position: Double, intensity: Double, dominantEmoji: String?, eventCount: Int) {
         self.index = index
         self.position = position
@@ -74,13 +91,20 @@ public struct HMDensityBucket: Sendable, Equatable, Identifiable {
 
 /// A clustered peak worth drawing on the rail as a tappable emoji marker.
 public struct HMTimelineMarker: Identifiable, Sendable, Equatable {
+    /// Stable identity for this value.
     public let id: String
+    /// Event time from the start of the VOD, in seconds.
     public let offset: TimeInterval
+    /// Normalised media-clock position, from zero to one.
     public let position: Double
+    /// Emoji displayed at this timeline peak.
     public let emoji: String
+    /// Number of events clustered into the peak.
     public let count: Int
+    /// Optional text describing the peak.
     public let label: String?
 
+    /// Creates a media-clock event or precomputed engagement aggregate.
     public init(id: String, offset: TimeInterval, position: Double, emoji: String, count: Int, label: String? = nil) {
         self.id = id
         self.offset = offset
@@ -98,6 +122,7 @@ public struct HMTimelineMarker: Identifiable, Sendable, Equatable {
 /// stands in for both so the feed can be demoed without a backend.
 @MainActor
 public protocol HMStreamTimeline: AnyObject {
+    /// Duration of the timeline on the VOD clock, in seconds.
     var duration: TimeInterval { get }
     /// Events whose offset falls inside `range`.
     func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent]
@@ -115,5 +140,6 @@ public protocol HMStreamTimeline: AnyObject {
 }
 
 public extension HMStreamTimeline {
+    /// Default immutable timelines ignore appended events.
     func append(_ event: HMTimelineEvent) {}
 }

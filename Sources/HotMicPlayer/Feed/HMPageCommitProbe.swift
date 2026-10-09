@@ -10,6 +10,8 @@ import UIKit
 }
 
 struct HMPageCommitProbe: UIViewRepresentable {
+    var revision: Int
+    var anchorIndex: Int
     var targetIndex: Int?
     var requestID: UUID
     var reference: HMScrollViewReference? = nil
@@ -22,6 +24,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
     func updateUIView(_ view: Probe, context: Context) {
         let coordinator = context.coordinator
         coordinator.commit = commit
+        coordinator.reconcile(revision: revision, anchor: anchorIndex)
         coordinator.reference = reference
         coordinator.targetIndex = targetIndex; coordinator.requestID = requestID
         view.connect()
@@ -93,10 +96,27 @@ struct HMPageCommitProbe: UIViewRepresentable {
             motionChanged()
             original?.scrollViewDidScroll?(scrollView)
         }
+        private var revision: Int?
+        private var anchor: Int = 0
+        private var needsReconcile = false
+        private var suppressCommit = false
+        func reconcile(revision: Int, anchor: Int) {
+            if let old = self.revision, old != revision { needsReconcile = true }
+            self.revision = revision; self.anchor = anchor
+        }
         var targetIndex: Int?
         var requestID: UUID?
         private var handledRequest: UUID?
         func pageIfRequested() {
+            if needsReconcile, let scroll, scroll.bounds.height > 0 {
+                needsReconcile = false; suppressCommit = true
+                fallback?.cancel(); fallback = nil
+                // Cancels a drag/deceleration and anchors by the settled item's new index.
+                scroll.panGestureRecognizer.isEnabled = false
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: Double(anchor) * scroll.bounds.height - scroll.adjustedContentInset.top), animated: false)
+                scroll.panGestureRecognizer.isEnabled = true
+                suppressCommit = false
+            }
             guard let index = targetIndex, let requestID, requestID != handledRequest,
                   let scroll, scroll.bounds.height > 0 else { return }
             handledRequest = requestID
@@ -123,7 +143,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
         private func settled(_ scroll: UIScrollView, time: TimeInterval) {
             fallback?.cancel(); fallback = nil
-            guard scroll.bounds.height > 0 else { return }
+            guard !suppressCommit, !needsReconcile, scroll.bounds.height > 0 else { return }
             commit(max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded())), time)
         }
     }

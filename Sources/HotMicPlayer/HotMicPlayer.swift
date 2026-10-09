@@ -2,5 +2,6 @@ import Foundation
 
 /// Namespace + version marker for the SDK.
 public enum HotMicPlayer {
-    public static let version = "0.1.0"
+    /// Semantic version of the partner API.
+    public static let version = "0.2.0"
 }

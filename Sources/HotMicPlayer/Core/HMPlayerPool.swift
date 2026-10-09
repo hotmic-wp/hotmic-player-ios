@@ -10,22 +10,22 @@ import Observation
 /// and forth as the viewer scrolls.
 @MainActor
 @Observable
-public final class HMPlayerPool {
+final class HMPlayerPool {
 
-    public private(set) var nodes: [HMPlayerNode] = []
+    private(set) var nodes: [HMPlayerNode] = []
     private var assignments: [String: HMPlayerNode] = [:]  // itemID -> node
     @ObservationIgnored var configuration: HMPlayerConfiguration
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     /// Called when a node is about to be reassigned, so analytics can detach.
     @ObservationIgnored var willRecycle: ((HMPlayerNode, HMMediaItem) -> Void)?
 
-    public init(configuration: HMPlayerConfiguration = .default) {
+    init(configuration: HMPlayerConfiguration = .default) {
         self.configuration = configuration
         resize(to: configuration.poolSize)
     }
 
     /// Number of nodes currently holding content. Surfaced in the sample HUD.
-    public var busyCount: Int { nodes.filter { $0.item != nil }.count }
+    var busyCount: Int { nodes.filter { $0.item != nil }.count }
 
     func resize(to size: Int) {
         let target = max(1, min(4, size))
@@ -50,7 +50,7 @@ public final class HMPlayerPool {
     }
 
     /// The node already responsible for `item`, if any. Does not allocate.
-    public func existingNode(for item: HMMediaItem) -> HMPlayerNode? {
+    func existingNode(for item: HMMediaItem) -> HMPlayerNode? {
         assignments[item.id]
     }
 

@@ -8,9 +8,12 @@ import UIKit
 /// are surfaced to callers instead of silently claiming a complete run.
 @MainActor
 public final class HMJSONLFileSink: HMAnalyticsSink {
+    /// Stable sink identifier used by the hub for deduplication.
     public let sinkName = "jsonl"
+    /// Local JSONL output file.
     public let fileURL: URL
     private let writer: Writer
+    /// Creates a JSONL file and writes a run header with configuration and dimensions.
     public init(fileURL: URL, runID: String, configuration: HMPlayerConfiguration,
                 format: String, network: String, script: String, buildSHA: String, dimensions: [String: String] = [:]) throws {
         self.fileURL = fileURL
@@ -26,6 +29,7 @@ public final class HMJSONLFileSink: HMAnalyticsSink {
             "clock": "systemUptime", "simulator": ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] != nil]
         writer.append(try Self.line(header))
     }
+    /// Consumes one telemetry event on the main actor.
     public func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
         let object: [String: Any] = ["type": "event", "event": event.kind.rawValue,
             "event_id": event.id.uuidString, "item_id": event.itemID,
@@ -33,6 +37,7 @@ public final class HMJSONLFileSink: HMAnalyticsSink {
             "metrics": event.metrics.filter { $0.value.isFinite }, "properties": event.properties]
         do { writer.append(try Self.line(object)) } catch { writer.record(error) }
     }
+    /// Waits for queued file writes and reports any write failure.
     public func flush() async throws { try await writer.flush() }
     private static func line(_ object: [String: Any]) throws -> Data {
         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])

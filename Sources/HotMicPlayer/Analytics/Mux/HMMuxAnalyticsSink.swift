@@ -12,7 +12,9 @@ import AVFoundation
 @MainActor
 public final class HMMuxAnalyticsSink: HMAnalyticsSink {
 
+    /// Stable sink identifier used by the hub for deduplication.
     public let sinkName = "mux"
+    /// Mux configuration used for new attachments.
     public var environment: HMMuxEnvironment
     private let bridge: HMMuxBridge
 
@@ -21,6 +23,7 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     /// Durations learned from the player, so `video_duration` is accurate.
     private var knownDurations: [String: TimeInterval] = [:]
 
+    /// Creates a Mux analytics sink using a host-provided bridge.
     public init(environment: HMMuxEnvironment, bridge: HMMuxBridge) {
         self.environment = environment
         self.bridge = bridge
@@ -41,6 +44,7 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     // MARK: - HMAnalyticsSink
 
     #if canImport(AVFoundation)
+    /// Attaches an analytics backend to a pooled player layer.
     public func attach(playerLayer: AVPlayerLayer, playerKey: String, item: HMMediaItem) {
         guard monitoredItems[playerKey] == nil else {
             // Already monitored: this is a recycle, not a fresh player.
@@ -56,6 +60,7 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
         )
     }
 
+    /// Updates analytics metadata when a player is recycled.
     public func videoChange(playerKey: String, item: HMMediaItem) {
         // A speculative node can recycle before it was ever attached.
         guard monitoredItems[playerKey] != nil else { return }
@@ -64,12 +69,14 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
         bridge.videoChange(playerName: playerKey, video: videoData(for: item))
     }
 
+    /// Ends analytics monitoring for a pooled player.
     public func detach(playerKey: String) {
         guard monitoredItems.removeValue(forKey: playerKey) != nil else { return }
         bridge.destroy(playerName: playerKey)
     }
     #endif
 
+    /// Consumes one telemetry event on the main actor.
     public func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
         if let duration = event.metrics["duration_s"], duration > 0 {
             knownDurations[item.id] = duration

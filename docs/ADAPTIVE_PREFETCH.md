@@ -17,13 +17,16 @@ let player = HMPlayer(configuration: configuration)
 `HMPrefetchPolicyProviding.decide(_:configuration:)` accepts `HMPrefetchInputs`
 and returns `HMPrefetchPlan`. `HMAdaptivePrefetchPolicy` is the stateless default;
 `wasPaused` and `previousPlan` carry buffer and speed-tier hysteresis explicitly. Inputs and Plan have no Codable conformance; thresholds are Benchmark SPI tuning. A partner provider receives the same
-smoothed measurements. The engine clamps every returned plan and independently
+smoothed measurements. A custom `HMPrefetchPolicyProviding` implementation must
+keep its own hysteresis state: the default policy’s previous speed tier and
+latency-override state are internal and are not exposed to custom providers.
+The engine clamps every returned plan and independently
 enforces buffer safety. `player.prefetchPlan` exposes the last applied plan.
 
 The readiness tiers are:
 
 1. `warmPlayer`: the nearest next entry is prepared/prerolled in the second player.
-2. `cachedBytes`: at least `minimumCachedStartBytes` payload bytes are on disk
+2. `cachedBytes`: at least `minimumCachedStartBytes` (Benchmark SPI, measurement only) payload bytes are on disk
    (default 32 KiB, bounded by a positive app per-item prefix budget). This
    excludes tiny native probes; it does not guarantee a complete decoded frame.
 3. `resolved`: media URL and poster metadata are resolved, with no ready player or disk prefix.
@@ -97,7 +100,11 @@ numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 Speed tiers retain their previous state within ±20% of each throughput boundary.
 Slow exits at 600000 B/s; medium enters slow below 400000. Medium enters fast at
 2400000 B/s; fast exits below 1600000. The band is configurable from 0 to 1.
-A direct jump can cross both boundaries. High smoothed latency still forces slow.
+A direct jump can cross both boundaries. The high-latency override uses the same
+hysteresis fraction independently: with an existing plan it enters above **0.48s**
+and exits at or below **0.32s**. With no previous plan it uses **0.4s**. The first
+valid TTFB sample remains excluded. A slow throughput tier does not by itself
+latch the latency override.
 
 Slow throughput or high latency uses 25% of the app budget, two ahead, no behind,
 and a 600 kbps starting rendition. Unknown/medium uses 50%, three ahead and

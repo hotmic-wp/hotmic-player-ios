@@ -89,6 +89,7 @@ public struct HMPrefetchInputs: Sendable, Equatable {
 public struct HMPrefetchPlan: Sendable, Equatable {
     // Default-policy state is not a partner wire contract.
     var speedTier: HMPrefetchSpeedTier = .medium
+    var highLatency = false
     /// Number of following entries to cache, nearest first.
     public var itemsAhead: Int
     /// Number of previous entries to cache, nearest first.
@@ -178,7 +179,11 @@ public struct HMAdaptivePrefetchPolicy: HMPrefetchPolicyProviding {
             let fastBoundary = high * (previous == .fast ? 1 - band : previous == nil ? 1 : 1 + band)
             tier = rate < slowBoundary ? .slow : rate >= fastBoundary ? .fast : .medium
         }
-        if i.latencySeconds.map({ $0 > nonnegative(t.highLatencySeconds) }) == true { tier = .slow }
+        let latencyBoundary = nonnegative(t.highLatencySeconds) *
+            (i.previousPlan?.highLatency == true ? 1 - band : i.previousPlan == nil ? 1 : 1 + band)
+        p.highLatency = i.latencySeconds.map { $0.isFinite && $0 > latencyBoundary } ??
+            (i.previousPlan?.highLatency ?? false)
+        if p.highLatency { tier = .slow }
         p.speedTier = tier
         let slow = tier == .slow, fast = tier == .fast
         var fraction = slow ? unit(t.slowBudgetFraction) : fast ? 1 : unit(t.mediumBudgetFraction)

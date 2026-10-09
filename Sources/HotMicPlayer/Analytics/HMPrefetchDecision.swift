@@ -38,6 +38,7 @@ struct HMPrefetchPlanRecord: Encodable, Sendable {
     let startAfterSeconds: Double
     let reason: String
     let speedTier: String
+    let highLatency: Bool
     init(_ value: HMPrefetchPlan) {
         itemsAhead = value.itemsAhead
         itemsBehind = value.itemsBehind
@@ -50,6 +51,7 @@ struct HMPrefetchPlanRecord: Encodable, Sendable {
         startAfterSeconds = value.startAfterSeconds
         reason = value.reason
         speedTier = value.speedTier.rawValue
+        highLatency = value.highLatency
     }
 }
 

@@ -51,6 +51,22 @@ struct AdaptivePrefetchTests {
                 bitrate: expected == .slow ? 600_000 : expected == .fast ? 1_600_000 : 1_000_000,
                 reason: expected == .slow ? "slow" : expected == .fast ? "fast" : "unmeasured-or-medium"))
         }
+        // Latency override state is independent of throughput-driven slow tiers.
+        for (latched, latency, expectedSlow) in [
+            (false, 0.36, false), (false, 0.44, false), (false, 0.48, false),
+            (false, 0.481, true), (true, 0.36, true), (true, 0.44, true),
+            (true, 0.32, false), (true, 0.319, false)
+        ] {
+            var previousPlan = HMPrefetchPlan(itemsAhead: 2, bytesPerItem: 200_000, reason: "previous")
+            previousPlan.speedTier = .slow
+            previousPlan.highLatency = latched
+            let inputs = HMPrefetchInputs(throughputBytesPerSecond: 4_000_000, latencySeconds: latency,
+                bufferedAheadSeconds: 6, previousPlan: previousPlan)
+            rows.append(Row(name: "latency band \(latched)/\(latency)", inputs: inputs,
+                ahead: expectedSlow ? 2 : 5, behind: expectedSlow ? 0 : 1,
+                bytes: expectedSlow ? 200_000 : 800_000, bitrate: expectedSlow ? 600_000 : 1_600_000,
+                reason: expectedSlow ? "slow" : "fast"))
+        }
         fast.latencySeconds = 0.5
         rows.append(Row(name: "high latency", inputs: fast, ahead: 2, behind: 0, bytes: 200_000, bitrate: 600_000, reason: "slow"))
         slow.dwellSeconds = 1; slow.readyHitRate = 0.2
@@ -104,6 +120,24 @@ struct AdaptivePrefetchTests {
         #expect(HMAdaptivePrefetchPolicy().decide(HMPrefetchInputs(), configuration: limits).startingBitRate == 0)
         let unsafe = HMAdaptivePrefetchPolicy().decide(HMPrefetchInputs(bufferedAheadSeconds: .nan), configuration: c)
         #expect(unsafe.paused)
+        // A repeated near-boundary trace must retain its latency latch, then clear it.
+        let policy = HMAdaptivePrefetchPolicy()
+        var previous = policy.decide(.init(throughputBytesPerSecond: 4_000_000, latencySeconds: 0.5,
+            bufferedAheadSeconds: 6), configuration: c)
+        #expect(previous.highLatency)
+        for latency in (0..<40).map({ $0.isMultiple(of: 2) ? 0.36 : 0.44 }) {
+            previous = policy.decide(.init(throughputBytesPerSecond: 4_000_000, latencySeconds: latency,
+                bufferedAheadSeconds: 6, previousPlan: previous), configuration: c)
+            #expect(previous.highLatency && previous.speedTier == .slow)
+        }
+        previous = policy.decide(.init(throughputBytesPerSecond: 4_000_000, latencySeconds: 0.31,
+            bufferedAheadSeconds: 6, previousPlan: previous), configuration: c)
+        #expect(!previous.highLatency && previous.speedTier == .fast)
+        for latency in (0..<40).map({ $0.isMultiple(of: 2) ? 0.36 : 0.44 }) {
+            previous = policy.decide(.init(throughputBytesPerSecond: 4_000_000, latencySeconds: latency,
+                bufferedAheadSeconds: 6, previousPlan: previous), configuration: c)
+            #expect(!previous.highLatency && previous.speedTier == .fast)
+        }
         var m = HMPrefetchMeasurements()
         m.transfer(bytes: 1000, seconds: 1, ttfb: 2, alpha: 0.25)
         #expect(m.latency == nil) // Ignore a cold first request, even when it exceeds the slow threshold.

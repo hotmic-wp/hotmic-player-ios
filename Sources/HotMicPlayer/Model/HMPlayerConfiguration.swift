@@ -86,7 +86,7 @@ public struct HMPlayerConfiguration: Sendable {
     public var resolveAhead: Int = 8
     /// Minimum cached payload for a tier-2 arrival hit; avoids counting tiny AVPlayer probes.
     /// Defaults to 32 KiB, bounded by a positive app per-item prefix budget.
-    public var minimumCachedStartBytes: Int = 32 * 1024
+    @_spi(Benchmark) public var minimumCachedStartBytes: Int = 32 * 1024
     /// Hard disk media cache cap, in bytes.
     public var cacheCapacityBytes: Int
     /// Current player forward-buffer target in seconds.

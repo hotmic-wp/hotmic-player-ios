@@ -358,7 +358,6 @@ var cacheCapacityBytes: Int
 var loops: Bool
 var managesAudioSession: Bool
 var maxPrefetchConcurrency: Int
-var minimumCachedStartBytes: Int
 var playlistTTL: TimeInterval
 var poolSize: Int
 var prefetch: HMPrefetchPolicy

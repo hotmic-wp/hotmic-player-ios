@@ -40,7 +40,7 @@ Three layers, each usable on its own:
 | Components | `HotMicPlayerUI` | `HMChatRail`, `HMPollCard`, `HMFloatingReactions`, `HMActionRail`, `HMComposer`, `HMEngagementScrubber`. Each takes an `HMEngagement` and reads `HMTheme` from the environment. |
 | Layouts | `HotMicPlayerUI` | `HMOverlayLayout` (full-screen vertical, TikTok-style). `HMEngagementLayout` is the extension point for the planned stacked and side-panel layouts. |
 
-`HotMicPlayerUI` depends only on `HotMicPlayer`. Partners who build their own UI on `HMEngagement` never link it. Engagement data comes from your `HMInteractionSource` (the HotMicCore adapter will be one); without one, deterministic demo data is shown read-only, with no action controls. See [Integration › Engagement](docs/INTEGRATION.md#engagement).
+`HotMicPlayerUI` depends only on `HotMicPlayer`. Partners who build their own UI on `HMEngagement` never link it. Engagement data comes from your `HMInteractionSource` (the HotMicCore adapter will be one). Without one there is no engagement: the player uses an empty, read-only source and never shows invented content. The Sample opts into the deterministic demo source explicitly. See [Integration › Engagement](docs/INTEGRATION.md#engagement).
 
 | Chat and poll at the playhead | Vote | Tap a peak to seek | Scrub back rewinds chat | Compose |
 | --- | --- | --- | --- | --- |
@@ -76,7 +76,10 @@ The default engine uses two native players and a bounded disk media cache. Partn
 
 - **Engagement data layer** in `HotMicPlayer`: `HMEngagement` (via `player.engagement(for:)`), `HMChatMessage`, `HMPoll`, `HMReactionEcho`, `HMEngagementCapabilities`, `HMEngagementError`. Actions are optimistic, roll back on failure, and land at the item's current media time.
 - **`HMInteractionSource` extended compatibly**: `capabilities(for:)` (default `.readOnly`), `polls(for:)` (default none), `react(_:toMessage:for:)` (default unsupported) and `engagementDidLoad(_:)` (default no-op). A 0.3 source compiles unchanged; its action controls stay hidden until it declares capabilities. `HMInteractionError` is now `LocalizedError`.
-- Without an interaction source, the demo engagement is display-only (`.readOnly`). The Sample passes the Benchmark SPI `HMMockInteractionSource()` to enable every action.
+- **Behavior change:** without an interaction source, the player now uses an empty, read-only source (no timeline events, no polls, no actions) instead of demo data. Demo engagement is opt-in Benchmark SPI: `HMPlayer(interactions: HMMockInteractionSource())`, as the Sample does.
+- The viewer's confirmed chat and stream reactions are kept by the engagement itself, so they survive scrubbing even on a timeline that ignores `append`; source echoes with the same ID are de-duplicated. `sendChat(_ message: HMChatMessage, for:)` (defaulted) hands sources the client ID to echo with.
+- Player-created engagements borrow the player's source weakly, follow the prefetch window (kept anywhere in the playlist once the viewer has acted in them), adopt the resolved item for references, and are cleared on `teardown()`. Items outside the playlist get an inert engagement.
+- The engagement scrubber's drag lives in gesture state: a drag cancelled by the feed, a page change or backgrounding never seeks and always ends the player interaction.
 - `HMTimelineEvent` gains optional `avatarURL`, `wallTime` and `reactions` (defaulted initializer parameters; source compatible).
 - **New product `HotMicPlayerUI`**: the components, `HMTheme`, `HMOverlayLayout`, `HMEngagementLayout`/`HMEngagementContext`, and `HMVerticalFeedView(player:transition:gravity:layout:)`.
 - Transient (connectivity) retries are jittered ±25% and only retry the current and next items while the error persists.

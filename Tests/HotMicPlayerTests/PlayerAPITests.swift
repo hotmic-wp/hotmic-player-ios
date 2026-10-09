@@ -318,6 +318,7 @@ struct PlayerNativeReviewTests {
         await cache.put(key: media.absoluteString, start: 0, data: Data([7, 7]), total: 262144,
                         mime: "video/mp4", base: media, owner: media.absoluteString, prefetched: false, played: true)
         transport.state.prune(keeping: [entry])
+        await transport.prioritizePlayback(old, urgent: true)
         let reader = Task {
             var request = URLRequest(url: transport.url(for: entry)!)
             request.setValue("bytes=0-262143", forHTTPHeaderField: "Range")
@@ -329,18 +330,56 @@ struct PlayerNativeReviewTests {
         }
         let timeout = Task { try await Task.sleep(for: .seconds(3)); reader.cancel() }
         defer { timeout.cancel() }
+        let heldDeadline = Date().addingTimeInterval(2)
+        while await transport.heldPlaybackRequestCount == 0, Date() < heldDeadline { await Task.yield() }
+        #expect(await transport.heldPlaybackRequestCount == 1)
+        // Promoting a held neighbour releases its original proxy request.
+        await transport.prioritizePlayback(entry, urgent: true)
         #expect(try await reader.value == Data(repeating: 7, count: 16))
+        for mode in [PrefixOrigin.Mode.shortRange, .ignoresRange] {
+            let fixture = try PrefixOrigin(mode: mode)
+            defer { fixture.listener.cancel() }
+            let readyDeadline = Date().addingTimeInterval(2)
+            while fixture.listener.port == nil, Date() < readyDeadline { await Task.yield() }
+            let fixturePort = try #require(fixture.listener.port)
+            let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/bounded.mp4")!
+            let bounded = HMMediaItem(id: "bounded-\(fixturePort)", url: url)
+            await cache.put(key: url.absoluteString, start: 31, data: Data([7]), total: 32,
+                            mime: "video/mp4", base: url, owner: url.absoluteString, prefetched: false, played: true)
+            transport.state.prune(keeping: [bounded])
+            await transport.prioritizePlayback(bounded, urgent: true)
+            var request = URLRequest(url: transport.url(for: bounded)!)
+            let count = mode == .shortRange ? 32 : 8
+            request.setValue("bytes=0-\(count - 1)", forHTTPHeaderField: "Range")
+            request.timeoutInterval = 3
+            let (data, response) = try await URLSession.shared.data(for: request)
+            #expect((response as? HTTPURLResponse)?.expectedContentLength == Int64(count))
+            #expect(data == Data(repeating: 7, count: count))
+        }
         _ = await transport.finish()
     }
 
     /// Deliberately never completes its range. A full-buffer proxy cannot pass.
     final class PrefixOrigin: @unchecked Sendable {
+        enum Mode: Sendable { case hanging, shortRange, ignoresRange }
         let listener: NWListener
-        init() throws {
+        init(mode: Mode = .hanging) throws {
             listener = try NWListener(using: .tcp, on: .any)
             listener.newConnectionHandler = { connection in
                 connection.start(queue: .global())
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { _, _, _, _ in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { request, _, _, _ in
+                    if mode != .hanging {
+                        let text = String(decoding: request ?? Data(), as: UTF8.self)
+                        let header = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
+                        let range = HMByteRange.parse(header.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }, total: 32)!
+                        let count = mode == .shortRange ? min(4, range.count) : 32
+                        let status = mode == .shortRange ? "206 Partial Content" : "200 OK"
+                        let contentRange = mode == .shortRange ? "Content-Range: bytes \(range.start)-\(range.start + count - 1)/32\r\n" : ""
+                        let head = "HTTP/1.1 \(status)\r\nContent-Type: video/mp4\r\n\(contentRange)Content-Length: \(count)\r\nConnection: close\r\n\r\n"
+                        var packet = Data(head.utf8); packet.append(Data(repeating: 7, count: count))
+                        connection.send(content: packet, completion: .contentProcessed { _ in connection.cancel() })
+                        return
+                    }
                     let head = "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: bytes 2-262143/262144\r\nContent-Length: 262142\r\nConnection: close\r\n\r\n"
                     var body = Data(head.utf8); body.append(Data(repeating: 7, count: 1024))
                     connection.send(content: body, completion: .contentProcessed { _ in })

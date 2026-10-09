@@ -132,11 +132,17 @@ physical-device measurement workflows.
 ## Device performance round 1: playback priority
 
 Until the active item displays its first frame, and during a stall, explicit
-prefix transfers and warm-player responses are cancelled. The active request
+prefix transfers are cancelled and other native requests are held before origin
+work and at streaming boundaries. This also gates requests arriving after the
+urgency transition, without closing their proxy connections or forcing a direct
+fallback. Holds, resumptions, connection closes (with reason) and node fallbacks
+are logged for device verification. The active request
 never waits for a speculative prefix. A known resource size (including a two-byte
 AVPlayer probe) no longer changes a missing range into a fully buffered 512 KiB
 response: cached bytes are sent first, then the missing suffix streams as it
-arrives. This applies to MP4, HLS init resources and HLS segments alike.
+arrives. Short 206 replies continue with the remaining range; the stream's byte
+limit prevents a range-ignoring origin from overrunning the downstream response.
+This applies to MP4, HLS init resources and HLS segments alike.
 
 Slow-link speculation is limited to +1 and a 128 KiB head, including binge misses.
 The starting bitrate is applied before the native item is attached, so the first

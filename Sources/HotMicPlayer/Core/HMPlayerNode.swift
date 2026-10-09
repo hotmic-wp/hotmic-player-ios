@@ -600,7 +600,9 @@ final class HMPlayerNode: Identifiable {
             videoOutput = nil; didPreroll = false; snapshot.state = .loading
             loadDuration(from: asset, for: item.id)
             if position > 0 { player.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
-            emit(.loadStart, item: item, properties: ["transport": "direct-fallback"])
+            emit(.loadStart, item: item, metrics: ["proxy_fallback": 1], properties: ["transport": "direct-fallback",
+                "error_domain": error?.domain ?? "unknown", "error_code": String(error?.code ?? -1),
+                "error_message": error?.localizedDescription ?? "Playback failed"])
             if resume { player.play() }
             return
         }

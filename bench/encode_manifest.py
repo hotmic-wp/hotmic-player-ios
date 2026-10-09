@@ -6,7 +6,7 @@ build <out> <base-url> <keyframe-seconds> [--clip-list F] [--copy F]: verify GOP
 position with ffprobe, write each HLS master playlist from measured bitrates, then the
 per-format playlists (<variant>.json), encoding.json, checksums.sha256 and manifest.json.
 """
-import argparse, hashlib, json, os, pathlib, re, subprocess, sys
+import argparse, hashlib, json, pathlib, re, subprocess, sys
 
 FPS = 30
 LADDER = {1080: 4500, 720: 2400, 540: 1200, 360: 600}  # kbps video; audio is AAC 96k 48 kHz
@@ -123,6 +123,46 @@ def write_master(path, rungs):
     path.write_text('\n'.join(lines) + '\n')
 
 
+def attrs(line):
+    return dict((k, v.strip('"')) for k, v in re.findall(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', line.split(':', 1)[1]))
+
+
+def served_variant(out, dest):
+    """The ladder as HotMic's CDN serves it (mirror_hls.py): recorded as found, exempt from GOP/cap rules."""
+    master = next(dest.glob('master*.m3u8'))
+    lines = master.read_text().splitlines()
+    rungs, audio = [], None
+    for i, line in enumerate(lines):
+        if line.startswith('#EXT-X-MEDIA:'):
+            audio = attrs(line)
+        if line.startswith('#EXT-X-STREAM-INF:'):
+            a = attrs(line)
+            uri = next(x for x in lines[i + 1:] if x.strip())
+            text = (dest / uri).read_text()
+            durations = [float(x) for x in re.findall(r'#EXTINF:([\d.]+)', text)]
+            times = keyframes(dest / uri)
+            gaps = [round(b - a_, 3) for a_, b in zip(times, times[1:])]
+            profile_idc = a['CODECS'].split('.')[1][:2]
+            w, h = (int(x) for x in a['RESOLUTION'].split('x'))
+            rungs.append(dict(listed=len(rungs) + 1, resolution=a['RESOLUTION'], rung=min(w, h), bandwidth=int(a['BANDWIDTH']),
+                              codecs=a['CODECS'], profile={'42': 'Baseline', '4d': 'Main', '64': 'High'}.get(profile_idc, profile_idc),
+                              path=(dest / uri).relative_to(out).as_posix(), segments=len(durations),
+                              segment_max=max(durations), keyframe_interval_min=min(gaps) if gaps else None,
+                              keyframe_interval_max=max(gaps) if gaps else None))
+    files = sorted(p for p in dest.rglob('*') if p.is_file())
+    digest = hashlib.sha256(''.join(f'{sha256(f)}  {f.relative_to(out).as_posix()}\n' for f in files).encode()).hexdigest()
+    first = rungs[0]
+    info = video_info(out / first['path'])
+    return dict(variant='hls-as-served', ticket_variant='hls-as-served', rung=first['rung'], path=master.relative_to(out).as_posix(),
+                bytes=sum(f.stat().st_size for f in files), sha256=digest,
+                sha256_scope='sha256 of the "<sha256>  <path>" lines of every mirrored file',
+                duration=info['duration'], fps=info['fps'], resolution=first['resolution'],
+                gop=dict(verified=None, exempt=True, note='mirrored from the CDN byte for byte; recorded as found'),
+                moov=dict(position='fragmented', expected='fragmented', verified=True),
+                first_listed=first['resolution'], audio=dict(demuxed=audio is not None, uri=audio and audio.get('URI')),
+                files=len(files), rungs=rungs)
+
+
 def build(out, base, key, clip_list, copy):
     out = pathlib.Path(out)
     base = base.rstrip('/')
@@ -175,11 +215,13 @@ def build(out, base, key, clip_list, copy):
                                  duration=info_by_rung[top['rung']]['duration'], fps=FPS, resolution=top['resolution'],
                                  gop=dict(verified=all(r['gop']['verified'] for r in hrungs), target=key),
                                  moov=dict(position='fragmented', expected='fragmented', verified=True), rungs=hrungs))
+        if (d / 'hls-as-served').is_dir():
+            variants.append(served_variant(out, d / 'hls-as-served'))
         for v in variants:
-            if not (v['gop']['verified'] and v['moov']['verified']):
+            if not v['gop'].get('exempt') and not (v['gop']['verified'] and v['moov']['verified']):
                 failures.append(f'{cid} {v["variant"]}: gop={v["gop"]["verified"]} moov={v["moov"]["position"]}')
         m = meta.get(cid, {})
-        timing = out / '.timings' / cid
+        timing = out / '.timings' / cid  # seconds, written by encode.sh
         clips.append(dict(id=cid, title=m.get('title'), category=m.get('category'), length_bucket=m.get('lengthBucket'),
                           source=dict(file=m.get('file'), sha256=m.get('sha256'), resolution=f'{m["width"]}x{m["height"]}' if m else None,
                                       fps=m.get('fps'), duration=m.get('durationSec')),
@@ -205,8 +247,10 @@ def build(out, base, key, clip_list, copy):
         (out / f'{variant}.json').write_text(json.dumps(items, indent=2) + '\n')
         published[variant] = len(pairs)
 
+    settings_file = out / '.timings' / 'settings.json'
+    settings = json.loads(settings_file.read_text()) if settings_file.exists() else {}
     encoding = dict(keyframe_seconds=key, fps=FPS, gop_frames=key * FPS, x264='2-pass, High, yuv420p, -sc_threshold 0, maxrate 1.5x, bufsize 2x',
-                    preset=os.environ.get('ENCODE_PRESET', 'veryfast'), smoke_seconds=os.environ.get('ENCODE_SECONDS') or None,
+                    preset=settings.get('preset'), smoke_seconds=settings.get('smoke_seconds') or None,
                     ladder_kbps=LADDER, hls_rungs=list(HLS_RUNGS), mp4_sizes=list(MP4_SIZES), audio='AAC 96k 48 kHz',
                     cap='rungs named by short side, capped at the source short side; no upscale, no pad, aspect kept',
                     hls_master_order='lowest rung first', sources=ids, playlists=published,

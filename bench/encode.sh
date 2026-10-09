@@ -3,7 +3,8 @@ set -euo pipefail
 # Usage: encode.sh [source-directory] [output-directory] [origin-base-url] [keyframe-seconds]
 # Env: CLIP_LIST (clip-list.json: verify source sha256 + category/length in manifest.json),
 #      CONTENT_MANIFEST (also write manifest.json there), ENCODE_JOBS (clips in parallel, default 1),
-#      ENCODE_PRESET (default veryfast), ENCODE_THREADS (per ffmpeg, default 2), ENCODE_SECONDS (smoke only).
+#      ENCODE_PRESET (default veryfast), ENCODE_THREADS (per ffmpeg, default 2), ENCODE_SECONDS (smoke only),
+#      HLS_AS_SERVED (lines "<id> <master-url>": mirror each clip's served HLS byte for byte as hls-as-served).
 source_dir=${1:-Sample/HotMicPlayerDemo/Resources}
 out=${2:-bench/generated}
 base=${3:-http://127.0.0.1:8088}
@@ -14,6 +15,8 @@ for tool in ffmpeg ffprobe; do command -v "$tool" >/dev/null || { echo "Missing 
 if python3 -c '' 2>/dev/null; then py=python3; elif python -c '' 2>/dev/null; then py=python; else echo 'Missing python3' >&2; exit 1; fi
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$out/.timings"
+# Recorded in encoding.json, so a later manifest-only rebuild keeps the settings the media was encoded with.
+printf '{"preset":"%s","smoke_seconds":"%s"}\n' "${ENCODE_PRESET:-veryfast}" "${ENCODE_SECONDS:-}" > "$out/.timings/settings.json"
 [ -z "${CLIP_LIST:-}" ] || "$py" "$here/encode_manifest.py" verify "$source_dir" "$CLIP_LIST"
 # Every clip is normalised to 30 fps so the GOP (key*30 frames) is identical for every clip and variant.
 export out gop=$((key * 30))
@@ -65,5 +68,6 @@ encode_clip() {
 export -f encode_clip
 find "$source_dir" -maxdepth 1 -name '*.mp4' -print0 | sort -z |
   xargs -0 -r -n 1 -P "${ENCODE_JOBS:-1}" bash -c 'encode_clip "$1"' _
+[ -z "${HLS_AS_SERVED:-}" ] || "$py" "$here/mirror_hls.py" "$out" "$HLS_AS_SERVED"
 "$py" "$here/encode_manifest.py" build "$out" "$base" "$key" ${CLIP_LIST:+--clip-list "$CLIP_LIST"} \
   ${CONTENT_MANIFEST:+--copy "$CONTENT_MANIFEST"}

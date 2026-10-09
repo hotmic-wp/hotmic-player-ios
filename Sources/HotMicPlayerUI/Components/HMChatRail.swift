@@ -12,6 +12,8 @@ import HotMicPlayer
 ///
 /// Double-tap a message to react with `HMTheme.messageReaction`, when the source
 /// supports message reactions. VoiceOver exposes the same as a named action.
+///
+/// Access on the main actor.
 public struct HMChatRail: View {
 
     private let engagement: HMEngagement
@@ -29,6 +31,11 @@ public struct HMChatRail: View {
     ///   - lookback: Seconds of history shown behind the playhead.
     ///   - limit: Most messages shown at once; halved at accessibility text sizes.
     ///   - maxHeight: Tallest the rail grows; older lines past it fade out at the top.
+    ///
+    /// - Parameter engagement: Engagement state to display and send viewer actions through.
+    /// - Parameter mediaTime: Current item time in seconds, used to query the engagement timeline.
+    ///
+    /// Access on the main actor.
     public init(engagement: HMEngagement, mediaTime: TimeInterval, lookback: TimeInterval = 20, limit: Int = 5,
                 maxHeight: CGFloat? = nil) {
         self.engagement = engagement
@@ -38,6 +45,8 @@ public struct HMChatRail: View {
         self.maxHeight = maxHeight
     }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         // One query per body pass; this runs on every playback tick, and the
         // underlying lookup is a binary search over the timeline.

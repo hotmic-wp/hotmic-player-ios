@@ -4,23 +4,41 @@ import AVFoundation
 #endif
 
 /// Environment-level Mux Data configuration (`MUXSDKCustomerPlayerData`).
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMMuxEnvironment: Sendable {
     /// Mux Data environment key supplied by the host.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var environmentKey: String
     /// Player name sent to Mux.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var playerName: String
     /// SDK version sent to Mux.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var playerVersion: String
     /// Optional app-defined viewer ID.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var viewerUserID: String?
     /// Optional Mux sub-property ID.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var subPropertyID: String?
     /// Optional experiment dimension.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var experimentName: String?
     /// `custom_1` ... `custom_5` in the Mux schema.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var customDimensions: [String: String]
 
     /// Creates Mux configuration, video metadata or a bounded logging bridge.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(
         environmentKey: String,
         playerName: String = "HotMicPlayer",
@@ -40,6 +58,8 @@ public struct HMMuxEnvironment: Sendable {
     }
 
     /// Flattened into Mux's documented key names.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var payload: [String: String] {
         var dict: [String: String] = [
             "env_key": environmentKey,
@@ -57,25 +77,45 @@ public struct HMMuxEnvironment: Sendable {
 }
 
 /// Per-view video metadata (`MUXSDKCustomerVideoData`).
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMMuxVideoData: Sendable {
     /// App playlist ID sent as the Mux video ID.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoID: String
     /// Optional title sent to Mux.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoTitle: String?
     /// Optional series from item metadata.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoSeries: String?
     /// Media duration in seconds; mapped to milliseconds in the payload.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoDuration: TimeInterval?
     /// Mux stream type; player playlists use on-demand.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoStreamType: String
     /// Playable URL string, empty for an unresolved reference.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoSourceURL: String
     /// Optional media origin host.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoCDN: String?
     /// Optional variant from item metadata.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var videoVariantName: String?
 
     /// Flattened Mux schema fields.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var payload: [String: String] {
         var dict: [String: String] = [
             "video_id": videoID,
@@ -91,6 +131,8 @@ public struct HMMuxVideoData: Sendable {
     }
 
     /// Creates Mux configuration, video metadata or a bounded logging bridge.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(item: HMMediaItem, duration: TimeInterval?) {
         videoID = item.id
         videoTitle = item.title
@@ -108,17 +150,27 @@ public struct HMMuxVideoData: Sendable {
 /// The SDK ships with a logging implementation so the sample app runs with zero
 /// third-party dependencies. Dropping in the real Mux SDK means implementing
 /// these four calls — see `Integrations/Mux/MuxDataBridge.swift.txt`.
+///
+/// Access on the main actor.
 @MainActor
 public protocol HMMuxBridge: AnyObject {
     #if canImport(AVFoundation)
     /// Maps to `MUXSDKStats.monitorAVPlayerLayer(_:withPlayerName:playerData:videoData:)`.
+    ///
+    /// Access on the main actor.
     func monitor(playerLayer: AVPlayerLayer, playerName: String, environment: HMMuxEnvironment, video: HMMuxVideoData)
     #endif
     /// Maps to `MUXSDKStats.videoChangeForPlayer(name:withVideoData:)`.
+    ///
+    /// Access on the main actor.
     func videoChange(playerName: String, video: HMMuxVideoData)
     /// Maps to `MUXSDKStats.destroyPlayer(_:)`.
+    ///
+    /// Access on the main actor.
     func destroy(playerName: String)
     /// Maps to `MUXSDKStats.dispatchError(_:withMessage:forPlayer:)`.
+    ///
+    /// Access on the main actor.
     func dispatchError(playerName: String, code: String, message: String)
 }
 

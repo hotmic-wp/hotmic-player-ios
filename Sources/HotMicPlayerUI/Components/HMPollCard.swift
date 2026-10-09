@@ -8,6 +8,8 @@ import HotMicPlayer
 /// after it closes so the final result can be read. Scrubbing back to a poll
 /// shows it again, with the viewer's vote kept. Without the `.vote` capability
 /// the card shows live results only. Renders nothing when no poll is visible.
+///
+/// Access on the main actor.
 public struct HMPollCard: View {
 
     private let engagement: HMEngagement
@@ -20,12 +22,19 @@ public struct HMPollCard: View {
 
     /// Creates a poll card at a media time.
     /// - Parameter resultsLinger: Seconds a closed poll's results stay on screen.
+    ///
+    /// - Parameter engagement: Engagement state to display and send viewer actions through.
+    /// - Parameter mediaTime: Current item time in seconds, used to query the engagement timeline.
+    ///
+    /// Access on the main actor.
     public init(engagement: HMEngagement, mediaTime: TimeInterval, resultsLinger: TimeInterval = 6) {
         self.engagement = engagement
         self.mediaTime = mediaTime
         self.resultsLinger = resultsLinger
     }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         let poll = engagement.polls(at: mediaTime, resultsLinger: resultsLinger).first
         ZStack {

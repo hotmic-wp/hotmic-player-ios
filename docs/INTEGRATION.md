@@ -128,7 +128,7 @@ Engagement is three layers. Use the ones you need.
 | `sendChat`, `react`, `react(_:toMessage:for:)`, `vote` | throw `.unsupportedAction` | Perform the action against your backend. Return to confirm; throw to roll back. |
 | `sendChat(_ message: HMChatMessage, for:) -> HMTimelineEvent?` | calls `sendChat(message.text, for:)`, returns nil | Return the confirmed server message. It replaces the local one: server ID, author, avatar, wall time and counts are adopted, while the offset stays where the viewer sent it. Later `updateReactions(_:forMessage:)` calls and echoes then match by the server ID. Return nil to keep the local ID (`message.id`). |
 | `react(_ reaction: HMTimelineEvent, for:) -> HMTimelineEvent?` | calls `react(reaction.emoji, for:)`, returns nil | Same for stream reactions: the returned ID replaces the local one, so an echo by that ID is counted once. The viewer's offset and waveform weight stay local. |
-| `engagementDidLoad(_:)` | nothing | Keep the `HMEngagement` **weakly** and push live state: `receive(_:)` for events from a socket, `update(_:)` for poll counts or closure, `updateReactions(_:forMessage:)` for message totals. An echo of the viewer's own event, by the confirmed ID, is shown and counted once, even if it arrives before the action returns. |
+| `engagementDidLoad(_:)` | nothing | Keep the `HMEngagement` **weakly** and push live state: `receive(_:)` for events from a socket, `upsertPoll(_:)` for poll counts or closure, `updateReactions(_:forMessage:)` for message totals. An echo of the viewer's own event, by the confirmed ID, is shown and counted once, even if it arrives before the action returns. |
 
 Timeline events carry optional `avatarURL`, `wallTime` and per-message `reactions`. The player holds your source strongly and its engagements borrow it weakly; keep engagements weakly in the source. A standalone `HMEngagement(item:timeline:source:)` (previews, tests) retains its source. Without a source, the player uses an empty, read-only source: no events, polls or actions, never invented content. Demo engagement is opt-in Benchmark SPI: `HMPlayer(interactions: HMMockInteractionSource())` accepts every action after a simulated round trip and adds one poll per item.
 
@@ -147,7 +147,7 @@ Timeline events carry optional `avatarURL`, `wallTime` and per-message `reaction
 
 `HMTheme` holds colors, Dynamic Type fonts, corner radius, SF Symbol names and the reaction palette; `HMTheme.default` is HotMic's look. Apply it once with `.hmTheme(_:)`. Text over video is always light on a scrim; cards use system materials and follow light and dark mode. All controls have VoiceOver labels; Reduce Motion replaces travel with fades and turns off ambient floating reactions; at accessibility text sizes the chat rail shows fewer, larger lines.
 
-To write another layout, conform a view to `HMEngagementLayout` (`init(context: HMEngagementContext)`) and compose the components. The planned stacked and side-panel layouts need the video itself to move, so they will add a defaulted `videoPlacement` requirement that the feed reads; existing layouts keep compiling.
+To write another layout, conform a view to `HMEngagementLayout` (`init(context: HMEngagementContext)`) and compose the components. The 1.0 layout contract is `init(context:)`; future layout capabilities will follow the versioning policy.
 
 ## Events and analytics
 
@@ -167,9 +167,9 @@ Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existi
 
 ## Transport settings and limits
 
-The default preset has two native players, a 128 MB disk cap and a fixed data window. Media prefetch waits for a safe current buffer. Resolution does not wait for that gate. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. A dead listener is re-armed on next use or foreground, and each restart repeats the health check before publishing its port. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
+The default preset has two native players, a 128 MB disk cap and adaptive prefetch within an app-bounded data window. Media prefetch waits for a safe current buffer. Resolution does not wait for that gate. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. A dead listener is re-armed on next use or foreground, and each restart repeats the health check before publishing its port. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
 
-Use versioned VOD paths. Query parameters are preserved in cache identity; volatile signing-parameter tuning is Benchmark SPI. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, HLS byte-range/alternate-audio coverage and concurrent active players sharing the same disk directory remain outside the supported contract. Playback UI is iOS/tvOS; macOS package tests exercise platform-independent logic.
+Use versioned VOD paths. Query parameters are preserved in cache identity; volatile signing-parameter tuning is Benchmark SPI. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, HLS byte-range/alternate-audio coverage and concurrent active players sharing the same disk directory remain outside the supported contract. The player/feed compile for iOS/tvOS; HotMicPlayerUI is iOS-only. macOS package tests exercise platform-independent logic.
 
 ## Stable configuration
 
@@ -189,3 +189,23 @@ Measured adaptive prefetch is enabled by default. The app's prefetch budgets
 remain maxima; `HMPlayerConfiguration(adaptive: false)` selects fixed settings.
 See [adaptive prefetch](ADAPTIVE_PREFETCH.md) for the replaceable public policy,
 readiness tiers, thresholds and telemetry. No network-type rules are applied.
+
+## 1.0 moderation durability and threading
+
+All source pushes and actions run on the main actor outside SwiftUI bodies. Shared moderation records synchronize living engagements synchronously on mutation; query getters do not mutate observed state. Waveform projections remain lazy caches outside Observation.
+
+Use `updateReactions(_:forMessage:)` for authoritative message-reaction totals, including viewer reactions. Those counts survive engagement eviction and can arrive before a message. `removeReaction(_:forMessage:count:isOwn:)` is an instance-local count delta: deliver it once, and follow with authoritative totals if moderation must survive eviction. Records share the 4,096-ID / 256 KiB per-item budget, counting UTF-8 IDs, emoji keys and integer payloads. Overflow hides engagement until the item leaves the playlist or teardown and emits one error in unified logs under subsystem `com.hotmic.player`, category `moderation`, including the item ID and limits.
+
+See [API review](API_REVIEW_1.0.md), the [DocC player guide](../Sources/HotMicPlayer/HotMicPlayer.docc/GettingStarted.md), and the [separate Core adapter](https://github.com/hotmic-wp/hotmic-player-core-ios).
+
+## Enum evolution
+
+New cases may be added to non-frozen public enums in minor releases. Include `@unknown default` in client switches so new events and states have a fallback, while the compiler can flag cases missing from your current SDK version:
+
+```swift
+switch player.snapshot.state {
+case .playing: showPlaying()
+case .idle, .loading, .ready, .paused, .buffering, .failed: showOtherState()
+@unknown default: showOtherState()
+}
+```

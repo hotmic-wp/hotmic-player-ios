@@ -15,9 +15,9 @@ TLS/HTTP2 origin, and `tc` from iproute2 for netem. Python is stdlib-only.
 macOS: Xcode (tested with 26.5), its command-line tools, Bash, Python 3.9+,
 FFmpeg/ffprobe for local encoding. The Python origin needs no additional packages.
 Nothing here installs software. Provision missing tools through your normal
-owner-approved process. Work in a HotMic feature worktree. Use only HotMic-owned
-simulators/devices and a dedicated origin network interface. `netem.sh` changes
-that interface's root qdisc; never run it on this Mac or a shared/management NIC.
+approved process. Use your own test devices, dedicated simulators
+and a dedicated origin network interface. `netem.sh` changes
+that interface's root qdisc; never run it on a shared or management network interface.
 
 The package unit suite is `swift test`, separate from the benchmark XCUITest
 scheme. The benchmark scripts are long-running tools and are not CI/merge tests.
@@ -136,10 +136,9 @@ no push/PR/scheduled triggers, no tests, cloud runs or deployment. It builds the
 Debug Sample app and XCTest runner for a generic iOS device on `macos-26`, with
 `CODE_SIGNING_ALLOWED=NO`, within a ten-minute job limit. The workflow must be
 available on the repository's default branch before GitHub can dispatch it;
-this feature work does not push, merge or trigger it.
+dispatch it only when you intend to build benchmark artifacts.
 
-After manager approval and normal integration, an authorized Linux operator
-can dispatch/download it with their existing GitHub access:
+An authorized operator can dispatch/download it with existing GitHub access:
 
 ```bash
 gh workflow run benchmark-build.yml --ref main \
@@ -158,12 +157,10 @@ packages existing products headlessly and verifies their device platform.
 
 Unsigned artifacts are the default for **Device Farm public devices**, which
 [AWS re-signs](https://docs.aws.amazon.com/devicefarm/latest/developerguide/skip-app-re-signing-on-private-devices.html).
-They do not install directly onto your own iPhone. For an owned phone, Chris
-must provide a valid development-signed IPA: the Apple development team and
+They do not install directly onto your own iPhone. For your own phone, provide a valid development-signed IPA: the Apple development team and
 certificate/private key (P12 and its password), an app provisioning profile
 matching `com.hotmic.HotMicPlayerDemo`, the registered iPhone UDID, and a trusted
-Developer Mode-enabled phone. For a locally installed XCTest runner he must
-also provide a profile for `com.hotmic.HotMicPlayerDemoUITests.xctrunner`.
+Developer Mode-enabled phone. For a locally installed XCTest runner, also provide a profile for `com.hotmic.HotMicPlayerDemoUITests.xctrunner`.
 Certificates/profiles must be unexpired, from the same team, and cover that
 phone. No existing project signing settings or signing secrets were changed.
 
@@ -173,9 +170,9 @@ The workflow's optional `sign=true` checks four **existing** repo secrets:
 are absent, signing skips cleanly and artifacts stay unsigned. When supplied,
 it imports the certificate into an ephemeral runner keychain, embeds the
 profiles, signs nested code and the two apps, and removes the keychain/files.
-Chris owns these inputs and signing decisions. We neither create secrets nor
-run the workflow. Private Device Farm pools have different signing/trust rules;
-follow the owner's configuration and AWS guidance.
+Your development team supplies these signing inputs through your approved
+process. Private Device Farm pools have different signing/trust rules; follow
+your configuration and AWS guidance.
 
 For a remote Mac with an already prepared environment, the equivalent commands
 are:
@@ -273,7 +270,7 @@ measurement remains the event-driven SDK presentation detector.
 
 ## 6a. Own iPhone + Linux, without Xcode/XCUITest
 
-Receive the **device-signed** IPA from Chris or the optional signed workflow.
+Obtain the **device-signed** IPA from your development team or the optional signed workflow.
 The Linux host needs usbmuxd/libimobiledevice and ideviceinstaller, provisioned
 through its normal owner-approved process. Connect the registered, unlocked
 phone by USB, trust the Linux host and enable Developer Mode if required. Then:
@@ -303,8 +300,8 @@ BenchRuns or Share, and analyze them on Linux.
 ## 6b. AWS Device Farm, without owning a phone/Mac
 
 Download the unsigned artifacts from the manual Actions workflow. The owner
-uploads the app IPA as `IOS_APP` and the test ZIP as `XCTEST_UI_TEST_PACKAGE` to a
-HotMic-owned Device Farm project/device pool. The [AWS package guide](https://docs.aws.amazon.com/devicefarm/latest/developerguide/test-types-ios-xctest-ui.html)
+uploads the app IPA as `IOS_APP` and the test ZIP as `XCTEST_UI_TEST_PACKAGE` to
+your Device Farm project/device pool. The [AWS package guide](https://docs.aws.amazon.com/devicefarm/latest/developerguide/test-types-ios-xctest-ui.html)
 describes the IPA and single Runner.app ZIP layouts. Linux AWS CLI uploads and
 run scheduling are possible using the owner's existing AWS access; this task
 does not create cloud runs, credentials, projects or deployments.
@@ -330,7 +327,7 @@ POSTs have **not** been proven by Simulator smoke runs.
 
 ## 6c. Remote Mac / Simulator automation
 
-Build for a dedicated HotMic iPhone 17 Pro simulator, then launch the thin wrapper:
+Build for a dedicated iPhone simulator, then launch the thin wrapper:
 
 ```bash
 xcodebuild build-for-testing -project Sample/HotMicPlayerDemo.xcodeproj \
@@ -355,9 +352,8 @@ For the 16-cell Simulator smoke matrix (S0/S1/S2 with four players/S3 × MP4
 faststart 720/HLS 2s × normal/binge, 50 moves each), copy
 `bench/grid.smoke.json` into the origin root as `smoke-grid.json`. It uses
 localhost and `require_frame=true`; change URLs for a phone and do not use this
-frame-waiting smoke grid for adverse-network performance conclusions. With the
-12s smoke encodes it takes roughly 45–50 minutes. Validation results and limits are
-recorded in [the task smoke report](SIMULATOR_SMOKE_213.md).
+frame-waiting smoke grid for adverse-network performance conclusions. Allow sufficient time for the entire matrix; record the fixture duration,
+frame-wait policy and shaping profile alongside your results.
 
 ## Grid knobs and direct launch arguments
 
@@ -469,7 +465,7 @@ prefetch workers does not multiply the configured capacity.
 `python3 bench/prepare_adaptive_smoke.py` prepares eight distinct media paths,
 a two-rendition HLS ladder, MP4 faststart fixtures, and a 16-cell `grid.json`.
 It uses the existing ffmpeg; no installation is performed. Start a receiver on
-18415 and the two origins above. Build/install on a dedicated HotMic simulator,
+18415 and the two origins above. Build/install on a dedicated simulator,
 then launch the app with `--hm-grid-url http://127.0.0.1:18413/grid.json`.
 The app drives settled page transitions and posts complete JSONLs. The smoke has
 two moves per cell, one-second binge dwell and five-second normal dwell, with

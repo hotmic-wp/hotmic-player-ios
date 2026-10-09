@@ -1,6 +1,6 @@
 # HotMicPlayer architecture (0.3.0)
 
-The dependency-free player package defines `HMPlayer`, its VOD engine, `HMVerticalFeedView`, analytics and three partner adapter protocols. A later, separate `HotMicPlayerCore` package will depend on this package and HotMicCore to implement those adapters. There is no Core code here.
+The dependency-free player package defines `HMPlayer`, its VOD engine, `HMVerticalFeedView`, analytics and three partner adapter protocols. The separate [HotMicPlayerCore package](https://github.com/hotmic-wp/hotmic-player-core-ios) will depend on this package and HotMicCore to implement those adapters. There is no Core code here.
 
 ## Public contract and atomic playlist edits
 
@@ -14,7 +14,7 @@ Partner edits preserve pending page fetches and the cursor. Source pages drop ov
 
 ## Hybrid two-player engine and prefetch
 
-Default S3 has one active native player and one prepared next player, plus an independent bounded data window. S0 has one direct player, S1 adds data prefetch, and S2 preserves the warm-pool comparison. No adaptive policy is implemented in this milestone.
+Default S3 has one active native player and one prepared next player, plus an independent bounded data window. S0 has one direct player, S1 adds data prefetch, and S2 preserves the warm-pool comparison. The default adaptive policy reduces speculative work within app budgets using measured throughput, latency, readiness, dwell and buffer health; see [Adaptive prefetch](ADAPTIVE_PREFETCH.md).
 
 The resolution window is current plus configured data/warm offsets. `HMResolutionStore` coalesces pending tasks for an immutable entry, caches completed metadata for the player session, and cancels unfinished resolution when the entry leaves the window. Current and next resolution use user-initiated priority; other neighbours use utility priority. A higher-priority waiter promotes existing work as roles change. Errors retry with capped backoff and a three-attempt budget, reset on current activation. Direct extensionless `.auto` URLs use a HEAD response to distinguish HLS from MP4, falling back to a streamed GET of bytes 0–1 if HEAD fails. Explicit formats and known extensions avoid that request.
 
@@ -69,3 +69,9 @@ Readiness (`cold`, `cachedBytes`, `warmPlayer`) is recorded at activation. TTFF 
 Immutable VOD, MP4 and HLS, iOS 17+ and zero package dependencies are the partner contract. Snapshot live/DVR fields remain for telemetry compatibility but do not broaden that contract. Live, LL-HLS, DRM, authenticated origins, signed-playlist refresh, HLS byte-range/alternate-audio coverage and concurrent active controllers sharing a disk directory are outside supported coverage. Physical-device decoder, memory, thermal and audible continuity still require device validation. Poster URLs are supported; generating a poster from the first frame is deferred.
 
 Paging retries are separate from reference-resolution retries: four total page attempts, with 1/2/4-second exponential waits. The scheduler checks the budget before scheduling another request, including rejected pages. A successful `replaceAll` advances the cursor generation and resets the cursor; it discards old-generation page results without cancelling the transport request. Other playlist edits retain the current source request. Audio-session ownership is a public configuration choice; with `managesAudioSession == false`, all activation and teardown paths leave the host session alone.
+
+### 1.0 moderation synchronization
+
+The record store holds weak references to living engagements, pruning dead references on registration and notification. Deletion and authoritative reaction-count writes notify those engagements synchronously on the main actor. Projection into observable arrays/totals happens on that mutation path, never in query getters. Waveform and sorted-local-event caches remain Observation-ignored and may rebuild lazily. No task or strong ownership cycle is introduced.
+
+Authoritative message counts live in the bounded record store and override a timeline's stale counts, including after engagement eviction/rebuild. Local optimistic reactions and deletion deltas overlay those counts; authoritative updates clear local deltas and advance rollback versions. Count-removal deltas alone are instance-local. Overflow emits one `Logger.error` under `com.hotmic.player` / `moderation`, with item ID and bounds, then suppresses future engagement for that playlist-item lifetime.

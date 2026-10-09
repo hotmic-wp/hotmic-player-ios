@@ -12,6 +12,8 @@ import HotMicPlayer
 /// Built so playback does not redraw it: the bars are a `Shape` that depends
 /// only on the density array, drawn twice and revealed by a mask whose width is
 /// the only thing a time tick changes.
+///
+/// Access on the main actor.
 public struct HMEngagementScrubber: View {
 
     private let engagement: HMEngagement
@@ -31,6 +33,11 @@ public struct HMEngagementScrubber: View {
     /// - Parameters:
     ///   - onSeek: Receives a media time in seconds, from a scrub or a tapped peak.
     ///   - onScrubbingChanged: Called when a drag starts and when it ends or is cancelled.
+    ///
+    /// - Parameter engagement: Engagement state to display and send viewer actions through.
+    /// - Parameter snapshot: Playback state and timing for the scrubber.
+    ///
+    /// Access on the main actor.
     public init(engagement: HMEngagement, snapshot: HMPlaybackSnapshot, onSeek: @escaping (TimeInterval) -> Void,
                 onScrubbingChanged: ((Bool) -> Void)? = nil) {
         self.engagement = engagement
@@ -54,6 +61,8 @@ public struct HMEngagementScrubber: View {
     }
     private var barHeight: CGFloat { isScrubbing ? 38 : 22 }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         let density = engagement.density
         let markers = engagement.markers

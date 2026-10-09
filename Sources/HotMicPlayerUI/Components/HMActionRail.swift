@@ -9,17 +9,29 @@ import HotMicPlayer
 /// Share appears only with an `onShare` handler, and Mute only with an
 /// `isMuted` binding. Tap React to send the theme's primary reaction; press and
 /// hold to pick from `HMTheme.reactionPalette`.
+///
+/// Access on the main actor.
 public struct HMActionRail: View {
 
     /// A button the rail can show.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public enum Action: Hashable, Sendable, CaseIterable {
         /// Stream reaction, with the item's reaction total.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         case react
         /// Opens a composer through `onComment`.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         case comment
         /// Placeholder the host wires to its own share sheet through `onShare`.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         case share
         /// Sound toggle through the `isMuted` binding.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         case mute
     }
 
@@ -36,6 +48,8 @@ public struct HMActionRail: View {
     @State private var showsPalette = false
 
     /// Creates the action rail.
+    ///
+    /// Access on the main actor.
     public init(engagement: HMEngagement, actions: Set<Action> = Set(Action.allCases), isMuted: Binding<Bool>? = nil,
                 onComment: (() -> Void)? = nil, onShare: (() -> Void)? = nil) {
         self.engagement = engagement
@@ -45,6 +59,8 @@ public struct HMActionRail: View {
         self.onShare = onShare
     }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         VStack(spacing: 14) {
             if actions.contains(.react), engagement.supports(.reactToStream) { reactButton }

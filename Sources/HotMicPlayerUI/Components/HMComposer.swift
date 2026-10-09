@@ -7,6 +7,8 @@ import HotMicPlayer
 /// Focuses itself on appear. While a message is sending the field is disabled; on
 /// failure the text is kept and an inline error explains why, so the viewer can
 /// retry. Renders nothing when the source can't send chat.
+///
+/// Access on the main actor.
 public struct HMComposer: View {
 
     private let engagement: HMEngagement
@@ -26,6 +28,12 @@ public struct HMComposer: View {
     /// - Parameters:
     ///   - onSent: Called after the source accepts a message.
     ///   - onDismiss: Shows a close button when provided; also called on submit of an empty field.
+    ///
+    /// - Parameter autofocus: Whether to focus the text field when it appears.
+    /// - Parameter engagement: Engagement state to display and send viewer actions through.
+    /// - Parameter placeholder: Prompt shown while the message field is empty.
+    ///
+    /// Access on the main actor.
     public init(engagement: HMEngagement, placeholder: String = "Add a comment…", autofocus: Bool = true,
                 onSent: (() -> Void)? = nil, onDismiss: (() -> Void)? = nil) {
         self.engagement = engagement
@@ -35,6 +43,8 @@ public struct HMComposer: View {
         self.onDismiss = onDismiss
     }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         if engagement.supports(.sendChat) {
             VStack(alignment: .leading, spacing: 6) {

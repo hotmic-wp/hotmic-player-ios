@@ -3,43 +3,81 @@ import Foundation
 /// Normalised playback telemetry. Deliberately modelled on the union of what
 /// Mux Data, Conviva and Amplitude-style back ends expect, so a sink is a thin
 /// mapping layer rather than a reimplementation.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMPlaybackEvent: Sendable, Identifiable {
 
     /// Categories of playback telemetry.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public enum Kind: Sendable, Hashable {
         /// A view (one item impression) began. Mux: `videochange` / new view.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case viewStart
         /// The viewer left the item. Carries watch time in `metrics`.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case viewEnd
         /// Player asked the network for the asset.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case loadStart
         /// First frame rendered. `metrics["ttff_ms"]` is the money number.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case firstFrame
         /// Playback was requested.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case play
         /// Playback is advancing.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case playing
         /// Playback was paused.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case pause
         /// A seek began.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case seeking
         /// A seek completed.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case seeked
         /// A playback stall began.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case rebufferStart
         /// A playback stall ended.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case rebufferEnd
         /// The selected HLS rendition changed.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case variantChanged
         /// The VOD reached its end.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case ended
         /// Playback failed.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case error
         /// Emitted when the SDK warms an item that is not yet on screen.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case preloadStart
         /// Prepared media became ready.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case preloadReady
         /// A pooled `AVPlayer` was recycled onto a different item.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case playerRecycled
         /// Changed applied plan and measured inputs, delivered only to benchmark sinks.
         @_spi(Benchmark) case prefetchDecision
@@ -50,6 +88,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         /// Speculative download exhausted its retries.
         @_spi(Benchmark) case prefetchError
         /// Playback transport failed.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         case transportError
         /// First ten seconds of activation telemetry.
         @_spi(Benchmark) case startupSummary
@@ -57,6 +97,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         @_spi(Benchmark) case runEnd
 
         /// Stable category name for analytics sinks. Category enumeration and decoding are not partner API.
+        ///
+        /// Use from any task; mutate only an exclusively owned value.
         public var rawValue: String {
             switch self {
             case .viewStart: return "viewStart"
@@ -118,23 +160,41 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
     }
 
     /// Stable identity for this value.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let id = UUID()
     /// Event category.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let kind: Kind
     /// App-chosen playlist item ID.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let itemID: String
     /// Occurrence time on the system-uptime clock, in seconds.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let monotonicTime: TimeInterval
     /// Wall-clock occurrence time.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let timestamp: Date
     /// Player position when the event fired, seconds.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let position: TimeInterval
     /// Numeric payload (durations in ms, bitrates in bps, counts).
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let metrics: [String: Double]
     /// String payload (variant URL, error message, custom dimensions).
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let properties: [String: String]
 
     /// Creates telemetry with explicit occurrence clocks and optional payloads.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(
         kind: Kind,
         itemID: String,
@@ -156,6 +216,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
 
 extension HMPlaybackEvent: CustomStringConvertible {
     /// Readable telemetry description with sorted payload keys.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var description: String {
         var parts = ["\(kind.rawValue) item=\(itemID)"]
         if position > 0 { parts.append(String(format: "t=%.2fs", position)) }

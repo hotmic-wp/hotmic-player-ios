@@ -6,43 +6,77 @@ import Observation
 /// The partner SDK entry point. Owns a VOD playlist, playback, prefetch and events.
 /// All mutations are synchronous and atomic on the main actor. During a swipe,
 /// edits preserve a swipe unless the current or destination ID changes position.
+///
+/// Access on the main actor.
 @MainActor @Observable public final class HMPlayer {
     private var playlist = HMPlaylistState()
     /// Loaded playlist entries, in display order.
+    ///
+    /// Access on the main actor.
     public var items: [HMMediaItem] { playlist.items }
     /// Index of the last committed current item; zero while idle.
+    ///
+    /// Access on the main actor.
     public var activeIndex: Int { failureIdle ? 0 : playlist.index }
     /// Index of the current entry, or nil when empty or idle after failures.
+    ///
+    /// Access on the main actor.
     public var currentIndex: Int? { currentItem == nil ? nil : playlist.index }
     /// Last committed current entry, or nil while idle.
+    ///
+    /// Access on the main actor.
     public var currentItem: HMMediaItem? { failureIdle ? nil : playlist.current }
     /// Current playback state, observed by SwiftUI through the underlying snapshot.
+    ///
+    /// Access on the main actor.
     public var snapshot: HMPlaybackSnapshot { currentNode?.snapshot ?? pendingSnapshot }
     /// True while requesting a page from the optional playlist source.
+    ///
+    /// Access on the main actor.
     public private(set) var isLoadingPage = false
     /// Whether the source has another page. False without a source.
+    ///
+    /// Access on the main actor.
     public private(set) var hasMoreContent = false
     /// Latest recoverable error description; a successful operation clears it.
+    ///
+    /// Access on the main actor.
     public private(set) var loadError: String?
     /// Most recent event, also available to Observation clients.
+    ///
+    /// Access on the main actor.
     public private(set) var lastEvent: HMPlayerEvent?
     /// Increments after each effective playlist edit. Appends preserve in-flight swipes.
+    ///
+    /// Access on the main actor.
     public private(set) var playlistRevision = 0
     /// Optional paging adapter. Assigning a different source resets its cursor and invalidates its pending page.
+    ///
+    /// Access on the main actor.
     public var playlistSource: HMPlaylistSource? {
         didSet { pageGeneration += 1; loadTask?.cancel(); loadTask = nil; pageTaskID = UUID(); isLoadingPage = false; resetPagingCursor(); scheduleFailedItemAdvance() }
     }
     /// Playback and prefetch settings. Updating these may resize the engine pool.
+    ///
+    /// Access on the main actor.
     public var configuration: HMPlayerConfiguration { didSet { applyConfiguration() } }
     /// Replaceable measured-performance policy. Fixed mode bypasses custom providers.
+    ///
+    /// Access on the main actor.
     @ObservationIgnored public var prefetchPolicy: any HMPrefetchPolicyProviding = HMAdaptivePrefetchPolicy() {
         didSet { prefetchIdentity = ""; updatePrefetch(force: true) }
     }
     /// Last applied, app-clamped decision, including its reason.
+    ///
+    /// Access on the main actor.
     public private(set) var prefetchPlan: HMPrefetchPlan?
     /// Mutes every current and prepared player synchronously.
+    ///
+    /// Access on the main actor.
     public var isMuted: Bool { didSet { for node in pool.nodes { node.setMuted(isMuted) } } }
     /// Pause when hidden or backgrounded. Resume is synchronous for a resolved, prepared current item.
+    ///
+    /// Access on the main actor.
     public var isFeedVisible = true {
         didSet {
             guard isFeedVisible != oldValue else { return }
@@ -51,8 +85,12 @@ import Observation
         }
     }
     /// Analytics fan-out, independent of the player event stream.
+    ///
+    /// Access on the main actor.
     @ObservationIgnored public let analytics: HMAnalyticsHub
     /// Independent ordered subscription, buffered up to 256 events. Cancel the consuming task when finished.
+    ///
+    /// Access on the main actor.
     public var events: AsyncStream<HMPlayerEvent> {
         let id = UUID()
         return AsyncStream(bufferingPolicy: .bufferingNewest(256)) { continuation in
@@ -64,12 +102,16 @@ import Observation
     @_spi(Benchmark) public var preparedItemCount: Int { pool.busyCount }
 
     /// Read-only interaction state: feed touches/page motion or a bounded partner interaction.
+    ///
+    /// Access on the main actor.
     public var isInteracting: Bool { pageIsMoving || feedIsTouching || partnerIsInteracting }
     private var feedIsTouching = false
     private var partnerIsInteracting = false
     private var pageIsMoving = false
     @ObservationIgnored private var interactionTimeoutTask: Task<Void, Never>?
     /// Defers automatic failure skips for a custom control. Repeated calls renew the 30-second timeout.
+    ///
+    /// Access on the main actor.
     public func beginInteraction() { beginInteraction(timeout: .seconds(30)) }
     func beginInteraction(timeout: Duration) {
         guard !ended else { return }
@@ -81,6 +123,8 @@ import Observation
         }
     }
     /// Ends a custom control interaction early; otherwise it expires automatically after 30 seconds.
+    ///
+    /// Access on the main actor.
     public func endInteraction() {
         partnerIsInteracting = false
         interactionTimeoutTask?.cancel(); interactionTimeoutTask = nil
@@ -151,6 +195,8 @@ import Observation
     private var pendingSnapshot = HMPlaybackSnapshot()
 
     /// Creates an empty player. Supply only the adapters your app needs; no Core dependency is required.
+    ///
+    /// Access on the main actor.
     public init(configuration: HMPlayerConfiguration = .default, resolver: HMItemResolver? = nil,
                 interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil) {
         self.configuration = configuration; self.resolver = resolver
@@ -168,17 +214,27 @@ import Observation
 
     /// Switches to `items[startAt]` and resets the source cursor to nil, including its retry budget.
     /// A pending page finishes but is ignored. Empty with startAt zero becomes idle; invalid edits return false and emit an error.
+    ///
+    /// Access on the main actor.
     @discardableResult public func replaceAll(_ items: [HMMediaItem], startAt: Int = 0) -> Bool {
         mutate(replacingCurrent: true) { try $0.replaceAll(items, startAt: startAt) }
     }
     /// Replaces every entry after current, preserving the current player's clock, buffer and layer.
+    ///
+    /// Access on the main actor.
     @discardableResult public func replaceUpcoming(_ items: [HMMediaItem]) -> Bool { mutate { try $0.replaceUpcoming(items) } }
     /// Inserts entries immediately after current; on an empty list creates the playlist.
+    ///
+    /// Access on the main actor.
     @discardableResult public func insertNext(_ items: [HMMediaItem]) -> Bool { mutate { try $0.insertNext(items) } }
     /// Adds entries at the end without interrupting current playback.
+    ///
+    /// Access on the main actor.
     @discardableResult public func append(_ items: [HMMediaItem]) -> Bool { appendItems(items, fromSource: false) }
     private func appendItems(_ items: [HMMediaItem], fromSource: Bool) -> Bool { mutate { try $0.append(items) } }
     /// Removes IDs. Removing current selects the next survivor, then previous; removing all becomes idle.
+    ///
+    /// Access on the main actor.
     @discardableResult public func remove(ids: Set<String>) -> Bool { mutate { $0.remove(ids: ids) } }
 
     private func mutate(replacingCurrent: Bool = false, _ edit: (inout HMPlaylistState) throws -> Void) -> Bool {
@@ -219,19 +275,31 @@ import Observation
     }
 
     /// Begins playback, or resumes the current item without resetting its position.
+    ///
+    /// Access on the main actor.
     public func play() { wantsPlayback = true; resumeActive(); refreshWindow() }
     /// Pauses playback without changing the playlist or current position.
+    ///
+    /// Access on the main actor.
     public func pause() { wantsPlayback = false; currentNode?.pause() }
     /// Seeks to a VOD time in seconds, clamped to the known duration.
+    ///
+    /// Access on the main actor.
     public func seek(to seconds: TimeInterval) {
         guard seconds.isFinite, seconds >= 0 else { report(.invalidSeek, item: currentItem); return }
         currentNode?.seek(to: seconds)
     }
     /// Moves to the next entry, if any.
+    ///
+    /// Access on the main actor.
     public func next() { navigate(to: activeIndex + 1) }
     /// Moves to the previous entry, if any.
+    ///
+    /// Access on the main actor.
     public func previous() { navigate(to: activeIndex - 1) }
     /// Moves to a playlist ID. An unknown ID emits an invalid-index error.
+    ///
+    /// Access on the main actor.
     public func jump(toID id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { report(.invalidIndex(-1)); return }
         navigate(to: index)
@@ -302,6 +370,8 @@ import Observation
     }
 
     /// Loads the first page once, if a playlist source is assigned. Feed views call this automatically.
+    ///
+    /// Access on the main actor.
     public func start() async {
         guard !ended else { return }
         let firstStart = !hasStarted; hasStarted = true
@@ -310,6 +380,8 @@ import Observation
     }
     /// Requests one page, resetting the automatic retry budget. Concurrent calls while loading do nothing.
     /// Failed pages retry automatically after 1, 2 and 4 seconds near the end, then stop until navigation or another explicit call.
+    ///
+    /// Access on the main actor.
     public func loadNextPage() async {
         guard !isLoadingPage, hasMoreContent, playlistSource != nil, !ended else { return }
         resetPagingRetry()
@@ -601,8 +673,12 @@ import Observation
         interactionCurrent = current; interactionNext = next
     }
     /// Read-only playback snapshot for an entry. Unprepared entries report idle.
+    ///
+    /// Access on the main actor.
     public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.snapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
     /// Clock-indexed overlay data. Network session lifecycle belongs to the interaction hooks, not this accessor.
+    ///
+    /// Access on the main actor.
     public func timeline(for item: HMMediaItem) -> HMStreamTimeline {
         // Outside the playlist: the inert engagement's empty timeline, not a fresh source call per body pass.
         guard let entry = entry(withID: item.id) else { return detachedEngagement(for: item).timeline }
@@ -615,12 +691,14 @@ import Observation
     /// again) when it comes back. An item that isn't in the playlist gets an inert, empty engagement.
     /// Bounded deletion records are kept separately per item ID until playlist removal or teardown,
     /// so rebuilt engagements cannot restore moderated events or polls.
+    ///
+    /// Access on the main actor.
     public func engagement(for item: HMMediaItem) -> HMEngagement {
         guard let entry = entry(withID: item.id) else { return detachedEngagement(for: item) }
         if let existing = engagements[entry] { return existing }
         let display = resolutions.cached(entry) ?? resolutions.cached(entry, requireFormat: false) ?? entry
         // Deletion records outlive this cache entry, but never outlive the playlist item.
-        let moderation = moderationByItemID[entry.id] ?? HMModerationState()
+        let moderation = moderationByItemID[entry.id] ?? HMModerationState(itemID: entry.id)
         moderationByItemID[entry.id] = moderation
         // The player owns the source; its engagements borrow it.
         let created = HMEngagement(item: display, timeline: timeline(for: entry), source: interactions,
@@ -653,10 +731,16 @@ import Observation
     func node(for item: HMMediaItem) -> HMPlayerNode? { resolutions.cached(item).flatMap { pool.existingNode(for: $0) } }
     func displayItem(_ item: HMMediaItem) -> HMMediaItem { resolutions.cached(item, requireFormat: false) ?? item }
     /// Toggles current playback; useful for tap overlays.
+    ///
+    /// Access on the main actor.
     public func togglePlayPause() { wantsPlayback ? pause() : play() }
     /// Toggles global mute.
+    ///
+    /// Access on the main actor.
     public func toggleMute() { isMuted.toggle() }
     /// Seeks to a fraction of the current VOD duration.
+    ///
+    /// Access on the main actor.
     public func seek(toProgress progress: Double) { guard progress.isFinite else { report(.invalidSeek); return }; seek(to: snapshot.duration * min(1, max(0, progress))) }
     private func pauseAll() {
         proxy?.cancelPrefetch(); prefetchSafe = false; prefetchIdentity = ""
@@ -678,6 +762,8 @@ import Observation
         finishSubscribers()
     }
     /// Releases players, interaction sessions and asynchronous work. Call when the host is permanently dismissed.
+    ///
+    /// Access on the main actor.
     public func teardown() {
         ended = true; stopWork()
         if let proxy { Task { _ = await proxy.finish() } }

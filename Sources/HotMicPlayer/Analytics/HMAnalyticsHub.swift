@@ -6,24 +6,34 @@ import AVFoundation
 /// Fan-out point between the player core and any number of analytics sinks.
 ///
 /// The core never knows about Mux; it only ever talks to the hub.
+///
+/// Access on the main actor.
 @MainActor
 public final class HMAnalyticsHub {
 
     /// Registered sinks, called in registration order.
+    ///
+    /// Access on the main actor.
     private(set) public var sinks: [HMAnalyticsSink] = []
 
     /// Creates an analytics hub with optional initial sinks.
+    ///
+    /// Access on the main actor.
     public init(sinks: [HMAnalyticsSink] = []) {
         self.sinks = sinks
     }
 
     /// Registers a sink once by its stable name.
+    ///
+    /// Access on the main actor.
     public func add(_ sink: HMAnalyticsSink) {
         guard !sinks.contains(where: { $0.sinkName == sink.sinkName }) else { return }
         sinks.append(sink)
     }
 
     /// Removes every sink with the supplied name.
+    ///
+    /// Access on the main actor.
     public func remove(named name: String) {
         sinks.removeAll { $0.sinkName == name }
     }

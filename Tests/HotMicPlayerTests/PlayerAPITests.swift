@@ -218,7 +218,7 @@ import AVFoundation
 @Suite("Native review regressions") @MainActor
 struct PlayerNativeReviewTests {
     private func item(_ id: String, path: String? = nil) -> HMMediaItem {
-        HMMediaItem(id: id, url: URL(fileURLWithPath: "/tmp/hotmic-review-\(path ?? id).mp4"))
+        HMMediaItem(id: id, url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-review-\(path ?? id).mp4"))
     }
     @Test("No-op operations are silent and animated requests survive only unchanged endpoint positions")
     func mutations() {

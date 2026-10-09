@@ -13,33 +13,53 @@ import Observation
 /// Queries take a media time and return what belongs *at* that time, so scrubbing
 /// back replays the conversation exactly as it happened. Every query reads
 /// `revision`, so a SwiftUI body that calls one re-renders when the state changes.
+///
+/// Access on the main actor.
 @MainActor @Observable public final class HMEngagement {
 
     /// The item this state belongs to. Updated to the resolved item once a reference resolves,
     /// so the source's actions receive the URL, format and metadata the resolver supplied.
+    ///
+    /// Access on the main actor.
     public private(set) var item: HMMediaItem
     /// The underlying clock-indexed event store.
+    ///
+    /// Access on the main actor.
     @ObservationIgnored public let timeline: HMStreamTimeline
     /// Actions the source supports for this item.
+    ///
+    /// Access on the main actor.
     public let capabilities: HMEngagementCapabilities
     /// Increments on every change. Queries read it so observers invalidate.
+    ///
+    /// Access on the main actor.
     public var revision: Int { localRevision + moderation.revision }
     private var localRevision = 0
     /// Reaction totals for the whole item, keyed by emoji.
-    public var reactionTotals: [String: Int] { synchronizeModeration(); return reactionTotalValues }
+    ///
+    /// Access on the main actor.
+    public var reactionTotals: [String: Int] { _ = revision; return reactionTotalValues }
     private var reactionTotalValues: [String: Int] = [:]
     /// The viewer's most recent stream reaction, for an immediate on-screen echo.
+    ///
+    /// Access on the main actor.
     public private(set) var lastReactionEcho: HMReactionEcho?
     /// Description of the most recent failed action, cleared by the next successful one.
+    ///
+    /// Access on the main actor.
     public private(set) var lastActionError: String?
 
     /// Longest chat message accepted, in characters.
+    ///
+    /// Access on the main actor.
     public static let maximumMessageLength = 200
     /// Engagement weight of one viewer reaction on the waveform.
     ///
     /// Heavier than one ambient crowd reaction on purpose: the waveform is scaled
     /// for crowd volume, so a weight of one would be invisible and the tap would
     /// read as doing nothing.
+    ///
+    /// Access on the main actor.
     public static let viewerReactionWeight = 4
 
     /// Standalone engagements (previews, tests) retain their source, which must outlive the call.
@@ -89,6 +109,8 @@ import Observation
     /// Creates engagement state over a timeline. `HMPlayer.engagement(for:)` does this for you;
     /// call it directly to drive components without a player, for example in previews.
     /// The engagement retains `source`.
+    ///
+    /// Access on the main actor.
     public convenience init(item: HMMediaItem, timeline: HMStreamTimeline, source: HMInteractionSource?,
                             capabilities: HMEngagementCapabilities? = nil, polls: [HMPoll]? = nil,
                             mediaClock: @escaping @MainActor () -> TimeInterval = { 0 }) {
@@ -114,11 +136,14 @@ import Observation
         for event in timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude) {
             if !self.moderation.removesEvent(event.id), foldedIDs.insert(event.id).inserted { fold(event) }
         }
+        self.moderation.observe(self)
     }
 
     // MARK: - Clock
 
     /// Seconds on the item's timeline, from zero to `duration`.
+    ///
+    /// Access on the main actor.
     public var duration: TimeInterval { timeline.duration }
 
     /// Maps a media time onto the engagement timeline.
@@ -126,6 +151,8 @@ import Observation
     /// Identity for VOD whose timeline matches the asset. A media clock that runs
     /// past the timeline (a looping clip whose duration hint is short) wraps, so
     /// the overlay replays rather than falling silent.
+    ///
+    /// Access on the main actor.
     public func timelineOffset(forMediaTime time: TimeInterval) -> TimeInterval {
         guard time.isFinite, time > 0 else { return 0 }
         // A timeline that doesn't know its length can't wrap; keep the media time.
@@ -135,6 +162,8 @@ import Observation
     }
 
     /// The item's current media time, as reported by the player.
+    ///
+    /// Access on the main actor.
     public var currentMediaTime: TimeInterval { mediaClock() }
 
     // MARK: - Queries
@@ -142,24 +171,34 @@ import Observation
     /// Waveform for the scrubber. A dirty moderation projection rebuilds once on the next
     /// density/marker read. Source weighting is kept when its events already exclude deletions;
     /// otherwise surviving events use SDK aggregation with the source's bucket count.
+    ///
+    /// Access on the main actor.
     public var density: [HMDensityBucket] {
-        _ = revision; synchronizeModeration(); rebuildWaveformIfNeeded()
+        _ = revision; rebuildWaveformIfNeeded()
         return moderatedDensity ?? timeline.density
     }
     /// Clustered engagement peaks for the scrubber, each a seek target.
+    ///
+    /// Access on the main actor.
     public var markers: [HMTimelineMarker] {
-        _ = revision; synchronizeModeration(); rebuildWaveformIfNeeded()
+        _ = revision; rebuildWaveformIfNeeded()
         return moderatedMarkers ?? timeline.markers
     }
     /// Authored moments (`.marker` events) in media-time order.
-    public var authoredMoments: [HMTimelineEvent] { _ = revision; synchronizeModeration(); return moments }
+    ///
+    /// Access on the main actor.
+    public var authoredMoments: [HMTimelineEvent] { _ = revision; return moments }
     /// Every poll, ordered by opening time.
-    public var polls: [HMPoll] { _ = revision; synchronizeModeration(); return pollOrder.compactMap { pollsByID[$0] } }
+    ///
+    /// Access on the main actor.
+    public var polls: [HMPoll] { _ = revision; return pollOrder.compactMap { pollsByID[$0] } }
 
     /// Chat at the playhead: messages from the last `lookback` seconds up to `mediaTime`,
     /// oldest first, at most `limit`. Includes the viewer's messages still being sent.
+    ///
+    /// Access on the main actor.
     public func messages(near mediaTime: TimeInterval, lookback: TimeInterval = 20, limit: Int = 6) -> [HMChatMessage] {
-        _ = revision; synchronizeModeration()
+        _ = revision
         guard limit > 0 else { return [] }
         let now = timelineOffset(forMediaTime: mediaTime)
         let window = max(0, now - max(0, lookback))...max(0, now)
@@ -170,18 +209,24 @@ import Observation
 
     /// Stream reactions whose offset falls in a range of the engagement timeline, including the
     /// viewer's own. This is what floating reactions sample as the playhead advances.
+    ///
+    /// Access on the main actor.
     public func reactions(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
-        _ = revision; synchronizeModeration()
+        _ = revision
         return merged(timeline.events(in: range), own(in: range)).filter { $0.kind == .reaction }
     }
 
     /// Polls on screen at a media time: open ones, then closed ones for `resultsLinger` seconds.
+    ///
+    /// Access on the main actor.
     public func polls(at mediaTime: TimeInterval, resultsLinger: TimeInterval = 6) -> [HMPoll] {
         let now = timelineOffset(forMediaTime: mediaTime)
         return polls.filter { $0.isVisible(at: now, resultsLinger: resultsLinger) }
     }
 
     /// Normalised waveform height at a media time, from the same buckets the scrubber draws.
+    ///
+    /// Access on the main actor.
     public func intensity(at mediaTime: TimeInterval) -> Double {
         let density = self.density
         guard !density.isEmpty, timeline.duration > 0 else { return 0 }
@@ -190,6 +235,8 @@ import Observation
     }
 
     /// Whether the source supports an action.
+    ///
+    /// Access on the main actor.
     public func supports(_ capability: HMEngagementCapabilities) -> Bool { capabilities.isSuperset(of: capability) }
 
     // MARK: - Viewer actions
@@ -201,6 +248,8 @@ import Observation
     /// counts; the offset stays where it was sent), so later `updateReactions(_:forMessage:)`
     /// calls and echoes by the server ID find it. A source that returns nil keeps the local
     /// ID. On failure the message is withdrawn and the error rethrown.
+    ///
+    /// Access on the main actor.
     public func sendChat(_ text: String, at mediaTime: TimeInterval? = nil) async throws {
         try require(.sendChat)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -246,6 +295,8 @@ import Observation
     /// The echo is published immediately; the reaction joins the timeline and the
     /// waveform once the source accepts it, under the ID of the event the source
     /// returns (or a local ID for nil), so an echo by that ID isn't counted twice.
+    ///
+    /// Access on the main actor.
     public func react(_ emoji: String, at mediaTime: TimeInterval? = nil) async throws {
         try require(.reactToStream)
         let offset = timelineOffset(forMediaTime: mediaTime ?? currentMediaTime)
@@ -270,6 +321,8 @@ import Observation
 
     /// Reacts to one chat message. Optimistic; rolled back if the source fails.
     /// Reacting twice with the same emoji does nothing.
+    ///
+    /// Access on the main actor.
     public func react(_ emoji: String, toMessage messageID: String) async throws {
         try require(.reactToMessage)
         guard messageExists(messageID) else { throw fail(HMEngagementError.unknownMessage) }
@@ -292,6 +345,8 @@ import Observation
     }
 
     /// Votes in a poll that is open at the current media time. Optimistic; rolled back on failure.
+    ///
+    /// Access on the main actor.
     public func vote(pollID: String, optionID: String) async throws {
         try require(.vote)
         synchronizeModeration()
@@ -335,6 +390,8 @@ import Observation
     /// Adds an event from the source, for example a message or reaction arriving over a socket.
     /// It lands on the timeline at its own offset and folds into every aggregate.
     /// An echo of the viewer's own event (same ID) is not counted twice.
+    ///
+    /// Access on the main actor.
     public func receive(_ event: HMTimelineEvent) {
         synchronizeModeration()
         guard !moderation.removesEvent(event.id), !foldedIDs.contains(event.id), !ownEventIDs.contains(event.id) else { return }
@@ -351,6 +408,8 @@ import Observation
     /// Inserts or replaces a poll by ID, including its options, counts, window and known viewer vote.
     /// If the source omits the viewer vote, a vote still in flight is kept when its option still exists.
     /// A removed poll ID is ignored, including after engagement eviction and rebuild by the player.
+    ///
+    /// Access on the main actor.
     public func upsertPoll(_ poll: HMPoll) {
         synchronizeModeration()
         guard !moderation.removesPoll(poll.id) else { return }
@@ -366,12 +425,16 @@ import Observation
     }
 
     /// Compatibility spelling of `upsertPoll(_:)`.
+    ///
+    /// Access on the main actor.
     @available(*, deprecated, renamed: "upsertPoll(_:)")
     public func update(_ poll: HMPoll) { upsertPoll(poll) }
 
     /// Removes a poll and its local vote state, including before the poll arrives. Idempotent.
     /// Later upserts with this ID are ignored; there is no reinstate API. Player-owned removal
     /// records survive engagement eviction until the item leaves the playlist or player teardown.
+    ///
+    /// Access on the main actor.
     public func removePoll(id: String) {
         guard moderation.removePoll(id) else { return }
         synchronizeModeration(); changed()
@@ -381,6 +444,8 @@ import Observation
     /// Idempotent. Late echoes and send confirmations cannot restore a deleted message.
     /// Chat queries and waveform aggregates exclude it even when the timeline is immutable.
     /// The player retains bounded removal records across engagement eviction and rebuild.
+    ///
+    /// Access on the main actor.
     public func removeMessage(id: String) {
         synchronizeModeration()
         let serverID = clientIDs.first(where: { $0.value == id })?.key ?? id
@@ -400,12 +465,14 @@ import Observation
     /// Subtracts message-reaction counts, clamped at zero. Pass `isOwn` when the deleted
     /// reaction belongs to the viewer, to clear its selection. Deliver each deletion once:
     /// this count-only model has no individual message-reaction IDs to de-duplicate.
-    /// This method applies deltas; sources with authoritative totals should prefer
-    /// `updateReactions(_:forMessage:)`.
+    /// Deltas last only for this engagement instance and are lost on eviction. For durable
+    /// moderation, deliver authoritative totals through `updateReactions(_:forMessage:)`.
+    ///
+    /// Access on the main actor.
     public func removeReaction(_ emoji: String, forMessage messageID: String, count: Int = 1, isOwn: Bool = false) {
         guard count > 0, let event = timelineEvent(messageID), event.kind == .chat else { return }
         let remaining = max(0, (message(from: event).reactions[emoji] ?? 0) - count)
-        let delta = remaining - (event.reactions[emoji] ?? 0)
+        let delta = remaining - ((moderation.reactionCounts[messageID] ?? event.reactions)[emoji] ?? 0)
         messageReactions[messageID, default: [:]][emoji] = delta == 0 ? nil : delta
         messageReactionVersions[messageID, default: [:]][emoji, default: 0] += 1
         if isOwn || remaining == 0 { ownMessageReactions[messageID]?.remove(emoji) }
@@ -415,6 +482,8 @@ import Observation
     /// Removes a stream-reaction event by ID, including its total and waveform contribution.
     /// Idempotent; late echoes and confirmations with this ID are ignored. Player-owned
     /// deletion records survive engagement eviction and rebuild.
+    ///
+    /// Access on the main actor.
     public func removeReaction(id: String) {
         removeEvent(id: id)
         if lastReactionEventID == id { lastReactionEcho = nil; lastReactionEventID = nil }
@@ -422,26 +491,22 @@ import Observation
 
     /// Replaces a message's reaction counts with the source's authoritative totals.
     /// The viewer's own reactions are assumed to be included. Prefer this method when the
-    /// source has totals; `removeReaction(_:forMessage:count:isOwn:)` applies deletion deltas.
+    /// source has totals; they survive engagement eviction for the playlist item's lifetime.
+    /// Counts are clamped at zero and share the bounded player-owned moderation budget.
+    /// `removeReaction(_:forMessage:count:isOwn:)` applies instance-local deletion deltas.
+    ///
+    /// Access on the main actor.
     public func updateReactions(_ counts: [String: Int], forMessage messageID: String) {
         synchronizeModeration()
         guard !moderation.removesEvent(messageID) else { return }
-        let base = timelineEvent(messageID)?.reactions ?? [:]
-        for emoji in Set(base.keys).union(counts.keys).union(messageReactions[messageID]?.keys.map { $0 } ?? []) {
-            messageReactionVersions[messageID, default: [:]][emoji, default: 0] += 1
-        }
-        var delta: [String: Int] = [:]
-        for emoji in Set(base.keys).union(counts.keys) {
-            let difference = (counts[emoji] ?? 0) - (base[emoji] ?? 0)
-            if difference != 0 { delta[emoji] = difference }
-        }
-        messageReactions[messageID] = delta; changed()
+        moderation.updateReactions(counts, for: messageID)
+        changed()
     }
 
     // MARK: - Internals
 
     private func message(from event: HMTimelineEvent) -> HMChatMessage {
-        var reactions = event.reactions
+        var reactions = moderation.reactionCounts[event.id] ?? event.reactions
         for (emoji, delta) in messageReactions[event.id] ?? [:] {
             let total = (reactions[emoji] ?? 0) + delta
             reactions[emoji] = total > 0 ? total : nil
@@ -515,7 +580,6 @@ import Observation
     /// Whether the viewer has sent, reacted or voted here, or has an action in flight. The player
     /// keeps such engagements when their item leaves the window, so that state isn't lost.
     var holdsViewerState: Bool {
-        synchronizeModeration()
         return !ownEvents.isEmpty || !pendingMessages.isEmpty || !votesInFlight.isEmpty || !votedPolls.isEmpty
             || !ownMessageReactions.values.allSatisfy(\.isEmpty)
     }
@@ -571,7 +635,15 @@ import Observation
         synchronizeModeration(); changed()
     }
 
-    private func synchronizeModeration() {
+    // Invoked synchronously by shared records on mutation, never by public queries.
+    func synchronizeModeration(reactionsFor messageID: String? = nil) {
+        if let messageID {
+            let keys = Set(messageReactions[messageID]?.keys.map { $0 } ?? [])
+                .union(moderation.reactionCounts[messageID]?.keys.map { $0 } ?? [])
+                .union(ownMessageReactions[messageID] ?? [])
+            for emoji in keys { messageReactionVersions[messageID, default: [:]][emoji, default: 0] += 1 }
+            messageReactions[messageID] = nil
+        }
         guard appliedModerationRevision != moderation.revision else { return }
         appliedModerationRevision = moderation.revision
         if appliedEventRevision != moderation.eventRevision {

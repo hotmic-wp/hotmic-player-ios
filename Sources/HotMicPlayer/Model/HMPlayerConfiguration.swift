@@ -15,17 +15,27 @@ import Foundation
 }
 
 /// Nearest-first data window. S2 uses this same window for warm players.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMPrefetchPolicy: Sendable, Equatable {
     /// Number of following entries in the data window, bounded to 0...8.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var ahead: Int
     /// Number of preceding entries in the data window, bounded to 0...8.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var behind: Int
     /// Native player buffer target for prepared neighbours, in seconds.
     @_spi(Benchmark) public var warmBufferDuration: TimeInterval
     /// Maximum speculative bytes per entry, bounded by maximumBytesPerItem.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var bytesPerItem: Int
     /// Optional media-time budget; MP4 estimates bytes from duration/file size,
     /// HLS selects whole segments up to this duration, always bounded by bytes.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var secondsPerItem: TimeInterval?
     /// Current buffered seconds required before speculative media work starts.
     @_spi(Benchmark) public var startThreshold: TimeInterval
@@ -40,18 +50,30 @@ public struct HMPrefetchPolicy: Sendable, Equatable {
         self.startThreshold = startThreshold
     }
     /// Creates a fixed data window and bounded per-item media budgets.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(ahead: Int = 5, behind: Int = 1, bytesPerItem: Int = 800_000, secondsPerItem: TimeInterval? = nil) {
         self.init(ahead: ahead, behind: behind, warmBufferDuration: 3, bytesPerItem: bytesPerItem, secondsPerItem: secondsPerItem)
     }
     /// Hard upper bound of 8 MiB for speculative bytes per entry.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let maximumBytesPerItem = 8 * 1024 * 1024
     /// Disables speculative fetching.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let off = HMPrefetchPolicy(ahead: 0, behind: 0, warmBufferDuration: 0)
     /// Prefetches only the next entry.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let nextOnly = HMPrefetchPolicy(ahead: 1, behind: 0)
     /// Prefetches two ahead and one behind.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let balanced = HMPrefetchPolicy(ahead: 2, behind: 1)
     /// Prefetches three ahead and two behind, with a five-second warm buffer.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let aggressive = HMPrefetchPolicy(ahead: 3, behind: 2, warmBufferDuration: 5)
     var windowOffsets: [Int] {
         let a = max(0, min(8, ahead)), b = max(0, min(8, behind))
@@ -63,56 +85,88 @@ public struct HMPrefetchPolicy: Sendable, Equatable {
 }
 
 /// Behavior after URL resolution exhausts retries or native media playback fails.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public enum HMFailedItemPolicy: String, Sendable {
     /// Advance to the next nonfailed entry, then search backwards; idle if none remain.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     case skip
     /// Keep the failed entry current until the app or viewer navigates or retries.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     case stay
 }
 
 /// Playback, paging and cache settings for an HMPlayer.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMPlayerConfiguration: Sendable {
     /// Ask the playlist source for more when this many entries remain after current.
     @_spi(Benchmark) public var lowWaterMark: Int = 3
     /// Memory-only HLS playlist freshness, in seconds.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var playlistTTL: TimeInterval = 30
     /// Exact query parameter names to remove from cache identity. Empty is safe by default.
     @_spi(Benchmark) public var volatileSigningQueryParameters: [String] = []
     /// Benchmark playback strategy; S3 is the default hybrid.
     @_spi(Benchmark) public var strategy: HMPlaybackStrategy
     /// Native player count, bounded to 1...4 by the engine.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var poolSize: Int
     /// App maximum prefetch window and media budgets (fixed when adaptive is false).
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var prefetch: HMPrefetchPolicy
     /// Adapt within app limits using measured performance; false uses fixed numbers.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var adaptive: Bool = true
     /// All thresholds for the default measured-performance policy.
     @_spi(Benchmark) public var adaptiveThresholds = HMAdaptivePrefetchThresholds()
     /// Maximum simultaneous prefix downloads, bounded to 0...4; default serial.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var maxPrefetchConcurrency: Int = 1
     /// URL/poster-only forward resolution horizon, bounded to 0...32.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var resolveAhead: Int = 8
     /// Minimum cached payload for a tier-2 arrival hit; avoids counting tiny AVPlayer probes.
     /// Defaults to 32 KiB, bounded by a positive app per-item prefix budget.
     @_spi(Benchmark) public var minimumCachedStartBytes: Int = 32 * 1024
     /// Hard disk media cache cap, in bytes.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var cacheCapacityBytes: Int
     /// Current player forward-buffer target in seconds.
     @_spi(Benchmark) public var steadyBufferDuration: TimeInterval
     /// Initial bitrate ceiling in bits per second; zero leaves it unrestricted.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var startupPeakBitRate: Double
     /// Bitrate ceiling after startup in bits per second; zero leaves it unrestricted.
     @_spi(Benchmark) public var steadyPeakBitRate: Double
     /// Seconds after activation before lifting the startup ceiling.
     @_spi(Benchmark) public var startupBitRateWindow: TimeInterval
     /// Terminal item behavior. Skipping waits for dragging, scrubbing and page motion to finish.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var failedItemPolicy: HMFailedItemPolicy = .skip
     /// Whether an item loops when it reaches its end.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var loops: Bool
     /// Initial global mute state.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var startsMuted: Bool
     /// Whether the SDK configures, activates and deactivates the app audio session (default true).
     /// Set false before presenting the player when the host app owns AVAudioSession; teardown also leaves it alone.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var managesAudioSession: Bool
     /// Whether revisiting an entry restores its last playhead.
     @_spi(Benchmark) public var restoresPlaybackPosition: Bool
@@ -136,6 +190,8 @@ public struct HMPlayerConfiguration: Sendable {
         self.restoresPlaybackPosition = restoresPlaybackPosition
     }
     /// Creates stable partner settings. Start with default, instantStart or highQuality, then adjust these budgets.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(),
                 cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000,
                 playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false,
@@ -154,10 +210,16 @@ public struct HMPlayerConfiguration: Sendable {
         }
     }
     /// Default two-player hybrid settings.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let `default` = HMPlayerConfiguration()
     /// Preset favouring a smaller startup rendition.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let instantStart = HMPlayerConfiguration(strategy: .S3, steadyBufferDuration: 8, startupPeakBitRate: 900_000, startupBitRateWindow: 3)
     /// Preset with an unrestricted startup bitrate and longer buffer.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public static let highQuality = HMPlayerConfiguration(strategy: .S3, steadyBufferDuration: 20, startupPeakBitRate: 0)
     /// Stable, complete serialized configuration; also hashed in the run header.
     @_spi(Benchmark) public var fingerprint: String {

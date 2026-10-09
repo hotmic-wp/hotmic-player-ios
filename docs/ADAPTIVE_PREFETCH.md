@@ -123,7 +123,7 @@ that it contains a complete independently decodable frame. Far references resolv
 probing (HEAD, bounded two-byte fallback if needed) waits until an entry enters a media tier.
 The cache remains immutable VOD; existing advanced-HLS/auth/DRM/live limitations
 apply. Simulator shaping is shared origin payload pacing, not radio/TLS/netem.
-Default thresholds still require the teammate's physical-device benchmark grid.
+Validate threshold changes against a physical-device benchmark grid.
 
-See [adaptive simulator evidence](ADAPTIVE_SIMULATOR_SMOKE.md) and
-[benchmark setup](BENCHMARKING.md) for the reproducible smoke flow.
+See [benchmark setup](BENCHMARKING.md) for reproducible simulator checks and
+physical-device measurement workflows.

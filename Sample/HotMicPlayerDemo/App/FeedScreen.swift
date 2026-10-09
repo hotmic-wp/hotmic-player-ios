@@ -18,6 +18,7 @@ struct FeedScreen: View {
     @State private var exportError: String?
 
     @State private var showsPanel = false
+    @State private var shareNotice: String?
 
     var body: some View {
         ZStack {
@@ -28,22 +29,26 @@ struct FeedScreen: View {
                 transition: settings.transition,
                 gravity: settings.gravity
             ) { item, snapshot in
-                FeedOverlayView(
-                    item: item,
-                    snapshot: snapshot,
-                    timeline: controller.timeline(for: item),
-                    isActive: controller.currentItem?.id == item.id,
-                    settings: settings,
-                    poolBusy: controller.preparedItemCount,
-                    poolSize: controller.configuration.poolSize,
-                    isMuted: controller.isMuted,
-                    onTogglePlayPause: { controller.togglePlayPause() },
-                    onToggleMute: { controller.toggleMute() },
-                    onSeek: { controller.seek(toProgress: $0) }
-                )
+                FeedOverlayView(controller: controller, item: item, snapshot: snapshot, settings: settings) { item in
+                    shareNotice = "Share “\(item.title ?? item.id)” — wire your share sheet to HMOverlayLayout.Options.onShare"
+                }
             }
 
             chrome
+            if let shareNotice {
+                Text(shareNotice)
+                    .font(DemoTheme.label(13, weight: .semibold))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: .capsule)
+                    .padding(.horizontal, 24)
+                    .transition(.opacity)
+                    .task(id: shareNotice) {
+                        try? await Task.sleep(for: .seconds(2.5))
+                        withAnimation { self.shareNotice = nil }
+                    }
+            }
             if isBenchmark {
                 VStack {
                     Text("\(controller.activeIndex)|\(controller.currentItem?.id ?? "")|\(controller.snapshot.timeToFirstFrame != nil ? "displayed" : "loading")|\(controller.snapshot.duration)")

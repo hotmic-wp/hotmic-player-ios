@@ -68,8 +68,8 @@ struct DebugHUDView: View {
         VStack(alignment: .leading, spacing: 3) {
             row("state", snapshot.state.rawValue)
             row("time", snapshot.isLive
-                ? "live · \(EmojiScrubberView.timecode(snapshot.seekableDuration)) dvr"
-                : "\(EmojiScrubberView.timecode(snapshot.currentTime)) / \(EmojiScrubberView.timecode(snapshot.duration))")
+                ? "live · \(DemoTheme.timecode(snapshot.seekableDuration)) dvr"
+                : "\(DemoTheme.timecode(snapshot.currentTime)) / \(DemoTheme.timecode(snapshot.duration))")
             row("bitrate", snapshot.indicatedBitrate > 0
                 ? String(format: "%.1f Mbps", snapshot.indicatedBitrate / 1_000_000)
                 : "—")

@@ -212,7 +212,9 @@ final class HMPlayerNode: Identifiable {
         wantsPlayback = false
         player.pause()
         if !retainingPosition {
-            seekForDisplay(to: .zero)
+            // Match AVPlayer.seek(to:)'s original rewind tolerances. An exact
+            // seek here does unnecessary decode work just before pool recycle.
+            seekForDisplay(to: .zero, toleranceBefore: .positiveInfinity, toleranceAfter: .positiveInfinity)
             snapshot.currentTime = 0
         }
         player.currentItem?.preferredForwardBufferDuration = configuration.prefetch.warmBufferDuration
@@ -246,12 +248,12 @@ final class HMPlayerNode: Identifiable {
         CATransaction.commit()
     }
 
-    private func seekForDisplay(to time: CMTime, toleranceAfter: CMTime = .zero, completion: (() -> Void)? = nil) {
+    private func seekForDisplay(to time: CMTime, toleranceBefore: CMTime = .zero, toleranceAfter: CMTime = .zero, completion: (() -> Void)? = nil) {
         guard let currentItem = player.currentItem else { return }
         displayRevision += 1
         let revision = displayRevision
         isSeekingFrame = true; snapshot.isFrameReady = false; setLayerVisible(false)
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: toleranceAfter) { [weak self, weak currentItem] finished in
+        player.seek(to: time, toleranceBefore: toleranceBefore, toleranceAfter: toleranceAfter) { [weak self, weak currentItem] finished in
             Task { @MainActor [weak self] in
                 guard finished, let self, let currentItem, self.player.currentItem === currentItem,
                       self.displayRevision == revision else { return }

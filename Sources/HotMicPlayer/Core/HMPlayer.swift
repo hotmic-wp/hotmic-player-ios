@@ -645,11 +645,25 @@ import Observation
             if bitrateChanged { for node in pool.nodes { node.applyStartingBitRate(plan.startingBitRate) } }
         }
         let deferred = inputs.elapsedOnItemSeconds < plan.startAfterSeconds
-        let warmOffsets = plan.keepReadyPlayer && !deferred ? configuration.warmOffsets : []
+        // The next decoder needs only a small head. Do not make it wait for the
+        // three-second bulk-prefix recovery threshold after a displayed frame.
+        // On a measured slow link, active playback keeps the entire bandwidth.
+        let earlyNext = configuration.strategy == .S3 && (prefetchPolicy is HMAdaptivePrefetchPolicy || !configuration.adaptive) && !playbackUrgent && !deferred &&
+            node.snapshot.bufferedAhead >= min(1, inputs.remainingSeconds ?? 1) &&
+            (measurements.throughput.map { $0 >= nonnegative(t.slowBytesPerSecond) } ?? true)
+        let warmOffsets = (plan.keepReadyPlayer || earlyNext) && !deferred ? configuration.warmOffsets : []
         let warmItems = warmOffsets.compactMap { offset -> HMMediaItem? in
             let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
         }
-        pool.trim(keeping: Set([resolutions.cached(item)].compactMap { $0 } + warmItems))
+        // Keep a ready previous decoder in a three-player pool while startup
+        // temporarily pauses network work. Retention does not start a new load.
+        let previous = configuration.strategy == .S3 && configuration.poolSize >= 3 && activeIndex > 0 ?
+            resolutions.cached(items[activeIndex - 1]).flatMap { pool.existingNode(for: $0)?.item } : nil
+        pool.trim(keeping: Set([resolutions.cached(item), previous].compactMap { $0 } + warmItems))
+        for item in warmItems where pool.existingNode(for: item) == nil {
+            let warm = pool.node(for: item, protecting: Set([currentItem?.id].compactMap { $0 }), playbackURL: proxy?.url(for: item))
+            warm.onBufferChanged = { [weak self] in self?.updatePrefetch() }; warm.setMuted(isMuted)
+        }
         if plan.paused || deferred {
             if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
             if recovered && !plan.paused { refreshWindowAfterTransport() }
@@ -657,14 +671,16 @@ import Observation
         }
         let data = plan.windowOffsets.compactMap { offset -> HMMediaItem? in
             let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
+        }.filter { !warmItems.contains($0) }
+        // Native preroll owns N+1's head; never download it a second time via
+        // explicit prefetch or let N+2 steal capacity before N+1 is ready.
+        if warmItems.contains(where: { pool.existingNode(for: $0)?.snapshot.isFrameReady != true }) {
+            if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
+            return
         }
         let identity = plan.workIdentity + "|" + item.id + "|" + data.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|")
         guard identity != prefetchIdentity else { if recovered { refreshWindowAfterTransport() }; return }
         prefetchIdentity = identity
-        for item in warmItems where pool.existingNode(for: item) == nil {
-            let warm = pool.node(for: item, protecting: Set([currentItem?.id].compactMap { $0 }), playbackURL: proxy?.url(for: item))
-            warm.onBufferChanged = { [weak self] in self?.updatePrefetch() }; warm.setMuted(isMuted)
-        }
         proxy?.prefetch(data, keeping: windowItems.compactMap { resolutions.cached($0) }, plan: plan)
         if recovered { refreshWindowAfterTransport() }
     }

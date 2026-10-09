@@ -229,7 +229,7 @@ public struct HMPlayerConfiguration: Sendable {
     var warmOffsets: [Int] {
         let count = max(0, min(4, poolSize) - 1)
         if strategy == .S2 { return Array(prefetch.windowOffsets.prefix(count)) }
-        if strategy == .S3 { return Array((1...max(1, count)).prefix(count)) }
+        if strategy == .S3 { return Array([1, -1, 2].prefix(count)) }
         return []
     }
 }

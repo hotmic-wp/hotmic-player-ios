@@ -141,3 +141,12 @@ Slow-link speculation is limited to +1 and a 128 KiB head, including binge misse
 The starting bitrate is applied before the native item is attached, so the first
 HLS selection uses the same cap as the warm path; the master remains intact for
 later ABR. A ceiling is advisory to AVPlayer, not a bandwidth guarantee.
+
+The nearest warm decoder can start as soon as the current frame has displayed
+and one second is buffered on an unmeasured/healthy link, before bulk-prefix
+recovery. Its native buffer target is one second, bounded by the app warm-buffer
+limit. Explicit prefetch excludes warm-player items and waits for their frames;
+it cannot duplicate the next head or compete with its preroll. A prerolled
+activation keeps that target until the startup window ends, avoiding an immediate
+1-to-10-second target jump. viewStart records warm-start time and preroll completion.
+With three S3 players the window is next/current/previous; four also prepares +2.

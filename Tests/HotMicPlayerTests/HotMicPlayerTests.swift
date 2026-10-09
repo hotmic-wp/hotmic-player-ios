@@ -16,6 +16,8 @@ struct PrefetchPolicyTests {
         #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
         #expect(HMPrefetchPolicy(ahead: -1, behind: -2).windowOffsets.isEmpty)
         #expect(HMPlayerConfiguration.default.warmOffsets == [1])
+        var three = HMPlayerConfiguration.default; three.poolSize = 3
+        #expect(three.warmOffsets == [1, -1])
         #expect(HMPlayerConfiguration.preset(.S0).warmOffsets.isEmpty)
         #expect(HMPlayerConfiguration.preset(.S2).warmOffsets == [1, -1, 2])
     }

@@ -36,6 +36,7 @@ final class HMPlayerNode: Identifiable {
     @ObservationIgnored private var stallTime10 = 0.0
     @ObservationIgnored private var didReportSummary = false
     @ObservationIgnored private var didPreroll = false
+    @ObservationIgnored private var prerollComplete = false
     @ObservationIgnored private var wantsPlayback = false
     @ObservationIgnored private var videoOutput: AVPlayerItemVideoOutput?
     @ObservationIgnored private var startupResolutionSource = "unknown"
@@ -111,6 +112,7 @@ final class HMPlayerNode: Identifiable {
         hasConfirmedDuration = false
         liveWindow.reset()
         didPreroll = false
+        prerollComplete = false
         warmStartedAt = ProcessInfo.processInfo.systemUptime
 
         let asset = AVURLAsset(
@@ -120,7 +122,7 @@ final class HMPlayerNode: Identifiable {
         let playerItem = AVPlayerItem(asset: asset)
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
         videoOutput = output; playerItem.add(output)
-        playerItem.preferredForwardBufferDuration = configuration.prefetch.warmBufferDuration
+        playerItem.preferredForwardBufferDuration = min(1, configuration.prefetch.warmBufferDuration)
         if configuration.startupPeakBitRate > 0 {
             playerItem.preferredPeakBitRate = configuration.startupPeakBitRate
         }
@@ -173,9 +175,12 @@ final class HMPlayerNode: Identifiable {
             self?.reportStartupSummary()
         }
 
-        player.currentItem?.preferredForwardBufferDuration = configuration.steadyBufferDuration
+        // Raising a prerolled item's target from a small head to ten seconds at
+        // commit makes AVPlayer wait to minimise stalls. Keep its startup target
+        // until the startup window ends, just as we keep the starting bitrate.
+        if !prerollComplete { player.currentItem?.preferredForwardBufferDuration = configuration.steadyBufferDuration }
 
-        emit(.viewStart, item: item, metrics: ["buffered_ahead_s": snapshot.bufferedAhead, "cached_bytes": Double(cachedBytes), "item_status": Double(status), "request_monotonic_s": requestedAt], properties: ["readiness_tier": tier, "transport": (player.currentItem?.asset as? AVURLAsset)?.url.host == "127.0.0.1" && (player.currentItem?.asset as? AVURLAsset)?.url != item.url ? "loopback" : "direct"])
+        emit(.viewStart, item: item, metrics: ["buffered_ahead_s": snapshot.bufferedAhead, "cached_bytes": Double(cachedBytes), "item_status": Double(status), "request_monotonic_s": requestedAt, "warm_started_monotonic_s": warmStartedAt ?? requestedAt, "preroll_complete": prerollComplete ? 1 : 0], properties: ["readiness_tier": tier, "transport": (player.currentItem?.asset as? AVURLAsset)?.url.host == "127.0.0.1" && (player.currentItem?.asset as? AVURLAsset)?.url != item.url ? "loopback" : "direct"])
 
         if let position, position > 0.1 {
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
@@ -445,7 +450,13 @@ final class HMPlayerNode: Identifiable {
             if !isActive, !didPreroll, player.status == .readyToPlay, player.rate == 0 {
                 // Decode the first frame without advancing the media clock.
                 didPreroll = true
-                player.preroll(atRate: 1) { _ in }
+                player.preroll(atRate: 1) { [weak self, weak playerItem] complete in
+                    Task { @MainActor in
+                        guard let self, let playerItem, self.player.currentItem === playerItem else { return }
+                        self.prerollComplete = complete
+                        self.onBufferChanged?()
+                    }
+                }
             }
             emit(.preloadReady, item: item, metrics: [
                 "duration_s": snapshot.duration,
@@ -504,6 +515,7 @@ final class HMPlayerNode: Identifiable {
         else { return }
         didLiftStartupCap = true
         player.currentItem?.preferredPeakBitRate = configuration.steadyPeakBitRate
+        player.currentItem?.preferredForwardBufferDuration = configuration.steadyBufferDuration
     }
 
     /// Called only by a visible surface at a display-link boundary after its

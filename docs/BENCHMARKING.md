@@ -60,7 +60,10 @@ intervals and `moov` position verified with ffprobe/an atom walk; category and
 length bucket when `CLIP_LIST=clip-list.json` is set, which also verifies source
 checksums first) and `checksums.sha256`. The build fails if any variant's GOP or
 `moov` position does not verify. `ENCODE_JOBS=4 ENCODE_THREADS=2` encodes four
-clips at once. Validate checksums with `sha256sum -c checksums.sha256` on
+clips at once. `HLS_AS_SERVED=list.txt` (lines `<id> <master-url>`) also mirrors
+each clip's HLS as the CDN serves it, byte for byte, into `hls-as-served/`
+(`bench/mirror_hls.py`); that baseline is recorded as found and exempt from the
+GOP and cap rules. Validate checksums with `sha256sum -c checksums.sha256` on
 Linux or `shasum -a 256 -c checksums.sha256` on macOS, from the output directory.
 All generated media/results are gitignored. Each manifest has 80 distinct item
 IDs cycling the six source clips. That repetition exercises recycling and cache

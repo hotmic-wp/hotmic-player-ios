@@ -35,14 +35,32 @@ bench/encode.sh Sample/HotMicPlayerDemo/Resources bench/generated https://bench.
 ```
 
 Arguments are source directory, output directory, origin base URL and keyframe
-interval (1 or 2 seconds). Every clip is normalized to 30 fps, aspect-preserving
-padding, H.264/AAC. Outputs are MP4 faststart at 1080x1920 and 720x1280, MP4
-1080 without faststart, and HLS fMP4 with 360/720/1080 rungs and 2s/6s segments.
-The no-faststart control remuxes the same encoded samples. HLS transmuxes those
-same samples, with fixed GOP/keyframes and independent segments.
+interval (1 or 2 seconds). Every clip is normalized to 30 fps (so the GOP is
+`key*30` frames everywhere, `-sc_threshold 0`), 2-pass H.264 High + AAC 96k.
+Rungs are named by the short side and **capped at the source**: a rung above the
+source's short side is skipped, never upscaled, and the aspect ratio is kept
+(no padding), so a 4:5 720x900 source gives 720x900/540x676/360x450 and a 16:9
+source gives 1280x720 and below. Video bitrates: 1080 4.5 Mbps, 720 2.4, 540 1.2,
+360 0.6 (maxrate 1.5x, bufsize 2x). Outputs per clip:
 
-The output includes one JSON manifest per format, `encoding.json` and
-`checksums.sha256`. Validate checksums with `sha256sum -c checksums.sha256` on
+- `mp4-faststart-<rung>.mp4` for every rung; the 1080/720 ones are the MP4 sizes,
+  540/360 are HLS sources (a sub-720 source's top rung is its only MP4 size).
+- `mp4-no-faststart-<size>.mp4`: a `-c copy` remux of each MP4 size with `moov`
+  after `mdat`, like the `hls-to-mp4` Lambda.
+- `hls-2s/` and `hls-6s/`: fMP4 with 720/540/360 rungs (capped), each rung a
+  remux of the matching MP4, independent segments, master lowest rung first,
+  `BANDWIDTH` = measured peak segment bitrate.
+- `poster.jpg` from the top MP4.
+
+The output includes one JSON playlist per format (`mp4-faststart-720.json` only
+lists clips that have a 720 rung; `mp4-faststart-top.json` has every clip at its
+HLS top rung, the like-with-like MP4 set for HLS comparisons), `encoding.json`,
+`manifest.json` (per clip and variant: bytes, sha256, resolution, keyframe
+intervals and `moov` position verified with ffprobe/an atom walk; category and
+length bucket when `CLIP_LIST=clip-list.json` is set, which also verifies source
+checksums first) and `checksums.sha256`. The build fails if any variant's GOP or
+`moov` position does not verify. `ENCODE_JOBS=4 ENCODE_THREADS=2` encodes four
+clips at once. Validate checksums with `sha256sum -c checksums.sha256` on
 Linux or `shasum -a 256 -c checksums.sha256` on macOS, from the output directory.
 All generated media/results are gitignored. Each manifest has 80 distinct item
 IDs cycling the six source clips. That repetition exercises recycling and cache

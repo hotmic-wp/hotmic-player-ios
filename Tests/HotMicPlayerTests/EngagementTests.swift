@@ -14,8 +14,8 @@ struct EngagementTests {
             self.events = events.sorted { $0.offset < $1.offset }
         }
         func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] { events.filter { range.contains($0.offset) } }
-        var density: [HMDensityBucket] { [] }
-        var markers: [HMTimelineMarker] { [] }
+        var density: [HMDensityBucket] { HMTimelineAggregation.build(events: events, duration: duration, bucketCount: 60).0 }
+        var markers: [HMTimelineMarker] { HMTimelineAggregation.build(events: events, duration: duration, bucketCount: 60).1 }
         func append(_ event: HMTimelineEvent) { events.append(event); events.sort { $0.offset < $1.offset } }
     }
 
@@ -129,7 +129,7 @@ struct EngagementTests {
         await #expect(throws: HMEngagementError.alreadyVoted) { try await engagement.vote(pollID: "p", optionID: "a") }
         // The source can close a poll early and update counts.
         var closed = voted; closed.isClosed = true; closed.options[0].votes = 50
-        engagement.update(closed)
+        engagement.upsertPoll(closed)
         voted = try #require(engagement.polls.first)
         #expect(!voted.isOpen(at: 6) && voted.options[0].votes == 50 && voted.viewerVote == "b")
     }
@@ -198,10 +198,27 @@ struct EngagementTests {
         weak var engagement: HMEngagement?
         var echoReactionFirst = false
         var reactions = 0
+        var confirmsChat = true
+        var beforeChatConfirmation: ((HMChatMessage) -> Void)?
+        var beforeReactionConfirmation: ((HMTimelineEvent) -> Void)?
+        var beforeVoteConfirmation: (() -> Void)?
+        var beforeMessageReactionConfirmation: (() -> Void)?
+        var failsVote = false
+        var failsMessageReaction = false
+        func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws {
+            beforeMessageReactionConfirmation?()
+            if failsMessageReaction { throw URLError(.timedOut) }
+        }
+        func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws {
+            beforeVoteConfirmation?()
+            if failsVote { throw URLError(.timedOut) }
+        }
         func timeline(for item: HMMediaItem) -> HMStreamTimeline { FixedTimeline(duration: 30, events: []) }
         func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { .all }
         func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent? {
             sentIDs.append(message.id)
+            beforeChatConfirmation?(message)
+            if !confirmsChat { return nil }
             return HMTimelineEvent(id: "srv-\(sentIDs.count)", offset: 999, kind: .chat, author: "mara_v", text: message.text,
                                    wallTime: Date(timeIntervalSince1970: 1), reactions: ["💜": 1])
         }
@@ -210,7 +227,208 @@ struct EngagementTests {
             let confirmed = HMTimelineEvent(id: "srv-rx-\(reactions)", offset: reaction.offset, kind: .reaction,
                                             emoji: reaction.emoji, magnitude: 1)
             if echoReactionFirst { engagement?.receive(confirmed) }
+            beforeReactionConfirmation?(confirmed)
             return confirmed
+        }
+    }
+
+    final class WeightedTimeline: HMStreamTimeline {
+        let duration: TimeInterval = 30
+        let history: [HMTimelineEvent]
+        var fullScans = 0
+        init(_ events: [HMTimelineEvent]) { history = events }
+        func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
+            if range.lowerBound < 0 { fullScans += 1 }
+            return history.filter { range.contains($0.offset) }
+        }
+        // Deliberately differs from SDK aggregation: a source owns its weighting until
+        // a deletion still present in history requires the documented fallback.
+        var density: [HMDensityBucket] { [.init(index: 0, position: 0.5, intensity: 0.123, dominantEmoji: "💜", eventCount: 37)] }
+        var markers: [HMTimelineMarker] { [.init(id: "custom", offset: 15, position: 0.5, emoji: "💜", count: 37)] }
+    }
+
+    @Test("Moderation removes every storage form and upserts polls without reviving deleted state",
+          arguments: ["history", "incoming", "own-server", "own-row", "own-local", "pending-local", "pending-server",
+                      "stream-history", "stream-own", "stream-inflight", "message-reaction-same", "message-reaction-other",
+                      "poll", "poll-inflight", "poll-replaced", "poll-inflight-update", "poll-source-vote",
+                      "shared-rebuild", "lazy-waveform", "bounded-ids", "bounded-bytes"])
+    func moderationSemantics(_ scenario: String) async throws {
+        for appendable in [false, true] {
+            let history = scenario == "history" ? [chat(5, "history")] : scenario == "stream-history"
+                ? [HMTimelineEvent(id: "stream", offset: 5, kind: .reaction, emoji: "🔥", magnitude: 8)] : []
+            let timeline: HMStreamTimeline = appendable
+                ? FixtureTimeline(duration: 30, events: history) : FixedTimeline(duration: 30, events: history)
+            let source = ServerSource()
+            let engagement = HMEngagement(item: item, timeline: timeline, source: source, mediaClock: { 5 })
+            source.engagement = engagement
+            switch scenario {
+            case "history", "incoming", "own-server", "own-row", "own-local":
+                var id = "history"
+                if scenario == "incoming" {
+                    id = "incoming"
+                    engagement.receive(chat(5, id))
+                    engagement.receive(chat(5, id))
+                } else if scenario.hasPrefix("own-") {
+                    source.confirmsChat = scenario != "own-local"
+                    try await engagement.sendChat("mine")
+                    id = scenario == "own-local" ? try #require(source.sentIDs.first) : "srv-1"
+                }
+                #expect(engagement.messages(near: 5).count == 1)
+                // Delete exactly one count, including viewer selection, then clamp at zero.
+                engagement.updateReactions(["🔥": 3], forMessage: id)
+                try await engagement.react("🔥", toMessage: id)
+                engagement.removeReaction("🔥", forMessage: id, isOwn: true)
+                #expect(engagement.messages(near: 5).first?.reactions == ["🔥": 3])
+                #expect(engagement.messages(near: 5).first?.ownReactions.isEmpty == true)
+                engagement.removeReaction("🔥", forMessage: id, count: 99)
+                #expect(engagement.messages(near: 5).first?.reactions.isEmpty == true)
+                let deletionID = scenario == "own-row" ? try #require(source.sentIDs.first) : id
+                engagement.removeMessage(id: deletionID)
+                let revision = engagement.revision
+                engagement.removeMessage(id: deletionID)
+                #expect(engagement.revision == revision)
+                engagement.receive(chat(5, id)) // A late echo cannot revive it.
+                engagement.updateReactions(["🔥": 9], forMessage: id)
+                #expect(engagement.messages(near: 5).isEmpty)
+                #expect(engagement.messages(near: 6, lookback: 30).isEmpty)
+                #expect(engagement.density.allSatisfy { $0.eventCount == 0 && $0.intensity == 0 })
+                #expect(engagement.markers.isEmpty && !engagement.holdsViewerState)
+                await #expect(throws: HMEngagementError.unknownMessage) { try await engagement.react("🔥", toMessage: id) }
+            case "pending-local", "pending-server":
+                source.beforeChatConfirmation = { message in
+                    #expect(engagement.messages(near: 5).first?.delivery == .sending)
+                    engagement.removeMessage(id: scenario == "pending-local" ? message.id : "srv-1")
+                    if scenario == "pending-local" { #expect(engagement.messages(near: 5).isEmpty) }
+                }
+                try await engagement.sendChat("moderated while sending")
+                engagement.receive(chat(5, "srv-1"))
+                #expect(engagement.messages(near: 5).isEmpty && !engagement.holdsViewerState)
+                #expect(engagement.density.allSatisfy { $0.eventCount == 0 })
+            case "stream-history", "stream-own", "stream-inflight":
+                var id = "stream"
+                if scenario != "stream-history" {
+                    id = "srv-rx-1"
+                    if scenario == "stream-inflight" {
+                        source.echoReactionFirst = true
+                        source.beforeReactionConfirmation = { event in engagement.removeReaction(id: event.id) }
+                    }
+                    try await engagement.react("🔥")
+                }
+                if scenario != "stream-inflight" { #expect((engagement.reactionTotals["🔥"] ?? 0) > 0) }
+                engagement.removeReaction(id: id)
+                let revision = engagement.revision
+                engagement.removeReaction(id: id)
+                #expect(engagement.revision == revision)
+                engagement.receive(HMTimelineEvent(id: id, offset: 5, kind: .reaction, emoji: "🔥"))
+                #expect(engagement.reactionTotals.isEmpty && engagement.reactions(in: 0...30).isEmpty)
+                #expect(engagement.density.allSatisfy { $0.eventCount == 0 && $0.intensity == 0 })
+                #expect(engagement.markers.isEmpty && !engagement.holdsViewerState)
+            case "message-reaction-same", "message-reaction-other":
+                engagement.receive(chat(5, "message"))
+                source.failsMessageReaction = true
+                source.beforeMessageReactionConfirmation = {
+                    engagement.removeReaction(scenario == "message-reaction-same" ? "💜" : "🔥",
+                                              forMessage: "message", isOwn: scenario == "message-reaction-same")
+                }
+                await #expect(throws: URLError.self) { try await engagement.react("💜", toMessage: "message") }
+                #expect(engagement.messages(near: 5).first?.reactions == ["🔥": scenario == "message-reaction-same" ? 2 : 1])
+                #expect(engagement.messages(near: 5).first?.ownReactions.isEmpty == true)
+            case "shared-rebuild":
+                let records = HMModerationState()
+                let history = FixtureTimeline(duration: 30, events: [chat(5, "removed"), chat(6, "survivor"),
+                    HMTimelineEvent(id: "stream", offset: 5, kind: .reaction, emoji: "🔥", magnitude: 8)])
+                let old = HMEngagement(item: item, timeline: history, source: nil, retainsSource: false,
+                                       polls: [poll()], moderation: records)
+                old.removeMessage(id: "removed"); old.removeReaction(id: "stream"); old.removePoll(id: "p")
+                let rebuilt = HMEngagement(item: item, timeline: history, source: nil, retainsSource: false,
+                                           polls: [poll()], moderation: records)
+                #expect(rebuilt.messages(near: 6).map(\.id) == ["survivor"])
+                #expect(rebuilt.reactionTotals.isEmpty && rebuilt.reactions(in: 0...30).isEmpty && rebuilt.polls.isEmpty)
+                rebuilt.upsertPoll(poll())
+                #expect(rebuilt.polls.isEmpty)
+                // A source still holding an evicted engagement shares the same moderation records.
+                old.removeMessage(id: "survivor")
+                #expect(rebuilt.messages(near: 6).isEmpty)
+                #expect(rebuilt.density.allSatisfy { $0.eventCount == 0 })
+            case "lazy-waveform":
+                let weighted = WeightedTimeline([chat(5, "removed"), chat(6, "survivor")])
+                let e = HMEngagement(item: item, timeline: weighted, source: nil)
+                #expect(e.density == weighted.density && e.markers == weighted.markers)
+                e.removePoll(id: "p")
+                e.removeMessage(id: "not-in-source")
+                #expect(e.density == weighted.density && e.markers == weighted.markers)
+                let before = weighted.fullScans
+                e.removeMessage(id: "removed")
+                for _ in 0..<10 {
+                    e.upsertPoll(HMPoll(id: "visible", question: "Q", options: [], opensAt: 0))
+                    #expect(e.messages(near: 6).map(\.id) == ["survivor"])
+                }
+                #expect(weighted.fullScans == before) // Mutations and 10 Hz queries don't rebuild.
+                #expect(e.density.first?.eventCount == 1)
+                #expect(weighted.fullScans == before + 1)
+                _ = e.markers; _ = e.density
+                e.upsertPoll(HMPoll(id: "visible", question: "Updated", options: [], opensAt: 0))
+                _ = e.markers
+                #expect(weighted.fullScans == before + 1) // Reads share one cached projection.
+            case "bounded-ids", "bounded-bytes":
+                let records = HMModerationState(idLimit: scenario == "bounded-ids" ? 1 : 10,
+                                                byteLimit: scenario == "bounded-bytes" ? 1 : 1_024)
+                let e = HMEngagement(item: item, timeline: timeline, source: source, retainsSource: false,
+                                     polls: [poll()], moderation: records, mediaClock: { 5 })
+                e.removeMessage(id: "a"); e.removePoll(id: "p")
+                #expect(records.suppressesAll && records.eventIDs.isEmpty)
+                e.receive(chat(5, "late")); e.upsertPoll(poll())
+                #expect(e.messages(near: 5).isEmpty && e.polls.isEmpty && e.density.isEmpty && e.markers.isEmpty)
+                #expect(records.removesEvent("any-future-id") && records.removesPoll("any-future-poll"))
+                source.beforeChatConfirmation = { _ in #expect(e.messages(near: 5).isEmpty) }
+                source.beforeReactionConfirmation = { _ in #expect(e.lastReactionEcho == nil) }
+                try await e.sendChat("hidden after overflow"); try await e.react("🔥")
+                #expect(e.messages(near: 5).isEmpty && e.reactionTotals.isEmpty && e.lastReactionEcho == nil)
+            default:
+                engagement.upsertPoll(poll(opens: 0, closes: 8))
+                engagement.upsertPoll(HMPoll(id: "early", question: "Earlier", options: [], opensAt: 1))
+                let replacement = HMPoll(id: "p", question: "Replacement", options: [.init(id: "new", text: "New", votes: 12)],
+                                         viewerVote: "new", opensAt: 3, closesAt: 6, isClosed: true)
+                engagement.upsertPoll(replacement)
+                #expect(engagement.polls.map(\.id) == ["early", "p"])
+                #expect(engagement.polls.last == replacement)
+                #expect(engagement.polls(at: 2).map(\.id) == ["early"])
+                engagement.upsertPoll(poll(opens: 0, closes: 8))
+                #expect(engagement.polls.first?.options.count == 2 && engagement.polls.first?.viewerVote == nil)
+                if scenario == "poll-inflight" {
+                    source.beforeVoteConfirmation = { engagement.removePoll(id: "p") }
+                    try await engagement.vote(pollID: "p", optionID: "a")
+                } else if scenario == "poll-replaced" {
+                    source.failsVote = true
+                    source.beforeVoteConfirmation = {
+                        engagement.removePoll(id: "p")
+                        engagement.upsertPoll(replacement)
+                    }
+                    await #expect(throws: URLError.self) { try await engagement.vote(pollID: "p", optionID: "a") }
+                    #expect(engagement.polls.map(\.id) == ["early"])
+                } else if scenario == "poll-inflight-update" || scenario == "poll-source-vote" {
+                    source.failsVote = true
+                    source.beforeVoteConfirmation = {
+                        var authoritative = poll(opens: 0, closes: 8)
+                        if scenario == "poll-source-vote" { authoritative.viewerVote = "a" }
+                        engagement.upsertPoll(authoritative)
+                        #expect(engagement.polls.first?.viewerVote == "a")
+                    }
+                    await #expect(throws: URLError.self) { try await engagement.vote(pollID: "p", optionID: "a") }
+                    #expect(engagement.polls.first?.viewerVote == (scenario == "poll-source-vote" ? "a" : nil))
+                    #expect(engagement.polls.first?.options.first?.votes == 3)
+                }
+                engagement.removePoll(id: "p")
+                let revision = engagement.revision
+                engagement.removePoll(id: "p")
+                #expect(engagement.revision == revision)
+                #expect(engagement.polls.map(\.id) == ["early"] && !engagement.holdsViewerState)
+                engagement.upsertPoll(replacement)
+                #expect(engagement.polls.map(\.id) == ["early"]) // Late upserts cannot reinstate a removed poll.
+                engagement.removePoll(id: "not-yet-created")
+                engagement.upsertPoll(HMPoll(id: "not-yet-created", question: "Late", options: [], opensAt: 0))
+                #expect(engagement.polls.map(\.id) == ["early"])
+            }
         }
     }
 
@@ -278,6 +496,22 @@ struct PlayerEngagementTests {
         func sendChat(_ text: String, for item: HMMediaItem) async throws {}
         func engagementDidLoad(_ engagement: HMEngagement) { loads.append(engagement.item.id) }
     }
+    final class ModerationSource: HMInteractionSource {
+        let cached: Bool
+        var stored: [String: HMStreamTimeline] = [:]
+        init(cached: Bool) { self.cached = cached }
+        func timeline(for item: HMMediaItem) -> HMStreamTimeline {
+            if cached, let timeline = stored[item.id] { return timeline }
+            let timeline = EngagementTests.FixtureTimeline(duration: 30, events: [
+                HMTimelineEvent(id: "removed", offset: 5, kind: .chat, text: "Removed"),
+                HMTimelineEvent(id: "survivor", offset: 6, kind: .chat, text: "Keep"),
+                HMTimelineEvent(id: "stream", offset: 5, kind: .reaction, emoji: "🔥", magnitude: 8)
+            ])
+            if cached { stored[item.id] = timeline }
+            return timeline
+        }
+        func polls(for item: HMMediaItem) -> [HMPoll] { [HMPoll(id: "p", question: "Poll", options: [], opensAt: 0)] }
+    }
     actor InstantResolver: HMItemResolver {
         func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
             HMResolvedItem(url: URL(fileURLWithPath: "/tmp/hotmic-040-\(ref.id).mp4"), format: .mp4)
@@ -335,6 +569,31 @@ struct PlayerEngagementTests {
         #expect(player.cachedEngagementCount <= 3)
         player.teardown()
         #expect(player.cachedEngagementCount == 0 && player.cachedTimelineCount == 0)
+        for cached in [false, true] {
+            let source = ModerationSource(cached: cached)
+            let moderated = HMPlayer(configuration: c, interactions: source)
+            moderated.isFeedVisible = false
+            moderated.replaceAll(list)
+            var first: HMEngagement? = moderated.engagement(for: list[0])
+            weak let evicted = first
+            first?.removeMessage(id: "removed"); first?.removeReaction(id: "stream"); first?.removePoll(id: "p")
+            #expect(first?.holdsViewerState == false) // Records do not pin the full engagement.
+            first = nil
+            moderated.jump(toID: "i3")
+            #expect(evicted == nil)
+            moderated.jump(toID: "i0")
+            let rebuilt = moderated.engagement(for: list[0])
+            #expect(rebuilt.messages(near: 6).map(\.id) == ["survivor"])
+            #expect(rebuilt.reactionTotals.isEmpty && rebuilt.reactions(in: 0...30).isEmpty && rebuilt.polls.isEmpty)
+            rebuilt.upsertPoll(source.polls(for: list[0])[0])
+            #expect(rebuilt.polls.isEmpty)
+            // Item removal ends this moderation lifetime; re-inserting the same ID starts fresh.
+            moderated.remove(ids: ["i0"])
+            moderated.append([list[0]])
+            #expect(moderated.engagement(for: list[0]).messages(near: 6).map(\.id) == ["removed", "survivor"])
+            #expect(moderated.engagement(for: list[0]).polls.count == 1)
+            moderated.teardown()
+        }
     }
 
     @Test("A reference's engagement adopts the resolved item")

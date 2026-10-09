@@ -69,6 +69,9 @@ final class DemoSettings {
     var fillsScreen: Bool = true
     var showsHUD: Bool = true
     var showsOverlays: Bool = true
+    #if DEBUG
+    let moderation = ModerationDebugSession()
+    #endif
 
     var gravity: AVLayerVideoGravity { fillsScreen ? .resizeAspectFill : .resizeAspect }
 

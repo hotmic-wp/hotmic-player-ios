@@ -43,14 +43,9 @@ public protocol HMItemResolver: Sendable {
                 switch item.source {
                 case .reference(let namespace, let id):
                     guard let resolver else { throw HMPlayerError.missingResolver }
-                    return try await resolver.resolve(.init(namespace: namespace, id: id))
-                case .url(let url, _):
-                    var request = URLRequest(url: url); request.httpMethod = "HEAD"; request.timeoutInterval = 20
-                    let (_, response) = try await URLSession.shared.data(for: request)
-                    guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw HMPlayerError.resolution("Format detection failed for \(item.id)") }
-                    let mime = response.mimeType?.lowercased() ?? ""
-                    let hls = mime.contains("mpegurl") || response.url?.pathExtension.lowercased() == "m3u8"
-                    return HMResolvedItem(url: url, format: hls ? .hls : .mp4)
+                    return try await Self.detectFormat(try await resolver.resolve(.init(namespace: namespace, id: id)))
+                case .url(let url, let format):
+                    return try await Self.detectFormat(HMResolvedItem(url: url, format: format))
                 }
             })
             pending[item] = work
@@ -67,6 +62,17 @@ public protocol HMItemResolver: Sendable {
             if pending[item]?.token == work.token { pending[item] = nil }
             throw error
         }
+    }
+    private static func detectFormat(_ value: HMResolvedItem) async throws -> HMResolvedItem {
+        guard ["file", "http", "https"].contains(value.url.scheme?.lowercased() ?? "") else { throw HMPlayerError.unsupportedURL }
+        guard value.format == .auto, !value.url.isFileURL,
+              !["mp4", "m4v", "m3u8"].contains(value.url.pathExtension.lowercased()) else { return value }
+        var request = URLRequest(url: value.url); request.httpMethod = "HEAD"; request.timeoutInterval = 20
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw HMPlayerError.resolution("Format detection failed") }
+        let mime = response.mimeType?.lowercased() ?? ""
+        let hls = mime.contains("mpegurl") || response.url?.pathExtension.lowercased() == "m3u8"
+        return HMResolvedItem(url: value.url, format: hls ? .hls : .mp4, poster: value.poster, title: value.title, duration: value.duration)
     }
     func retain(_ window: Set<HMMediaItem>) {
         for (item, work) in pending where !window.contains(item) { work.task.cancel(); pending[item] = nil }

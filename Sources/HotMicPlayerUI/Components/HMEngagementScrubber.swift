@@ -21,14 +21,16 @@ public struct HMEngagementScrubber: View {
 
     @Environment(\.hmTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isScrubbing = false
-    @State private var scrubProgress: Double = 0
+    /// Thumb position during a drag. Gesture state, so it resets on its own when the drag is
+    /// cancelled (the feed takes the pan, the cell scrolls away, the app backgrounds) as well as
+    /// when it ends; a cancelled drag never seeks and never leaves the rail stuck expanded.
+    @GestureState private var dragProgress: Double?
     @State private var seekCount = 0
 
     /// Creates a scrubber for one item.
     /// - Parameters:
     ///   - onSeek: Receives a media time in seconds, from a scrub or a tapped peak.
-    ///   - onScrubbingChanged: Called when a drag starts and ends, for example to defer feed gestures.
+    ///   - onScrubbingChanged: Called when a drag starts and when it ends or is cancelled.
     public init(engagement: HMEngagement, snapshot: HMPlaybackSnapshot, onSeek: @escaping (TimeInterval) -> Void,
                 onScrubbingChanged: ((Bool) -> Void)? = nil) {
         self.engagement = engagement
@@ -45,7 +47,8 @@ public struct HMEngagementScrubber: View {
     private var progress: Double {
         snapshot.seekableDuration > 0 ? snapshot.progress : clamped(snapshot.currentTime / max(duration, 0.001))
     }
-    private var displayProgress: Double { isScrubbing ? scrubProgress : progress }
+    private var isScrubbing: Bool { dragProgress != nil }
+    private var displayProgress: Double { dragProgress ?? progress }
     private var bufferedProgress: Double {
         duration > 0 ? clamped((progress * duration + snapshot.bufferedAhead) / duration) : 0
     }
@@ -84,6 +87,7 @@ public struct HMEngagementScrubber: View {
             }
         }
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: isScrubbing)
+        .onChange(of: isScrubbing) { _, scrubbing in onScrubbingChanged?(scrubbing) }
         .sensoryFeedback(.selection, trigger: seekCount)
     }
 
@@ -166,17 +170,12 @@ public struct HMEngagementScrubber: View {
 
     private func scrubGesture(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if !isScrubbing {
-                    isScrubbing = true
-                    onScrubbingChanged?(true)
-                }
-                scrubProgress = clamped(value.location.x / max(width, 1))
+            .updating($dragProgress) { value, progress, _ in
+                progress = clamped(value.location.x / max(width, 1))
             }
-            .onEnded { _ in
-                seek(toProgress: scrubProgress)
-                isScrubbing = false
-                onScrubbingChanged?(false)
+            .onEnded { value in
+                // Only a completed drag seeks; cancellation just resets the gesture state.
+                seek(toProgress: clamped(value.location.x / max(width, 1)))
             }
     }
 

@@ -132,11 +132,18 @@ public struct HMOverlayLayout: HMEngagementLayout {
         .animation(reduceMotion ? .easeInOut(duration: 0.15) : .snappy(duration: 0.28), value: isComposing)
         .animation(.easeOut(duration: 0.25), value: keyboardOverlap)
         .animation(.snappy(duration: 0.2), value: context.snapshot.state == .paused)
-        .onChange(of: isCurrent) { _, current in if !current { isComposing = false } }
+        .onChange(of: isCurrent) { _, current in
+            guard !current else { return }
+            isComposing = false
+            endScrubbing()
+        }
         .onChange(of: isScrubbing) { _, scrubbing in
-            // Scrubbing is an interaction: automatic failure skips wait for it to end.
+            // Scrubbing is an interaction: automatic failure skips wait for it to end. The scrubber
+            // reports false on cancellation too, because its drag lives in gesture state.
             if scrubbing { context.player.beginInteraction() } else { context.player.endInteraction() }
         }
+        // A cell torn down mid-drag gets no gesture callback at all.
+        .onDisappear { endScrubbing() }
     }
 
     // MARK: - Regions
@@ -197,7 +204,9 @@ public struct HMOverlayLayout: HMEngagementLayout {
             }
             if options.showsScrubber {
                 HMEngagementScrubber(engagement: engagement, snapshot: context.snapshot,
-                                     onSeek: { context.player.seek(to: $0) },
+                                     // `seek(to:)` acts on the current item; a drag that ends after
+                                     // its cell scrolled away must not move the new item.
+                                     onSeek: { time in if context.isCurrent { context.player.seek(to: time) } },
                                      onScrubbingChanged: { isScrubbing = $0 })
                     .padding(.trailing, 8)
             }
@@ -256,6 +265,12 @@ public struct HMOverlayLayout: HMEngagementLayout {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
+    }
+
+    private func endScrubbing() {
+        guard isScrubbing else { return }
+        isScrubbing = false
+        context.player.endInteraction()
     }
 
     private func dismissComposer() {

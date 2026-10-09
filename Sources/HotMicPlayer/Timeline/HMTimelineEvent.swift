@@ -39,6 +39,12 @@ public struct HMTimelineEvent: Identifiable, Sendable, Equatable {
     public let emoji: String?
     /// Engagement weight used in density aggregation.
     public let magnitude: Int
+    /// Author avatar for chat events, if the source has one.
+    public let avatarURL: URL?
+    /// Wall-clock time the event was originally sent, if known. Display only; ordering uses `offset`.
+    public let wallTime: Date?
+    /// Reaction counts on this event (chat messages), keyed by emoji, as of when the source built it.
+    public let reactions: [String: Int]
 
     /// Creates a media-clock event or precomputed engagement aggregate.
     public init(
@@ -48,7 +54,10 @@ public struct HMTimelineEvent: Identifiable, Sendable, Equatable {
         author: String? = nil,
         text: String? = nil,
         emoji: String? = nil,
-        magnitude: Int = 1
+        magnitude: Int = 1,
+        avatarURL: URL? = nil,
+        wallTime: Date? = nil,
+        reactions: [String: Int] = [:]
     ) {
         self.id = id
         self.offset = offset
@@ -57,6 +66,9 @@ public struct HMTimelineEvent: Identifiable, Sendable, Equatable {
         self.text = text
         self.emoji = emoji
         self.magnitude = magnitude
+        self.avatarURL = avatarURL
+        self.wallTime = wallTime
+        self.reactions = reactions
     }
 }
 

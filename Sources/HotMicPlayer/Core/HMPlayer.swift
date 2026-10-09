@@ -117,6 +117,7 @@ import Observation
     @ObservationIgnored private var interactionCurrent: HMMediaItem?
     @ObservationIgnored private var interactionNext: HMMediaItem?
     @ObservationIgnored private var timelines: [HMMediaItem: HMStreamTimeline] = [:]
+    @ObservationIgnored private var engagements: [HMMediaItem: HMEngagement] = [:]
     @ObservationIgnored private var subscribers: [UUID: AsyncStream<HMPlayerEvent>.Continuation] = [:]
     @ObservationIgnored private var proxy: HMCacheProxy?
     @ObservationIgnored private var transportTask: Task<Void, Never>?
@@ -413,6 +414,7 @@ import Observation
         let currentIDs = Set(items.map(\.id))
         resumePositions = resumePositions.filter { currentIDs.contains($0.key) }
         timelines = timelines.filter { items.contains($0.key) }
+        engagements = engagements.filter { items.contains($0.key) }
         resolutionFailures = resolutionFailures.filter { items.contains($0.key) }
         pool.trim(keeping: Set(([currentItem].compactMap { $0 } + configuration.warmOffsets.compactMap { offset in
             let i = activeIndex + offset; return items.indices.contains(i) ? items[i] : nil
@@ -589,6 +591,20 @@ import Observation
         let entry = items.first { $0.id == item.id } ?? item
         if let existing = timelines[entry] { return existing }
         let created = interactions.timeline(for: resolutions.cached(entry) ?? entry); timelines[entry] = created; return created
+    }
+    /// Observable chat, polls, reactions and actions for an entry, on its media clock. Created once per
+    /// entry and kept while it stays in the playlist; actions default to the entry's current playback time.
+    public func engagement(for item: HMMediaItem) -> HMEngagement {
+        let entry = items.first { $0.id == item.id } ?? item
+        if let existing = engagements[entry] { return existing }
+        let display = resolutions.cached(entry) ?? entry
+        let created = HMEngagement(item: display, timeline: timeline(for: entry), source: interactions) { [weak self] in
+            self?.snapshot(for: entry).currentTime ?? 0
+        }
+        // Entries outside the playlist are served but not cached, matching `timeline(for:)`'s lookup.
+        if items.contains(entry) { engagements[entry] = created }
+        interactions.engagementDidLoad(created)
+        return created
     }
     var currentNode: HMPlayerNode? { currentItem.flatMap { resolutions.cached($0) }.flatMap { pool.existingNode(for: $0) } }
     func node(for item: HMMediaItem) -> HMPlayerNode? { resolutions.cached(item).flatMap { pool.existingNode(for: $0) } }

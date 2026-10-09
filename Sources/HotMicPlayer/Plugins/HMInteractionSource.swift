@@ -16,11 +16,23 @@ import Foundation
     func react(_ emoji: String, for item: HMMediaItem) async throws
     /// Optional poll action.
     func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws
+    /// Actions this source supports for an item; the UI hides controls for the rest. Defaults to read-only.
+    func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities
+    /// Polls for an item, on its media clock. Called once when its engagement state is created. Defaults to none.
+    func polls(for item: HMMediaItem) -> [HMPoll]
+    /// Optional reaction to one chat message.
+    func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws
+    /// Called once when an item's engagement state is created. Keep it weakly to push live updates
+    /// (`receive(_:)`, `update(_:)`, `updateReactions(_:forMessage:)`). Defaults to doing nothing.
+    func engagementDidLoad(_ engagement: HMEngagement)
 }
 /// An interaction source does not implement the requested action.
-public enum HMInteractionError: Error, Sendable {
+public enum HMInteractionError: Error, Sendable, LocalizedError {
     /// The action is unavailable.
     case unsupportedAction
+
+    /// Human-readable description.
+    public var errorDescription: String? { "This action isn't available." }
 }
 public extension HMInteractionSource {
     /// Default lifecycle hook does nothing.
@@ -35,11 +47,44 @@ public extension HMInteractionSource {
     func react(_ emoji: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
     /// Default action reports unsupported.
     func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
+    /// Default sources are display-only, so no action controls appear.
+    func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { .readOnly }
+    /// Default sources have no polls.
+    func polls(for item: HMMediaItem) -> [HMPoll] { [] }
+    /// Default action reports unsupported.
+    func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
+    /// Default sources push no updates.
+    func engagementDidLoad(_ engagement: HMEngagement) {}
 }
-/// Deterministic demo timelines without network sessions.
+/// Deterministic demo engagement without network sessions: timelines, polls and
+/// every action, accepted after a short simulated round trip.
 @MainActor @_spi(Benchmark) public final class HMMockInteractionSource: HMInteractionSource {
+    /// Actions the mock accepts; narrow it to preview capability gating.
+    public var capabilities: HMEngagementCapabilities
+    /// Simulated round trip for every action.
+    public var latency: Duration
     /// Creates the default demo provider.
-    public init() {}
+    public init(capabilities: HMEngagementCapabilities = .all, latency: Duration = .milliseconds(180)) {
+        self.capabilities = capabilities
+        self.latency = latency
+    }
     /// Generates a timeline on the media clock.
     public func timeline(for item: HMMediaItem) -> HMStreamTimeline { HMMockTimeline(itemID: item.id, duration: item.durationHint ?? 20) }
+    /// Every demo item supports the configured actions.
+    public func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { capabilities }
+    /// One deterministic poll per item, open for the middle of the clip.
+    public func polls(for item: HMMediaItem) -> [HMPoll] { HMMockTimeline.polls(itemID: item.id, duration: item.durationHint ?? 20) }
+    /// Accepts after the simulated latency.
+    public func sendChat(_ text: String, for item: HMMediaItem) async throws { try await roundTrip(.sendChat) }
+    /// Accepts after the simulated latency.
+    public func react(_ emoji: String, for item: HMMediaItem) async throws { try await roundTrip(.reactToStream) }
+    /// Accepts after the simulated latency.
+    public func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws { try await roundTrip(.reactToMessage) }
+    /// Accepts after the simulated latency.
+    public func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws { try await roundTrip(.vote) }
+
+    private func roundTrip(_ capability: HMEngagementCapabilities) async throws {
+        guard capabilities.isSuperset(of: capability) else { throw HMInteractionError.unsupportedAction }
+        try await Task.sleep(for: latency)
+    }
 }

@@ -156,12 +156,15 @@ import Foundation
         nextEventNumber += 1
         let isChat = rng.nextDouble() < Self.ambientChatShare
         if isChat {
+            let id = eventID(nextEventNumber)
             return HMTimelineEvent(
-                id: eventID(nextEventNumber),
+                id: id,
                 offset: position * duration,
                 kind: .chat,
                 author: Self.authors[Int(rng.next(upTo: UInt64(Self.authors.count)))],
-                text: Self.chatLines[Int(rng.next(upTo: UInt64(Self.chatLines.count)))]
+                text: Self.chatLines[Int(rng.next(upTo: UInt64(Self.chatLines.count)))],
+                wallTime: Self.recordedAt.addingTimeInterval(position * duration),
+                reactions: Self.messageReactions(for: id)
             )
         }
         return HMTimelineEvent(
@@ -254,6 +257,40 @@ import Foundation
                     count: bucket.eventCount
                 )
             }
+    }
+
+    /// Fixed "recorded at" date so wall times are deterministic too.
+    private static let recordedAt = Date(timeIntervalSince1970: 1_791_000_000)
+
+    /// Reactions on a chat message. Hashed from the id rather than drawn from the
+    /// generator, so adding them left every other event's position unchanged.
+    private static func messageReactions(for id: String) -> [String: Int] {
+        var rng = HMSeededGenerator(seed: seed(from: id + "#reactions"))
+        guard rng.nextDouble() < 0.45 else { return [:] }
+        var counts: [String: Int] = [:]
+        counts[emojis[Int(rng.next(upTo: UInt64(emojis.count)))]] = 1 + Int(rng.next(upTo: 24))
+        if rng.nextDouble() < 0.3 { counts[emojis[Int(rng.next(upTo: UInt64(emojis.count)))], default: 0] += 1 + Int(rng.next(upTo: 6)) }
+        return counts
+    }
+
+    private static let pollTemplates: [(question: String, options: [String])] = [
+        ("Rate that rep", ["🔥 Elite", "👍 Solid", "😬 Rough"]),
+        ("Does he make the 53?", ["Lock", "Bubble", "Cut"]),
+        ("Best play of the week?", ["Easily", "Not even close"]),
+        ("Who wins this matchup?", ["Offense", "Defense"]),
+        ("Run it back?", ["Again", "Next clip"])
+    ]
+
+    /// One deterministic poll per item, open from 20% to 70% of the clip.
+    public static func polls(itemID: String, duration: TimeInterval) -> [HMPoll] {
+        let duration = max(duration, 1)
+        var rng = HMSeededGenerator(seed: seed(from: itemID + "#poll"))
+        let template = pollTemplates[Int(rng.next(upTo: UInt64(pollTemplates.count)))]
+        let options = template.options.enumerated().map { index, text in
+            HMPoll.Option(id: "\(itemID)-poll-o\(index)", text: text, votes: 40 + Int(rng.next(upTo: 900)))
+        }
+        return [HMPoll(id: "\(itemID)-poll", question: template.question, options: options,
+                       opensAt: duration * 0.2, closesAt: duration * 0.7)]
     }
 
     private static func seed(from string: String) -> UInt64 {

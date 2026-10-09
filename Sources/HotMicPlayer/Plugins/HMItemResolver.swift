@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Playable VOD metadata returned by a partner resolver.
 public struct HMResolvedItem: Sendable, Equatable {
@@ -25,7 +26,7 @@ public protocol HMItemResolver: Sendable {
 }
 
 /// Main-actor session cache. Completed results survive window changes; in-flight work does not.
-@MainActor final class HMResolutionStore {
+@MainActor @Observable final class HMResolutionStore {
     struct Work { let token: UUID; let task: Task<HMResolvedItem, Error> }
     private let session: URLSession
     init(session: URLSession = .shared) { self.session = session }

@@ -2,6 +2,8 @@ import Foundation
 
 /// Readiness at activation, preserved through the first displayed frame.
 public enum HMReadinessTier: String, Sendable {
+    /// Current entry is awaiting URL or format resolution.
+    case resolving
     /// No reusable media bytes or decoded player.
     case cold
     /// URL and poster metadata resolved; no downloaded start or decoded player.

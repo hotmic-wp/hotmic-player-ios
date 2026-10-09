@@ -15,6 +15,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     private let gravity: AVLayerVideoGravity
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
 
+    @GestureState private var isTouching = false
     @State private var scrollReference = HMScrollViewReference()
     @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
@@ -57,7 +58,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { id, time in
+                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference, interaction: { controller.setPageMoving($0) }) { id, time in
                         fallbackCommit?.cancel()
                         controller.commitPage(toID: id, requestedAt: time)
                     })
@@ -76,10 +77,13 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         if let scroll = scrollReference.scroll {
                             guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
                         }
-                        controller.commitPage(toID: id, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now)
+                        controller.commitPage(toID: id, requestedAt: now)
                     }
                 }
-                .onDisappear { fallbackCommit?.cancel() }
+                .simultaneousGesture(DragGesture(minimumDistance: 0).updating($isTouching) { _, touching, _ in touching = true })
+                .onChange(of: isTouching) { _, touching in controller.setFeedTouching(touching) }
+                .onAppear { controller.attachFeed() }
+                .onDisappear { fallbackCommit?.cancel(); controller.detachFeed() }
                 .onChange(of: controller.currentItem?.id) { _, id in
                     fallbackCommit?.cancel()
                     if id != scrolledID { scrolledID = id }

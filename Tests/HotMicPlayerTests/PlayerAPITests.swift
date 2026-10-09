@@ -154,10 +154,16 @@ struct PlayerReviewTests {
     @Test("Only the benchmark record owns configuration Codable, preserving the complete fingerprint")
     func benchmarkCoding() throws {
         var c = HMPlayerConfiguration.highQuality
+        c.failedItemPolicy = .stay
         c.lowWaterMark = 7; c.volatileSigningQueryParameters = ["token"]
         let data = try JSONEncoder().encode(c.benchmarkRecord)
         let restored = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: data).configuration
         #expect(restored.fingerprint == c.fingerprint)
+        var legacy = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(legacy["failedItemPolicy"] as? String == "stay")
+        legacy.removeValue(forKey: "failedItemPolicy")
+        let oldData = try JSONSerialization.data(withJSONObject: legacy)
+        #expect(try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration.failedItemPolicy == .skip)
     }
     actor RecoveringResolver: HMItemResolver {
         var calls = 0

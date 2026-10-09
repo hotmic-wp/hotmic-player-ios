@@ -15,8 +15,9 @@ struct HMPageCommitProbe: UIViewRepresentable {
     var targetIndex: Int?
     var requestID: UUID
     var reference: HMScrollViewReference? = nil
+    var interaction: (Bool) -> Void = { _ in }
     var commit: (String, TimeInterval) -> Void
-    func makeCoordinator() -> Coordinator { Coordinator(commit: commit, reference: reference) }
+    func makeCoordinator() -> Coordinator { Coordinator(commit: commit, reference: reference, interaction: interaction) }
     func makeUIView(context: Context) -> Probe {
         let view = Probe(); view.coordinator = context.coordinator
         return view
@@ -24,12 +25,14 @@ struct HMPageCommitProbe: UIViewRepresentable {
     func updateUIView(_ view: Probe, context: Context) {
         let coordinator = context.coordinator
         coordinator.commit = commit
+        coordinator.interaction = interaction
         coordinator.reconcile(items: itemIDs, current: currentID)
         coordinator.reference = reference
         coordinator.targetIndex = targetIndex; coordinator.requestID = requestID
         view.connect()
     }
     static func dismantleUIView(_ view: Probe, coordinator: Coordinator) {
+        coordinator.interaction(false)
         coordinator.fallback?.cancel(); coordinator.fallback = nil; coordinator.offsetObservation = nil
         if let scroll = coordinator.scroll, scroll.delegate === coordinator { scroll.delegate = coordinator.original }
     }
@@ -56,6 +59,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
     }
     final class Coordinator: NSObject, UIScrollViewDelegate {
+        var interaction: (Bool) -> Void
         var commit: (String, TimeInterval) -> Void
         var reference: HMScrollViewReference?
         var offsetObservation: NSKeyValueObservation?
@@ -73,6 +77,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
             }
         }
         private func motionChanged() {
+            interaction(true)
             lastMotionAt = ProcessInfo.processInfo.systemUptime
             reference?.lastMotionAt = lastMotionAt
             scheduleFallback(after: 0.2)
@@ -88,9 +93,8 @@ struct HMPageCommitProbe: UIViewRepresentable {
             guard let scroll, scroll.window != nil, !scroll.isDragging, !scroll.isDecelerating else { return }
             let quiet = ProcessInfo.processInfo.systemUptime - lastMotionAt
             guard quiet >= 0.2 else { scheduleFallback(after: 0.2 - quiet); return }
-            // Use the final movement's event clock, including fallback delay in
-            // TTFF. A normal native settle commits earlier and cancels this.
-            settled(scroll, time: lastMotionAt)
+            // TTFF begins when the page is committed, including for the quiet fallback.
+            settled(scroll, time: ProcessInfo.processInfo.systemUptime)
         }
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             motionChanged()
@@ -134,14 +138,20 @@ struct HMPageCommitProbe: UIViewRepresentable {
                 suppressCommit = false
             }
             guard let index = targetIndex, let requestID, requestID != handledRequest,
-                  let scroll, scroll.bounds.height > 0 else { return }
+                  let scroll, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
             handledRequest = requestID
             let y = Double(index) * scroll.bounds.height - scroll.adjustedContentInset.top
             scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: true)
         }
         weak var scroll: UIScrollView?
         weak var original: UIScrollViewDelegate?
-        init(commit: @escaping (String, TimeInterval) -> Void, reference: HMScrollViewReference?) { self.commit = commit; self.reference = reference }
+        init(commit: @escaping (String, TimeInterval) -> Void, reference: HMScrollViewReference?, interaction: @escaping (Bool) -> Void) {
+            self.commit = commit; self.reference = reference; self.interaction = interaction
+        }
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            interaction(true)
+            original?.scrollViewWillBeginDragging?(scrollView)
+        }
         override func responds(to selector: Selector!) -> Bool { super.responds(to: selector) || (original?.responds(to: selector) ?? false) }
         override func forwardingTarget(for selector: Selector!) -> Any? { original }
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
@@ -159,7 +169,8 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
         private func settled(_ scroll: UIScrollView, time: TimeInterval) {
             fallback?.cancel(); fallback = nil
-            guard !suppressCommit, !needsReconcile, scroll.bounds.height > 0 else { return }
+            guard !suppressCommit, !needsReconcile, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
+            defer { interaction(false) }
             let index = max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded()))
             guard itemIDs.indices.contains(index) else { return }
             commit(itemIDs[index], time)

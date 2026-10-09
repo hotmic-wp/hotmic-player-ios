@@ -138,7 +138,7 @@ actor HMDiskCache {
 }
 
 /// Benchmark reset is serialized with readers/writers. Call between runs only.
-public enum HMPlayerCache {
+@_spi(Benchmark) public enum HMPlayerCache {
     /// Clears SDK media cache bytes. Call only between playback sessions.
     public static func reset() async {
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HotMicPlayer-v1")

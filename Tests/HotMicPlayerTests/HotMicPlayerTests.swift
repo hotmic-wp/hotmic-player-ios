@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import HotMicPlayer
+@_spi(Benchmark) @testable import HotMicPlayer
 
 @Suite("Prefetch policy")
 struct PrefetchPolicyTests {

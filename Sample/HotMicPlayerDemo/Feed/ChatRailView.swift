@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Bottom-anchored chat rail. Shows the last few messages that fall behind the
 /// playhead, so scrubbing rewinds the conversation too.

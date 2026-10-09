@@ -57,6 +57,8 @@ public enum HMPlayerEvent: Sendable, Equatable {
     case error(item: HMMediaItem?, kind: HMPlayerError)
     /// A successfully committed atomic playlist mutation.
     case playlistChanged([HMMediaItem])
+    /// Non-fatal paging notice: these IDs were already loaded or repeated within the page. The cursor still advances.
+    case sourcePageDuplicates(ids: [String])
     /// Current index entered the configured low-water region.
     case nearingEnd(remaining: Int)
 }

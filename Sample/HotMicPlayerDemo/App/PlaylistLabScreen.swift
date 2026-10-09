@@ -1,7 +1,7 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
-/// All interactions here compile against the public SDK, including the diagnostic snapshots.
+/// Playlist operations use the public SDK; animation and diagnostics use Benchmark SPI.
 struct PlaylistLabScreen: View {
     let onBack: () -> Void
     @State private var player = HMPlayer()
@@ -10,6 +10,7 @@ struct PlaylistLabScreen: View {
     @State private var origin = BenchmarkOptions().values["lab-origin"] ?? "http://127.0.0.1:8088"
     @State private var delayed: Task<Void, Never>?
     @State private var sink: HMJSONLFileSink?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var changes: [String] = []
 
     var body: some View {
@@ -41,13 +42,13 @@ struct PlaylistLabScreen: View {
                     operationButton("Clear", "clear") { player.remove(ids: Set(player.items.map(\.id))) }
                     operationButton("Duplicate", "duplicate") { player.append(player.currentItem.map { [$0] } ?? []) }
                     Button("Edit in swipe") {
-                        delayed?.cancel(); status = "Animating a page move; editing before it settles"
-                        player.requestPage(at: player.activeIndex + 1)
-                        delayed = Task { @MainActor in
-                            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                            perform("mid-swipe") { player.replaceUpcoming(batch()) }
-                        }
+                        editDuringSwipe(replace: true)
                     }.accessibilityIdentifier("lab-mid-swipe")
+                }
+                HStack {
+                    Button("Paging race") { startPagingRace() }.accessibilityIdentifier("lab-paging-race")
+                    Button("Append in swipe") { editDuringSwipe(replace: false) }.accessibilityIdentifier("lab-append-swipe")
+                    operationButton("No-op", "no-op") { player.append([]) && player.insertNext([]) && player.remove(ids: ["unknown"]) }
                 }
                 HStack {
                     Button("Previous") { player.previous() }
@@ -81,9 +82,50 @@ struct PlaylistLabScreen: View {
             status = "Swipe above the controls; operations preserve the settled current item"
             for await event in player.events {
                 if case let .error(_, kind) = event { status = kind.localizedDescription }
+                if case let .sourcePageDuplicates(ids) = event { status = "Source dropped duplicates: " + ids.joined(separator: ",") }
+                recordEvent(event)
             }
         }
+        .onChange(of: scenePhase) { _, phase in
+            player.isFeedVisible = phase == .active
+            perform("scene-" + String(describing: phase)) { true }
+        }
         .onDisappear { delayed?.cancel(); player.teardown(); Task { try? await sink?.flush() } }
+    }
+    private func editDuringSwipe(replace: Bool) {
+        delayed?.cancel()
+        player.requestPage(at: player.activeIndex + 1)
+        delayed = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            perform(replace ? "mid-swipe-replace" : "mid-swipe-append") {
+                replace ? player.replaceUpcoming(batch()) : player.append(batch())
+            }
+        }
+    }
+    private func startPagingRace() {
+        delayed?.cancel(); player.playlistSource = nil
+        var configuration = player.configuration; configuration.lowWaterMark = 2
+        player.configuration = configuration
+        let seeds = batch() + batch() + batch()
+        let additions = batch() + batch()
+        player.replaceAll(seeds, startAt: 2)
+        player.playlistSource = LabPlaylistSource(pages: [
+            HMPlaylistPage(items: [seeds[3], additions[0], additions[0]], nextCursor: "overlap-2"),
+            HMPlaylistPage(items: [additions[0], additions[1]], nextCursor: "overlap-3"),
+            HMPlaylistPage(items: [additions[1], additions[2], additions[3]], nextCursor: nil)
+        ])
+        // Settling at index 3 crosses the low-water mark. Swipe again while the
+        // delayed request is active, or use Append in swipe to race a partner edit.
+        delayed = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            player.requestPage(at: 3)
+        }
+        status = "Paging race: swipe while loading; each page overlaps. Cursor log in Documents."
+    }
+    private func recordEvent(_ event: HMPlayerEvent) {
+        let row: [String: Any] = ["event": String(describing: event), "current": player.currentItem?.id ?? "",
+            "items": player.items.map(\.id), "loading": player.isLoadingPage, "monotonic": ProcessInfo.processInfo.systemUptime]
+        LabEvidence.append(row, to: "playlist-lab-events.jsonl")
     }
     private func operationButton(_ title: String, _ id: String, action: @escaping () -> Bool) -> some View {
         Button(title) { perform(id, action: action) }.accessibilityIdentifier("lab-\(id)")
@@ -109,12 +151,37 @@ struct PlaylistLabScreen: View {
             "before_id": oldID ?? "", "after_id": player.currentItem?.id ?? "", "before_activation": before.activationID,
             "after_activation": after.activationID, "before_time": before.currentTime, "after_time": after.currentTime,
             "before_frame": before.isFrameReady, "after_frame": after.isFrameReady, "stalls": after.stallCount,
-            "items": player.items.map(\.id), "revision": player.playlistRevision, "monotonic": ProcessInfo.processInfo.systemUptime]
+            "prepared_items": player.preparedItemCount, "items": player.items.map(\.id), "revision": player.playlistRevision, "monotonic": ProcessInfo.processInfo.systemUptime]
         if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), let line = String(data: data, encoding: .utf8) {
             changes.append(line)
             let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("playlist-lab-operations.jsonl")
             try? (changes.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
         }
         Task { try? await sink?.flush() }
+    }
+}
+
+private actor LabPlaylistSource: HMPlaylistSource {
+    let pages: [HMPlaylistPage]
+    init(pages: [HMPlaylistPage]) { self.pages = pages }
+    func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+        let index = cursor.flatMap { Int($0.split(separator: "-").last ?? "") }.map { $0 - 1 } ?? 0
+        LabEvidence.append(["cursor": cursor ?? "nil", "phase": "request", "monotonic": ProcessInfo.processInfo.systemUptime], to: "playlist-lab-pages.jsonl")
+        try await Task.sleep(for: .seconds(2))
+        let page = pages[index]
+        LabEvidence.append(["cursor": cursor ?? "nil", "next": page.nextCursor ?? "end", "phase": "response", "ids": page.items.map(\.id), "monotonic": ProcessInfo.processInfo.systemUptime], to: "playlist-lab-pages.jsonl")
+        return page
+    }
+}
+
+private enum LabEvidence {
+    private static let lock = NSLock()
+    static func append(_ record: [String: Any], to name: String) {
+        lock.lock(); defer { lock.unlock() }
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(name)
+        guard var data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
+        data.append(10)
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if let handle = try? FileHandle(forWritingTo: url) { defer { try? handle.close() }; _ = try? handle.seekToEnd(); try? handle.write(contentsOf: data) }
     }
 }

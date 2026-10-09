@@ -42,7 +42,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
 
             GeometryReader { proxy in
                 let pageHeight = proxy.size.height
-                let revision = controller.playlistRevision
+                let itemIDs = controller.items.map(\.id)
+                let currentID = controller.currentItem?.id
 
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 0) {
@@ -56,9 +57,9 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe(revision: revision, anchorIndex: controller.activeIndex, targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { index, time in
+                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference) { id, time in
                         fallbackCommit?.cancel()
-                        controller.commitPage(at: index, requestedAt: time, revision: revision)
+                        controller.commitPage(toID: id, requestedAt: time)
                     })
                 }
                 .scrollTargetBehavior(.paging)
@@ -70,29 +71,18 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                     guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
                     fallbackCommit = Task { @MainActor in
                         do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-                        guard revision == controller.playlistRevision, scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
+                        guard controller.currentItem?.id == currentID, HMPagePosition.survives(old: itemIDs, new: controller.items.map(\.id), current: currentID, destination: id), scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
                         let now = ProcessInfo.processInfo.systemUptime
                         if let scroll = scrollReference.scroll {
                             guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
                         }
-                        controller.commitPage(at: index, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now, revision: revision)
+                        controller.commitPage(toID: id, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now)
                     }
                 }
                 .onDisappear { fallbackCommit?.cancel() }
-                .onChange(of: controller.playlistRevision) { _, _ in
+                .onChange(of: controller.currentItem?.id) { _, id in
                     fallbackCommit?.cancel()
-                    scrolledID = controller.currentItem?.id
-                }
-                .onChange(of: controller.activeIndex) { _, newIndex in
-                    // Keep the scroll position in sync when the index is driven
-                    // programmatically (deep link, "next" button, autoadvance).
-                    guard controller.items.indices.contains(newIndex) else { return }
-                    let id = controller.items[newIndex].id
-                    guard id != scrolledID else { return }
-                    // Page requests animate through the delegate bridge. Deep
-                    // links snap immediately so a second animation cannot race
-                    // the first programmatic page request.
-                    scrolledID = id
+                    if id != scrolledID { scrolledID = id }
                 }
                 .task {
                     await controller.start()

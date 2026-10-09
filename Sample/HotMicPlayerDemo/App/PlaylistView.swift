@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Browse surface. Exists so the demo can *leave* the feed and come back into it
 /// at an arbitrary index — which is what proves deep-linking, position restore

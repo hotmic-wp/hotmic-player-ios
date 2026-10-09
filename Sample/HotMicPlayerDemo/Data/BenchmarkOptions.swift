@@ -1,5 +1,5 @@
 import Foundation
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// --hm-name value overrides HM_NAME; strategy is only a preset, then all
 /// supplied knobs apply independently. Invalid values stop the run visibly.

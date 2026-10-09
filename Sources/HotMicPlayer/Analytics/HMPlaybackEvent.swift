@@ -42,15 +42,15 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         /// A pooled `AVPlayer` was recycled onto a different item.
         case playerRecycled
         /// One response's network or cache byte totals.
-        case transfer
+        @_spi(Benchmark) case transfer
         /// Speculative download exhausted its retries.
-        case prefetchError
+        @_spi(Benchmark) case prefetchError
         /// Playback transport failed.
         case transportError
         /// First ten seconds of activation telemetry.
-        case startupSummary
+        @_spi(Benchmark) case startupSummary
         /// Benchmark session completed, including wasted speculative bytes.
-        case runEnd
+        @_spi(Benchmark) case runEnd
     }
 
     /// Stable identity for this value.

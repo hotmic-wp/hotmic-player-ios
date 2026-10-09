@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// The timeline scrubber: an engagement waveform that fills as you watch,
 /// clustered emoji markers over the peaks, and a glowing playhead.

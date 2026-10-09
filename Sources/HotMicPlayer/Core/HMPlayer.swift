@@ -5,7 +5,7 @@ import Observation
 
 /// The partner SDK entry point. Owns a VOD playlist, playback, prefetch and events.
 /// All mutations are synchronous and atomic on the main actor. During a swipe,
-/// edits cancel the pending destination and keep the last settled current item.
+/// edits preserve a swipe unless the current or destination ID changes position.
 @MainActor @Observable public final class HMPlayer {
     private var playlist = HMPlaylistState()
     /// Loaded playlist entries, in display order.
@@ -24,7 +24,7 @@ import Observation
     public private(set) var loadError: String?
     /// Most recent event, also available to Observation clients.
     public private(set) var lastEvent: HMPlayerEvent?
-    /// Increments after each playlist edit, invalidating an in-progress scroll commit.
+    /// Increments after each effective playlist edit. Appends preserve in-flight swipes.
     public private(set) var playlistRevision = 0
     /// Optional paging adapter. Assigning a different source resets its cursor and invalidates its pending page.
     public var playlistSource: HMPlaylistSource? {
@@ -38,7 +38,7 @@ import Observation
     public var isFeedVisible = true {
         didSet {
             guard isFeedVisible != oldValue else { return }
-            if isFeedVisible { if configuration.managesAudioSession { HMAudioSession.activatePlayback() }; refreshWindow() }
+            if isFeedVisible { Task { [weak self] in await self?.prepareTransport() }; if configuration.managesAudioSession { HMAudioSession.activatePlayback() }; refreshWindow() }
             else { pauseAll() }
         }
     }
@@ -53,16 +53,18 @@ import Observation
         }
     }
     /// Number of engine slots holding media; intended for diagnostics, without exposing native players.
-    public var preparedItemCount: Int { pool.busyCount }
+    @_spi(Benchmark) public var preparedItemCount: Int { pool.busyCount }
 
-    var requestedPageIndex: Int?
+    var requestedPageID: String?
+    var requestedPageIndex: Int? { requestedPageID.flatMap { id in items.firstIndex { $0.id == id } } }
     var pageRequestID = UUID()
     @ObservationIgnored let pool: HMPlayerPool
     @ObservationIgnored private let resolver: HMItemResolver?
     @ObservationIgnored private let interactions: HMInteractionSource
     @ObservationIgnored private let resolutions = HMResolutionStore()
     @ObservationIgnored private var resolutionTasks: [HMMediaItem: Task<Void, Never>] = [:]
-    @ObservationIgnored private var resolutionErrors: Set<HMMediaItem> = []
+    @ObservationIgnored private var resolutionFailures: [HMMediaItem: HMResolutionRetry] = [:]
+    @ObservationIgnored private var resolutionRetryTask: Task<Void, Never>?
     @ObservationIgnored private var interactionCurrent: HMMediaItem?
     @ObservationIgnored private var interactionNext: HMMediaItem?
     @ObservationIgnored private var timelines: [HMMediaItem: HMStreamTimeline] = [:]
@@ -106,31 +108,34 @@ import Observation
     @discardableResult public func insertNext(_ items: [HMMediaItem]) -> Bool { mutate { try $0.insertNext(items) } }
     /// Adds entries at the end without interrupting current playback.
     @discardableResult public func append(_ items: [HMMediaItem]) -> Bool { appendItems(items, fromSource: false) }
-    private func appendItems(_ items: [HMMediaItem], fromSource: Bool) -> Bool { mutate(fromSource: fromSource) { try $0.append(items) } }
+    private func appendItems(_ items: [HMMediaItem], fromSource: Bool) -> Bool { mutate { try $0.append(items) } }
     /// Removes IDs. Removing current selects the next survivor, then previous; removing all becomes idle.
     @discardableResult public func remove(ids: Set<String>) -> Bool { mutate { $0.remove(ids: ids) } }
 
-    private func mutate(replacingCurrent: Bool = false, fromSource: Bool = false, _ edit: (inout HMPlaylistState) throws -> Void) -> Bool {
+    private func mutate(replacingCurrent: Bool = false, _ edit: (inout HMPlaylistState) throws -> Void) -> Bool {
         guard !ended else { return false }
         var result = playlist
         do { try edit(&result) } catch { report(error as? HMPlayerError ?? .playlistSource(error.localizedDescription)); return false }
+        guard replacingCurrent || result != playlist else { return true }
         let old = currentItem
+        let oldWindow = windowItems
+        let preservesMove = HMPagePosition.survives(old: items.map(\.id), new: result.items.map(\.id),
+            current: old?.id, destination: requestedPageID)
         let changesCurrent = replacingCurrent || old != result.current
         if changesCurrent { saveAndDeactivate() }
         playlist = result; loadError = nil; playlistRevision += 1
-        requestedPageIndex = nil; pageRequestID = UUID()
-        // A replacement supersedes any page fetched against the old playlist.
-        if !fromSource {
-            pageGeneration += 1; loadTask?.cancel(); loadTask = nil; pageTaskID = UUID(); isLoadingPage = false
-        }
-        if replacingCurrent { nextCursor = nil; hasMoreContent = playlistSource != nil; resumePositions.removeAll(); pool.releaseAll() }
+        if !preservesMove { requestedPageID = nil; pageRequestID = UUID() }
+        // Edits do not supersede a source request: its page is merged against the
+        // latest playlist on arrival. Only assigning a source or teardown cancels it.
+        if replacingCurrent { resumePositions.removeAll(); pool.releaseAll() }
+        if oldWindow != windowItems { proxy?.cancelPrefetch(); prefetchSafe = false }
         if changesCurrent {
+            if let currentItem { resolutionFailures[currentItem] = nil }
             requestTime = ProcessInfo.processInfo.systemUptime; requestReason = "play"
             pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = currentItem == nil ? .idle : .loading
             emit(.currentItemChanged(currentItem))
         }
         emit(.playlistChanged(items))
-        proxy?.cancelPrefetch(); prefetchSafe = false
         refreshWindow(); checkEnd()
         return true
     }
@@ -156,24 +161,26 @@ import Observation
     private func navigate(to index: Int, reason: String = "play", requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard items.indices.contains(index), !ended else { return }
         if index != activeIndex { saveAndDeactivate(); playlist.index = index; pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = .loading; emit(.currentItemChanged(currentItem)) }
-        requestedPageIndex = nil; requestTime = requestedAt; requestReason = reason
+        if let currentItem { resolutionFailures[currentItem] = nil }
+        requestedPageID = nil; requestTime = requestedAt; requestReason = reason
         prefetchSafe = false; proxy?.cancelPrefetch(); refreshWindow(); checkEnd()
     }
     /// Requests a view-driven animated page move; activation waits until scrolling settles.
-    public func requestPage(at index: Int) {
+    @_spi(Benchmark) public func requestPage(at index: Int) {
         guard items.indices.contains(index), index != activeIndex else { return }
-        requestedPageIndex = index; pageRequestID = UUID()
+        requestedPageID = items[index].id; pageRequestID = UUID()
     }
-    func commitPage(at index: Int, requestedAt: TimeInterval, revision: Int) {
-        guard revision == playlistRevision else { return }
+    func commitPage(toID id: String, requestedAt: TimeInterval) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         navigate(to: index, reason: "swipe", requestedAt: requestedAt)
     }
     /// Prepares transport before presenting a selected playlist index, preserving the request clock for analytics.
-    public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
-        let revision = playlistRevision
+    @_spi(Benchmark) public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
+        guard items.indices.contains(index) else { return }
+        let selected = items[index]
         if configuration.managesAudioSession { HMAudioSession.activatePlayback() }
         await prepareTransport()
-        guard revision == playlistRevision, !ended else { return }
+        guard let index = items.firstIndex(of: selected), !ended else { return }
         wantsPlayback = true; navigate(to: index, requestedAt: requestedAt); isFeedVisible = true
     }
     private func saveAndDeactivate() {
@@ -199,9 +206,11 @@ import Observation
             let page = try await source.loadPage(cursor: nextCursor)
             try Task.checkCancellation()
             guard generation == pageGeneration, !ended else { return }
-            // Commit page before publishing its cursor; duplicates leave both unchanged.
-            if appendItems(page.items, fromSource: true) {
-                nextCursor = page.nextCursor; hasMoreContent = page.nextCursor != nil && !page.items.isEmpty
+            let filtered = playlist.filterSourcePage(page.items)
+            if appendItems(filtered.items, fromSource: true) {
+                let previousCursor = nextCursor
+                nextCursor = page.nextCursor; hasMoreContent = page.nextCursor != nil && page.nextCursor != previousCursor
+                if !filtered.duplicates.isEmpty { emit(.sourcePageDuplicates(ids: filtered.duplicates)) }
             }
 
         } catch is CancellationError { }
@@ -218,7 +227,7 @@ import Observation
         loadTask = Task { [weak self] in
             guard let self else { return }
             await loadNextPage()
-            if pageTaskID == token { loadTask = nil }
+            if pageTaskID == token { loadTask = nil; checkEnd() }
         }
     }
 
@@ -228,6 +237,7 @@ import Observation
         transportTask = Task { [weak self] in
             guard let self else { return }
             do {
+                if let proxy { try await proxy.start(); return }
                 let created = try HMCacheProxy(configuration: configuration)
                 created.onEvent = { [weak self] event, item in self?.handle(event, item: item) }
                 try await created.start()
@@ -236,6 +246,7 @@ import Observation
             } catch { report(.playback("Cache transport: \(error.localizedDescription)")) }
         }
         await transportTask?.value
+        transportTask = nil
     }
     private var windowItems: [HMMediaItem] {
         playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + configuration.warmOffsets)
@@ -250,10 +261,10 @@ import Observation
         let currentIDs = Set(items.map(\.id))
         resumePositions = resumePositions.filter { currentIDs.contains($0.key) }
         timelines = timelines.filter { items.contains($0.key) }
-        resolutionErrors = resolutionErrors.intersection(Set(items))
+        resolutionFailures = resolutionFailures.filter { items.contains($0.key) }
         pool.trim(keeping: Set(([currentItem].compactMap { $0 } + configuration.warmOffsets.compactMap { offset in
             let i = activeIndex + offset; return items.indices.contains(i) ? items[i] : nil
-        }).map(\.id)))
+        }).compactMap { resolutions.cached($0) }))
         let playable = window.compactMap { resolutions.cached($0) }
         proxy?.retainWindow(playable)
         proxy?.retainPlaylist(items.compactMap { resolutions.cached($0) })
@@ -266,27 +277,49 @@ import Observation
     }
     private func refreshWindowAfterTransport() {
         guard !ended, isFeedVisible else { return }
-        for item in windowItems where resolutions.cached(item) == nil && resolutionTasks[item] == nil && !resolutionErrors.contains(item) {
-            resolutionTasks[item] = Task(priority: item.id == currentItem?.id ? .userInitiated : .utility) { [weak self] in
+        resolutionRetryTask?.cancel(); resolutionRetryTask = nil
+        for item in windowItems {
+            let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
+            if urgent { resolutions.promote(item) }
+            guard resolutions.cached(item) == nil, resolutionTasks[item] == nil,
+                  resolutionFailures[item]?.canRetry(at: ProcessInfo.processInfo.systemUptime) != false else { continue }
+            resolutionTasks[item] = Task(priority: urgent ? .userInitiated : .utility) { [weak self] in
                 guard let self else { return }
                 do {
                     let result = try await resolutions.resolve(item, using: resolver)
                     try Task.checkCancellation()
                     guard windowItems.contains(item), !ended else { return }
                     guard let url = result.url, ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw HMPlayerError.unsupportedURL }
-                    resolutionTasks[item] = nil
+                    resolutionTasks[item] = nil; resolutionFailures[item] = nil
                     refreshWindow()
                 } catch is CancellationError { }
                 catch {
                     guard !Task.isCancelled, windowItems.contains(item), !ended else { return }
-                    resolutionTasks[item] = nil; resolutionErrors.insert(item)
+                    resolutionTasks[item] = nil
+                    var failure = resolutionFailures[item] ?? HMResolutionRetry()
+                    failure.failed(at: ProcessInfo.processInfo.systemUptime); resolutionFailures[item] = failure
                     let kind = error as? HMPlayerError ?? .resolution(error.localizedDescription)
                     if currentItem == item { pendingSnapshot.state = .failed; pendingSnapshot.errorDescription = kind.localizedDescription }
                     report(kind, item: item)
+                    scheduleResolutionRetry()
                 }
             }
         }
-        resumeActive(); updatePrefetch()
+        scheduleResolutionRetry(); resumeActive(); updatePrefetch()
+    }
+    private func scheduleResolutionRetry() {
+        guard isFeedVisible, !ended else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let deadlines = windowItems.compactMap { item -> TimeInterval? in
+            guard resolutionTasks[item] == nil, let retry = resolutionFailures[item], retry.attempts < HMResolutionRetry.maximumAttempts else { return nil }
+            return retry.nextAttempt
+        }
+        guard let deadline = deadlines.min() else { return }
+        resolutionRetryTask?.cancel()
+        resolutionRetryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0.01, deadline - now))) } catch { return }
+            self?.refreshWindow()
+        }
     }
     private func resumeActive() {
         guard isFeedVisible, !ended, let original = currentItem, let item = resolutions.cached(original), let url = item.url else { return }
@@ -312,7 +345,7 @@ import Observation
         if !safe {
             prefetchIdentity = ""
             if wasSafe { proxy?.cancelPrefetch() }
-            if configuration.strategy == .S3, node.snapshot.timeToFirstFrame != nil { pool.trim(keeping: Set(currentItem.map { [$0.id] } ?? [])) }
+            if configuration.strategy == .S3, node.snapshot.timeToFirstFrame != nil { pool.trim(keeping: Set(currentItem.flatMap { resolutions.cached($0) }.map { [$0] } ?? [])) }
             return
         }
         let identity = configuration.fingerprint + "|" + windowItems.compactMap { resolutions.cached($0) }.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|")
@@ -340,15 +373,15 @@ import Observation
         interactionCurrent = current; interactionNext = next
     }
     /// Read-only playback snapshot for an entry. Unprepared entries report idle.
-    public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { pool.existingNode(for: item)?.snapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
+    public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.snapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
     /// Clock-indexed overlay data. Network session lifecycle belongs to the interaction hooks, not this accessor.
     public func timeline(for item: HMMediaItem) -> HMStreamTimeline {
         let entry = items.first { $0.id == item.id } ?? item
         if let existing = timelines[entry] { return existing }
         let created = interactions.timeline(for: resolutions.cached(entry) ?? entry); timelines[entry] = created; return created
     }
-    var currentNode: HMPlayerNode? { currentItem.flatMap { pool.existingNode(for: $0) } }
-    func node(for item: HMMediaItem) -> HMPlayerNode? { pool.existingNode(for: item) }
+    var currentNode: HMPlayerNode? { currentItem.flatMap { resolutions.cached($0) }.flatMap { pool.existingNode(for: $0) } }
+    func node(for item: HMMediaItem) -> HMPlayerNode? { resolutions.cached(item).flatMap { pool.existingNode(for: $0) } }
     func displayItem(_ item: HMMediaItem) -> HMMediaItem { resolutions.cached(item) ?? item }
     /// Toggles current playback; useful for tap overlays.
     public func togglePlayPause() { wantsPlayback ? pause() : play() }
@@ -359,12 +392,13 @@ import Observation
     private func pauseAll() {
         proxy?.cancelPrefetch(); prefetchSafe = false
         for node in pool.nodes where node.isActive { node.pause() }
+        resolutionRetryTask?.cancel(); resolutionRetryTask = nil
         resolutions.cancelAll()
         for task in resolutionTasks.values { task.cancel() }; resolutionTasks.removeAll()
         updateInteractions()
     }
     /// Ends a benchmark session, drains transport accounting and emits runEnd. The player is terminal afterwards.
-    public func finishRun() async {
+    @_spi(Benchmark) public func finishRun() async {
         guard !ended else { return }
         ended = true; stopWork()
         let item = currentItem
@@ -384,6 +418,7 @@ import Observation
     }
     private func stopWork() {
         pageGeneration += 1; loadTask?.cancel(); isLoadingPage = false
+        resolutionRetryTask?.cancel(); resolutionRetryTask = nil
         resolutions.cancelAll(); for task in resolutionTasks.values { task.cancel() }; resolutionTasks.removeAll()
         for item in Set([interactionCurrent, interactionNext].compactMap { $0 }) { interactions.didLeave(item) }
         interactionCurrent = nil; interactionNext = nil; proxy?.cancelPrefetch()

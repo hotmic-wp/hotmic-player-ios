@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Trailing action column. Mirrors the `leadingRail`/`trailingRail` slot idea
 /// from the architecture notes without building the full plugin registry yet.

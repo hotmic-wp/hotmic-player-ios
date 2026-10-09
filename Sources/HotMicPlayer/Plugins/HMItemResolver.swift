@@ -28,6 +28,7 @@ public protocol HMItemResolver: Sendable {
 @MainActor final class HMResolutionStore {
     struct Work { let token: UUID; let task: Task<HMResolvedItem, Error> }
     private var completed: [HMMediaItem: HMResolvedItem] = [:]
+    private var promotions: [HMMediaItem: Task<Void, Never>] = [:]
     private var pending: [HMMediaItem: Work] = [:]
     func cached(_ item: HMMediaItem) -> HMMediaItem? {
         if let url = item.url, item.format != .auto || url.isFileURL { return item }
@@ -54,28 +55,52 @@ public protocol HMItemResolver: Sendable {
             let value = try await work.task.value
             try Task.checkCancellation()
             guard pending[item]?.token == work.token else { throw CancellationError() }
-            completed[item] = value; pending[item] = nil
+            completed[item] = value; pending[item] = nil; promotions[item] = nil
             return item.resolved(value)
         } catch {
             // Another waiter may already have committed this result.
             if let value = completed[item], !Task.isCancelled { return item.resolved(value) }
-            if pending[item]?.token == work.token { pending[item] = nil }
+            if pending[item]?.token == work.token { pending[item] = nil; promotions[item] = nil }
             throw error
         }
     }
-    private static func detectFormat(_ value: HMResolvedItem) async throws -> HMResolvedItem {
+    func promote(_ item: HMMediaItem) {
+        guard let work = pending[item], promotions[item] == nil else { return }
+        // Awaiting the existing task from a higher-priority task escalates it;
+        // the resolver is neither restarted nor called twice.
+        promotions[item] = Task(priority: .userInitiated) { _ = try? await work.task.value }
+    }
+    static func detectFormat(_ value: HMResolvedItem, session: URLSession = .shared) async throws -> HMResolvedItem {
         guard ["file", "http", "https"].contains(value.url.scheme?.lowercased() ?? "") else { throw HMPlayerError.unsupportedURL }
         guard value.format == .auto, !value.url.isFileURL,
               !["mp4", "m4v", "m3u8"].contains(value.url.pathExtension.lowercased()) else { return value }
         var request = URLRequest(url: value.url); request.httpMethod = "HEAD"; request.timeoutInterval = 20
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw HMPlayerError.resolution("Format detection failed") }
+        let response: URLResponse
+        do {
+            let (_, head) = try await session.data(for: request)
+            guard let http = head as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+            response = head
+        } catch {
+            try Task.checkCancellation()
+            // Some signed VOD endpoints reject HEAD. Bound the fallback even if
+            // the origin ignores Range: stream at most two bytes, then cancel.
+            request.httpMethod = "GET"; request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = session.configuration.protocolClasses
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            let (bytes, get) = try await session.bytes(for: request)
+            guard let http = get as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw HMPlayerError.resolution("Format detection failed") }
+            var iterator = bytes.makeAsyncIterator()
+            _ = try await iterator.next(); _ = try await iterator.next()
+            response = get
+        }
         let mime = response.mimeType?.lowercased() ?? ""
         let hls = mime.contains("mpegurl") || response.url?.pathExtension.lowercased() == "m3u8"
         return HMResolvedItem(url: value.url, format: hls ? .hls : .mp4, poster: value.poster, title: value.title, duration: value.duration)
     }
     func retain(_ window: Set<HMMediaItem>) {
-        for (item, work) in pending where !window.contains(item) { work.task.cancel(); pending[item] = nil }
+        for (item, work) in pending where !window.contains(item) { work.task.cancel(); pending[item] = nil; promotions[item]?.cancel(); promotions[item] = nil }
     }
     func cancelAll() { retain([]) }
 }

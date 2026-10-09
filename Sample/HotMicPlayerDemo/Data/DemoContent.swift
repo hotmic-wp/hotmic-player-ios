@@ -1,5 +1,5 @@
 import Foundation
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// The demo reel: six bundled vertical clips.
 ///

@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 struct BenchmarkScreen: View {
     var initialURL: String? = nil

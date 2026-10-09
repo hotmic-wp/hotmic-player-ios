@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Runtime tuning surface. Every control maps to a real SDK configuration value
 /// so you can change it mid-demo and watch the HUD react.

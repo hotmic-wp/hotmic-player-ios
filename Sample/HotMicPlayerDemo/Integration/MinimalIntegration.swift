@@ -40,9 +40,9 @@ enum MinimalIntegration {
     /// they are touched from view bodies and from KVO callbacks that have
     /// already hopped to the main actor.
     @MainActor
-    static func makeAnalytics(muxEnvironmentKey: String, viewerID: String) -> HMAnalyticsHub {
+    static func makeAnalytics(muxEnvironmentKey: String, viewerID: String, bridge: HMMuxBridge) -> HMAnalyticsHub {
         let hub = HMAnalyticsHub()
-        hub.add(HMMuxAnalyticsSink(environmentKey: muxEnvironmentKey, viewerUserID: viewerID))
+        hub.add(HMMuxAnalyticsSink(environment: HMMuxEnvironment(environmentKey: muxEnvironmentKey, viewerUserID: viewerID), bridge: bridge))
         return hub
     }
 }

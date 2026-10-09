@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Hosts the two screens and owns everything long-lived: the feed controller,
 /// the analytics sinks and the runtime settings.

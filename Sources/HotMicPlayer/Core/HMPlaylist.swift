@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pure atomic playlist semantics, shared by the controller and focused tests.
-struct HMPlaylistState {
+struct HMPlaylistState: Equatable {
     var items: [HMMediaItem] = []
     var index = 0
     var current: HMMediaItem? { items.indices.contains(index) ? items[index] : nil }
@@ -38,6 +38,14 @@ struct HMPlaylistState {
             return items[position]
         }
     }
+    func filterSourcePage(_ incoming: [HMMediaItem]) -> (items: [HMMediaItem], duplicates: [String]) {
+        var seen = Set(items.map(\.id)), duplicates: [String] = []
+        let unique = incoming.filter { item in
+            if seen.insert(item.id).inserted { return true }
+            duplicates.append(item.id); return false
+        }
+        return (unique, duplicates)
+    }
     static func validate(_ items: [HMMediaItem]) throws {
         var ids = Set<String>()
         for item in items {
@@ -45,4 +53,26 @@ struct HMPlaylistState {
             if let url = item.url, !["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") { throw HMPlayerError.unsupportedURL }
         }
     }
+}
+
+/// A scroll move remains valid while both endpoint IDs occupy the same positions.
+enum HMPagePosition {
+    static func survives(old: [String], new: [String], current: String?, destination: String?) -> Bool {
+        [current, destination].compactMap { $0 }.allSatisfy { id in
+            guard let position = old.firstIndex(of: id) else { return false }
+            return new.firstIndex(of: id) == position
+        }
+    }
+}
+
+/// Three automatic attempts, with capped exponential backoff; activation resets the budget.
+struct HMResolutionRetry {
+    static let maximumAttempts = 3
+    var attempts = 0
+    var nextAttempt: TimeInterval = 0
+    mutating func failed(at now: TimeInterval) {
+        attempts += 1
+        nextAttempt = now + min(4, pow(2, Double(attempts - 1)))
+    }
+    func canRetry(at now: TimeInterval) -> Bool { attempts < Self.maximumAttempts && now >= nextAttempt }
 }

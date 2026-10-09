@@ -37,7 +37,7 @@ public extension HMInteractionSource {
     func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
 }
 /// Deterministic demo timelines without network sessions.
-@MainActor public final class HMMockInteractionSource: HMInteractionSource {
+@MainActor @_spi(Benchmark) public final class HMMockInteractionSource: HMInteractionSource {
     /// Creates the default demo provider.
     public init() {}
     /// Generates a timeline on the media clock.

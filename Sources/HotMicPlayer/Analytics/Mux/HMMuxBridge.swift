@@ -125,7 +125,7 @@ public protocol HMMuxBridge: AnyObject {
 /// Default bridge: forwards everything to a callback instead of Mux's servers.
 /// Used by the sample app to render the exact beacons Mux would receive.
 @MainActor
-public final class HMLoggingMuxBridge: HMMuxBridge {
+@_spi(Benchmark) public final class HMLoggingMuxBridge: HMMuxBridge {
 
     /// One recorded Mux bridge call.
     public struct Beacon: Identifiable, Sendable {

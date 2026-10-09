@@ -30,7 +30,7 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     }
 
     /// Convenience initialiser that logs beacons instead of shipping them.
-    public convenience init(environmentKey: String, viewerUserID: String? = nil) {
+    @_spi(Benchmark) public convenience init(environmentKey: String, viewerUserID: String? = nil) {
         self.init(
             environment: HMMuxEnvironment(environmentKey: environmentKey, viewerUserID: viewerUserID),
             bridge: HMLoggingMuxBridge()

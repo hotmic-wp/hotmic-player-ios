@@ -91,7 +91,7 @@ final class HMPlayerNode: Identifiable {
     /// This is the preload path. Buffer target and bitrate ceiling are kept low
     /// so warming a neighbour never competes with the item on screen.
     func warm(with newItem: HMMediaItem, playbackURL: URL? = nil) {
-        guard item?.id != newItem.id, let mediaURL = newItem.url else { return }
+        guard item != newItem, let mediaURL = newItem.url else { return }
 
         let recycledFrom = item
         wantsPlayback = false
@@ -314,7 +314,7 @@ final class HMPlayerNode: Identifiable {
             guard seconds.isFinite, seconds > 0 else { return }
             await MainActor.run {
                 // The node may have been recycled while we were loading.
-                guard let self, self.item?.id == itemID else { return }
+                guard let self, self.item?.id == itemID, !Task.isCancelled else { return }
                 self.confirmDuration(seconds)
             }
         }

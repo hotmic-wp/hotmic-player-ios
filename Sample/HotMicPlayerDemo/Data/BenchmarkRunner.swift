@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 import UIKit
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// All device paths run this autopilot. XCTest only starts it and waits.
 @MainActor @Observable

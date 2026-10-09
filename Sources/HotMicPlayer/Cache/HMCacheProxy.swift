@@ -29,7 +29,7 @@ actor HMCacheTransport {
     private var eventDelivery: Task<Void, Never>?
     private var connections: [UUID: NWConnection] = [:]
     private var responseTasks: [UUID: Task<Void, Never>] = [:]
-    private var responseItems: [UUID: String] = [:]
+    private var responseItems: [UUID: HMMediaItem] = [:]
     private var prefetchTask: Task<Void, Never>?
     private var workEpoch = HMPrefetchEpoch()
     private var generation: Int { workEpoch.generation }
@@ -110,10 +110,14 @@ actor HMCacheTransport {
         default: break
         }
     }
+    #if DEBUG
+    func interruptListenerForTesting() { listener?.cancel() }
+    #endif
     private func startTimedOut(_ identifier: UUID) { if identifier == listenerID, port == 0 { resolveStart(false) } }
     nonisolated func url(for item: HMMediaItem) -> URL? {
         guard let url = item.url else { return nil }
         guard !url.isFileURL else { return url }
+        if state.port == 0 { Task { _ = await start() } }
         return state.url(url, item: item)
     }
     private func proxyURL(_ url: URL, item: HMMediaItem) -> URL { state.url(url, item: item) }
@@ -121,7 +125,7 @@ actor HMCacheTransport {
     func retainWindow(_ items: [HMMediaItem]) {
         retainedItems = items
         let ids = Set(items.map(\.id))
-        for (id, itemID) in responseItems where !ids.contains(itemID) { close(id) }
+        for (id, item) in responseItems where !items.contains(item) { close(id) }
         played.formIntersection(ids)
         warmDeliveries = warmDeliveries.filter { ids.contains($0.key) }
         let retained = Set(items.compactMap(\.url).map { key($0) })
@@ -370,7 +374,7 @@ actor HMCacheTransport {
         let token = request[1].split(separator: "/").first.map(String.init) ?? ""
         if token == "health" { send(connection, id: id, code: 200, headers: [:], body: Data()); return }
         guard let route = state.route(token) else { send(connection, id: id, code: 404, headers: [:], body: Data()); return }
-        responseItems[id] = route.item.id
+        responseItems[id] = route.item
         let rangeHeader = lines.dropFirst().first { $0.lowercased().hasPrefix("range:") }.map { $0.dropFirst(6).trimmingCharacters(in: .whitespaces) }
         do {
             if route.url.pathExtension.lowercased() == "m3u8" || (route.url == route.item.url && route.item.format == .hls) {
@@ -523,6 +527,8 @@ actor HMCacheTransport {
 @MainActor final class HMCacheProxy {
     private let transport: HMCacheTransport
     private var commands: Task<Void, Never>?
+    private var retainedWindow: [HMMediaItem]?
+    private var retainedPlaylist: [HMMediaItem]?
     private func enqueue(_ action: @escaping @Sendable (HMCacheTransport) async -> Void) {
         let previous = commands, transport = transport
         commands = Task { await previous?.value; await action(transport) }
@@ -543,10 +549,12 @@ actor HMCacheTransport {
         item.url.map { configuration.strategy.usesDataCache && transport.state.port != 0 ? transport.state.bytes(for: HMCacheKey.canonical($0, ignoring: configuration.volatileSigningQueryParameters)) : 0 } ?? 0
     }
     func retainWindow(_ items: [HMMediaItem]) {
-        transport.state.prune(keeping: Set(items.map(\.id)))
+        guard retainedWindow != items else { return }
+        retainedWindow = items
+        transport.state.prune(keeping: Set(items))
         enqueue { await $0.retainWindow(items) }
     }
-    func retainPlaylist(_ items: [HMMediaItem]) { enqueue { await $0.retainPlaylist(items) } }
+    func retainPlaylist(_ items: [HMMediaItem]) { guard retainedPlaylist != items else { return }; retainedPlaylist = items; enqueue { await $0.retainPlaylist(items) } }
     func markPlayed(_ item: HMMediaItem) { enqueue { await $0.markPlayed(item) } }
     func cancelPrefetch() { enqueue { await $0.cancelPrefetch() } }
     func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem]) { enqueue { await $0.prefetch(items, keeping: keeping) } }
@@ -561,7 +569,7 @@ final class HMProxyState: @unchecked Sendable {
     private var routes: [String: HMCacheTransport.Route] = [:]
     private var tokens: [String: String] = [:]
     private var cachedBytes: [String: Int] = [:]
-    private var allowedIDs: Set<String>?
+    private var allowedItems: Set<HMMediaItem>?
     var port: UInt16 { lock.lock(); defer { lock.unlock() }; return listeningPort }
     func setPort(_ value: UInt16) { lock.lock(); listeningPort = value; lock.unlock() }
     func setBytes(_ value: [String: Int]) { lock.lock(); cachedBytes = value; lock.unlock() }
@@ -571,17 +579,17 @@ final class HMProxyState: @unchecked Sendable {
     func contains(url: URL) -> Bool { lock.lock(); defer { lock.unlock() }; return routes.values.contains { $0.url == url } }
     func url(_ url: URL, item: HMMediaItem) -> URL {
         lock.lock(); defer { lock.unlock() }
-        guard listeningPort != 0, allowedIDs?.contains(item.id) != false else { return url }
+        guard listeningPort != 0, allowedItems?.contains(item) != false else { return url }
         let key = item.id + "|" + url.absoluteString
         let token = tokens[key] ?? UUID().uuidString
         tokens[key] = token; routes[token] = HMCacheTransport.Route(url: url, item: item)
         let ext = url == item.url && item.format == .hls ? "m3u8" : (url.pathExtension.isEmpty ? "bin" : url.pathExtension)
         return URL(string: "http://127.0.0.1:\(listeningPort)/\(token)/media.\(ext)")!
     }
-    func prune(keeping ids: Set<String>) {
+    func prune(keeping items: Set<HMMediaItem>) {
         lock.lock(); defer { lock.unlock() }
-        allowedIDs = ids
-        routes = routes.filter { ids.contains($0.value.item.id) }
+        allowedItems = items
+        routes = routes.filter { items.contains($0.value.item) }
         let valid = Set(routes.keys); tokens = tokens.filter { valid.contains($0.value) }
     }
 }

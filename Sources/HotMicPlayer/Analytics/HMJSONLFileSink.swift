@@ -7,7 +7,7 @@ import UIKit
 /// Ordered, asynchronous file writes. `flush()` is the export barrier; errors
 /// are surfaced to callers instead of silently claiming a complete run.
 @MainActor
-public final class HMJSONLFileSink: HMAnalyticsSink {
+@_spi(Benchmark) public final class HMJSONLFileSink: HMAnalyticsSink {
     /// Stable sink identifier used by the hub for deduplication.
     public let sinkName = "jsonl"
     /// Local JSONL output file.

@@ -6,7 +6,7 @@ import Foundation
 /// replay history fetch. Seeded from the item id so every run of the demo looks
 /// identical, which matters when you are showing the same clip twice on stage.
 @MainActor
-public final class HMMockTimeline: HMStreamTimeline {
+@_spi(Benchmark) public final class HMMockTimeline: HMStreamTimeline {
 
     /// Media-clock duration in seconds.
     public let duration: TimeInterval

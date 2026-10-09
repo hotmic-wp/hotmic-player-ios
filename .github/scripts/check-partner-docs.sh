@@ -1,26 +1,29 @@
 #!/bin/bash
-# Reject private release coordination and machine-specific details in shipped docs.
+# Reject machine-specific details and optionally supplied private terms in shipped content.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-pattern='(^|[^[:alnum:]_])(worktree)([^[:alnum:]_]|$)|(^|[[:space:]])#[0-9]+([^[:alnum:]_]|$)|hem/|hem-[0-9]+|internal-tracker|/(Users|Volumes|home|tmp|private|var|mnt|root)/|(^|[^[:alnum:]_])[[:alpha:]]:[\\/]|[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}'
-case_sensitive_pattern='(^|[^[:alnum:]_])PARTNER([^[:alnum:]_]|$)'
+pattern='(^|[^[:alnum:]_])worktree([^[:alnum:]_]|$)|(^|[[:space:]])#[0-9]+([^[:alnum:]_]|$)|hem/|/(Users|Volumes|home|tmp|private|var|mnt|root)/|(^|[^[:alnum:]_])[[:alpha:]]:[\\/]|[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}'
 failed=0
 while IFS= read -r -d '' file; do
   [ -f "$file" ] || continue
-  for mode in insensitive sensitive; do
-    flags=()
-    selected_pattern="$case_sensitive_pattern"
-    if [ "$mode" = insensitive ]; then flags=(-i); selected_pattern="$pattern"; fi
-    # Allow this public tool name without hiding other matches on the same line.
-    if sed 's/Swift Package Manager/SwiftPM/g' "$file" | grep -n -I -E "${flags[@]}" "$selected_pattern"; then
-      echo "Private or machine-specific content in $file" >&2
+  if grep -I -i -E "$pattern" "$file" > /dev/null; then
+    echo "Machine-specific or internal reference in $file" >&2
+    failed=1
+  else
+    status=$?
+    if [ "$status" -gt 1 ]; then exit "$status"; fi
+  fi
+  if [ -n "${PARTNER_DOCS_DENYLIST:-}" ]; then
+    # Optional newline-separated literal terms; ignore empty lines and never print matched text.
+    if grep -I -i -F -f <(printf '%s\n' "$PARTNER_DOCS_DENYLIST" | sed '/^[[:space:]]*$/d') "$file" > /dev/null; then
+      echo "Configured private term found in $file" >&2
       failed=1
     else
       status=$?
       if [ "$status" -gt 1 ]; then exit "$status"; fi
     fi
-  done
+  fi
 done < <(git ls-files --cached --others --exclude-standard -z -- \
-  docs README.md CHANGELOG.md ':(glob)**/*.docc/**')
+  docs Examples README.md CHANGELOG.md ':(glob)**/*.docc/**')
 if [ "$failed" = 1 ]; then exit 1; fi
 echo 'Partner documentation content check passed.'

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0-rc.2
+
+- Replace private terms in the partner documentation checker with generic patterns and an optional environment denylist. Report file names only and pass the optional denylist from CI. No public API or playback behavior changes.
+
 ## 1.0.0-rc.1
 
 - Freeze the public partner contract with no API removals or new renames relative to 0.4.0. Preserve `HMEngagement.update(_:)` as a deprecated alias for `upsertPoll(_:)` (introduced in 0.4.1).

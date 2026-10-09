@@ -142,6 +142,8 @@ struct DemoRootView: View {
         }
         let created = HMPlayer(
             configuration: configuration,
+            // MOCK — every engagement action, accepted after a simulated round trip.
+            interactions: HMMockInteractionSource(),
             analytics: hub
         )
         // Load playlist metadata while browsing, before the measured play tap.

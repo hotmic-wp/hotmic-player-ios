@@ -147,7 +147,8 @@ import Observation
     public init(configuration: HMPlayerConfiguration = .default, resolver: HMItemResolver? = nil,
                 interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil) {
         self.configuration = configuration; self.resolver = resolver
-        self.interactions = interactions ?? HMMockInteractionSource()
+        // Without a source, demo engagement is display-only: no action controls a viewer could mistake for real.
+        self.interactions = interactions ?? HMMockInteractionSource(capabilities: .readOnly)
         self.analytics = analytics ?? HMAnalyticsHub(); isMuted = configuration.startsMuted
         pool = HMPlayerPool(configuration: configuration)
         pool.onEvent = { [weak self] event, item in self?.handle(event, item: item) }

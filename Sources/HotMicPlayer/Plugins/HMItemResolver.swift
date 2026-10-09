@@ -47,22 +47,38 @@ public protocol HMItemResolver: Sendable {
 @MainActor @Observable final class HMResolutionStore {
     struct Work { let token: UUID; let task: Task<HMResolvedItem, Error> }
     private let session: URLSession
+    private var signingParameters: [String] = []
+    func configure(signingParameters: [String]) {
+        guard self.signingParameters != signingParameters else { return }
+        cancelAll(); completed.removeAll(); self.signingParameters = signingParameters
+    }
+    private func identity(_ item: HMMediaItem) -> HMMediaItem.MediaIdentity {
+        item.mediaIdentity(ignoring: signingParameters)
+    }
     init(session: URLSession = .shared) { self.session = session }
     private var completed: [HMMediaItem.MediaIdentity: HMResolvedItem] = [:]
     private var promotions: [HMMediaItem.MediaIdentity: Task<Void, Never>] = [:]
     private var pending: [HMMediaItem.MediaIdentity: Work] = [:]
+    private func resolved(_ item: HMMediaItem, with value: HMResolvedItem) -> HMMediaItem {
+        let latest = HMResolvedItem(url: item.url ?? value.url, format: value.format,
+            poster: value.poster, title: value.title, duration: value.duration)
+        return item.resolved(latest)
+    }
     func cached(_ item: HMMediaItem, requireFormat: Bool = true) -> HMMediaItem? {
         if let url = item.url, !requireFormat || item.format != .auto || url.isFileURL { return item }
-        guard let value = completed[item.mediaIdentity].map({ item.resolved($0) }) else { return nil }
+        guard let value = completed[identity(item)].map({ resolved(item, with: $0) }) else { return nil }
         return !requireFormat || value.format != .auto ? value : nil
     }
     func resolve(_ item: HMMediaItem, using resolver: HMItemResolver?, metadataOnly: Bool = false) async throws -> HMMediaItem {
         if let cached = cached(item, requireFormat: !metadataOnly) { return cached }
 
         let work: Work
-        if let existing = pending[item.mediaIdentity] { work = existing }
+        if let existing = pending[identity(item)] { work = existing }
         else {
-            let metadata = completed[item.mediaIdentity], session = session
+            let metadata = completed[identity(item)].map { value in
+                HMResolvedItem(url: item.url ?? value.url, format: value.format,
+                    poster: value.poster, title: value.title, duration: value.duration)
+            }, session = session
             work = Work(token: UUID(), task: Task {
                 if let metadata { return metadataOnly ? metadata : try await Self.detectFormat(metadata, session: session) }
                 switch item.source {
@@ -75,7 +91,7 @@ public protocol HMItemResolver: Sendable {
                     return metadataOnly ? raw : try await Self.detectFormat(raw, session: session)
                 }
             })
-            pending[item.mediaIdentity] = work
+            pending[identity(item)] = work
         }
         do {
             var value = try await work.task.value
@@ -83,21 +99,21 @@ public protocol HMItemResolver: Sendable {
             // the entry enters a media tier; reuse the resolver result.
             if !metadataOnly, item.resolved(value).format == .auto { value = try await Self.detectFormat(value, session: session) }
             try Task.checkCancellation()
-            guard pending[item.mediaIdentity]?.token == work.token else { throw CancellationError() }
-            completed[item.mediaIdentity] = value; pending[item.mediaIdentity] = nil; promotions[item.mediaIdentity] = nil
-            return item.resolved(value)
+            guard pending[identity(item)]?.token == work.token else { throw CancellationError() }
+            completed[identity(item)] = value; pending[identity(item)] = nil; promotions[identity(item)] = nil
+            return resolved(item, with: value)
         } catch {
             // Another waiter may already have committed this result.
             if let value = cached(item, requireFormat: !metadataOnly), !Task.isCancelled { return value }
-            if pending[item.mediaIdentity]?.token == work.token { pending[item.mediaIdentity] = nil; promotions[item.mediaIdentity] = nil }
+            if pending[identity(item)]?.token == work.token { pending[identity(item)] = nil; promotions[identity(item)] = nil }
             throw error
         }
     }
     func promote(_ item: HMMediaItem) {
-        guard let work = pending[item.mediaIdentity], promotions[item.mediaIdentity] == nil else { return }
+        guard let work = pending[identity(item)], promotions[identity(item)] == nil else { return }
         // Awaiting the existing task from a higher-priority task escalates it;
         // the resolver is neither restarted nor called twice.
-        promotions[item.mediaIdentity] = Task(priority: .userInitiated) { _ = try? await work.task.value }
+        promotions[identity(item)] = Task(priority: .userInitiated) { _ = try? await work.task.value }
     }
     static func detectFormat(_ value: HMResolvedItem, session: URLSession = .shared) async throws -> HMResolvedItem {
         guard ["file", "http", "https"].contains(value.url.scheme?.lowercased() ?? "") else { throw HMPlayerError.unsupportedURL }
@@ -129,7 +145,8 @@ public protocol HMItemResolver: Sendable {
         return HMResolvedItem(url: value.url, format: hls ? .hls : .mp4, poster: value.poster, title: value.title, duration: value.duration)
     }
     func retain(_ window: Set<HMMediaItem>) {
-        for (identity, work) in pending where !Set(window.map(\.mediaIdentity)).contains(identity) { work.task.cancel(); pending[identity] = nil; promotions[identity]?.cancel(); promotions[identity] = nil }
+        let media = Set(window.map(identity))
+        for (key, work) in pending where !media.contains(key) { work.task.cancel(); pending[key] = nil; promotions[key]?.cancel(); promotions[key] = nil }
     }
     func cancelAll() { retain([]) }
 }

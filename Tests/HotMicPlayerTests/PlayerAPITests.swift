@@ -67,11 +67,20 @@ struct PlayerPlaylistTests {
             list.remove(ids: ["b"])
         }
         #expect(list.current?.id == "x")
-        try list.reconcile([], policy: .advanceNow)
-        #expect(list.current?.id == "a")
-        list.remove(ids: ["a"])
-        try list.reconcile([clip("z")], policy: policy)
-        #expect(list.current?.id == "z")
+        let nonempty = list
+        try list.reconcile([], policy: policy)
+        #expect(list == nonempty)
+        try list.reconcile([clip("a")], policy: policy)
+        if policy == .finishThenAdvance {
+            #expect(list.current?.id == "x" && list.finishingID == "x")
+            list.remove(ids: ["x"])
+        }
+        #expect(list.current == nil && list.items.map(\.id) == ["a"])
+        #expect(list.window(offsets: [-1, 0, 1]).isEmpty)
+        try list.reconcile([clip("a")], policy: policy)
+        #expect(list.current == nil)
+        try list.reconcile([clip("a"), clip("z")], policy: policy)
+        #expect(list.items.map(\.id) == ["a", "z"] && list.current?.id == "z")
     }
 
 }
@@ -214,6 +223,13 @@ struct PlayerReviewTests {
         let value = HMResolvedItem(url: URL(string: "https://unit-format.test/media")!, title: "Preserved", duration: 42)
         let result = try await HMResolutionStore.detectFormat(value, session: session)
         #expect(result.format == .hls); #expect(result.title == "Preserved"); #expect(result.duration == 42)
+        let store = HMResolutionStore(session: session)
+        store.configure(signingParameters: ["token"])
+        let old = HMMediaItem(id: "signed", url: URL(string: "https://unit-format.test/media?token=old")!)
+        _ = try await store.resolve(old, using: nil)
+        let latest = HMMediaItem(id: old.id, url: URL(string: "https://unit-format.test/media?token=new")!, title: "Latest")
+        #expect(store.cached(latest)?.url == latest.url && store.cached(latest)?.title == "Latest")
+        #expect(store.cached(latest)?.format == .hls)
     }
 }
 
@@ -247,9 +263,13 @@ struct PlayerNativeReviewTests {
         defer { player.teardown() }
         player.replaceAll([item("a"), item("b"), item("c"), item("d")], startAt: 1)
         player.requestPage(at: 2)
-        let request = player.pageRequestID, revision = player.playlistRevision, event = player.lastEvent
+        let request = player.pageRequestID, revision = player.playlistRevision
         let change = player.lastPlaylistChange
+        player.jump(toID: "missing")
+        let error = player.loadError, event = player.lastEvent
         player.replaceAll(player.items, startAt: 1)
+        player.reconcile([])
+        #expect(player.loadError == error)
         player.reconcile(player.items)
         player.append([]); player.insertNext([]); player.remove(ids: ["unknown"])
         #expect(player.lastPlaylistChange == change)
@@ -273,7 +293,8 @@ struct PlayerNativeReviewTests {
         #expect(current.item?.title == "Latest" && next.item?.metadata == ["refresh": "1"])
         let metadata = try #require(player.lastPlaylistChange)
         #expect(!metadata.currentChanged && metadata.releasedPlayerCount == 0)
-        #expect(metadata.insertedIDs.isEmpty && metadata.removedIDs.isEmpty && metadata.movedIDs.isEmpty)
+        #expect(metadata == HMPlaylistChange(insertedIDs: [], removedIDs: [], movedIDs: [],
+            currentChanged: false, releasedItemIDs: []))
         let revision = player.playlistRevision
         #expect(player.replaceAll(refreshed, startAt: 1)); #expect(player.playlistRevision == revision)
         #expect(player.reconcile([item("b"), item("d"), item("x")]))
@@ -286,6 +307,77 @@ struct PlayerNativeReviewTests {
         #expect(player.replaceAll([item("b", path: "new-media")]))
         #expect(player.lastPlaylistChange?.currentChanged == true)
         #expect(player.lastPlaylistChange?.releasedItemIDs == ["b"])
+    }
+    @Test("Visible current changes retain warm assignments despite deactivation seeks")
+    func visibleReleases() throws {
+        var configuration = HMPlayerConfiguration(poolSize: 3, managesAudioSession: false)
+        configuration.restoresPlaybackPosition = false
+        let player = HMPlayer(configuration: configuration)
+        defer { player.teardown() }
+        #expect(player.isFeedVisible)
+        player.replaceAll([item("a"), item("b"), item("c")])
+        let previous = player.pool.node(for: item("a"), protecting: [])
+        let next = player.pool.node(for: item("b"), protecting: ["a"])
+        previous.activate()
+        let native = previous.player.currentItem, generation = previous.assignmentGeneration
+        let display = previous.displayRevision
+        #expect(player.replaceAll(player.items, startAt: 1))
+        #expect(previous.displayRevision > display) // rewind invalidates display continuity
+        #expect(previous.assignmentGeneration == generation && previous.player.currentItem === native)
+        #expect(player.pool.existingNode(for: item("a")) === previous)
+        #expect(player.pool.existingNode(for: item("b")) === next)
+        #expect(player.lastPlaylistChange?.currentChanged == true)
+        #expect(player.lastPlaylistChange?.releasedItemIDs == [])
+    }
+    @Test("Finish-once removal advances immediately for ended, failed or failure-idle current", arguments: ["ended", "failed", "idle", "fails-while-finishing"])
+    func cannotFinish(mode: String) async throws {
+        var configuration = HMPlayerConfiguration(loops: false, managesAudioSession: false, failedItemPolicy: mode == "idle" ? .skip : .stay)
+        configuration.removedCurrentPolicy = .finishThenAdvance
+        let player = HMPlayer(configuration: configuration); player.isFeedVisible = false
+        defer { player.teardown() }
+        let a = item("a"), b = item("b")
+        player.replaceAll(mode == "idle" ? [a] : [a, b])
+        let node = player.pool.node(for: a, protecting: [])
+        if mode == "ended" {
+            let native = try #require(node.player.currentItem)
+            NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: native)
+            let deadline = Date().addingTimeInterval(1)
+            while !node.hasReachedEnd, Date() < deadline { await Task.yield() }
+            #expect(node.hasReachedEnd)
+        } else {
+            if mode == "fails-while-finishing" { player.remove(ids: [a.id]); #expect(node.finishesThenLeaves) }
+            player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
+            if mode == "idle" {
+                let deadline = Date().addingTimeInterval(1)
+                while player.currentItem != nil, Date() < deadline { await Task.yield() }
+                #expect(player.currentItem == nil)
+            }
+        }
+        if mode != "fails-while-finishing" { player.remove(ids: [a.id]) }
+        #expect(!player.items.contains(where: { $0.id == a.id }))
+        #expect(player.currentItem?.id == (mode == "idle" ? nil : b.id))
+        #expect(player.lastPlaylistChange?.currentChanged == (mode != "idle"))
+    }
+    @Test("History-only reconciliation remains idle when the visible feed settles", arguments: [HMRemovedCurrentPolicy.advanceNow, .finishThenAdvance])
+    func idleHistory(policy: HMRemovedCurrentPolicy) async throws {
+        var configuration = HMPlayerConfiguration(managesAudioSession: false)
+        configuration.removedCurrentPolicy = policy
+        let player = HMPlayer(configuration: configuration); player.isFeedVisible = false
+        defer { player.teardown() }
+        player.replaceAll([item("a"), item("b")], startAt: 1)
+        let node = player.pool.node(for: item("b"), protecting: [])
+        player.reconcile([item("a")])
+        if policy == .finishThenAdvance {
+            let native = try #require(node.player.currentItem)
+            NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: native)
+            let deadline = Date().addingTimeInterval(1)
+            while player.currentItem != nil, Date() < deadline { await Task.yield() }
+        }
+        #expect(player.currentItem == nil && player.currentIndex == nil && player.activeIndex == 0)
+        player.commitPage(toID: "a", requestedAt: ProcessInfo.processInfo.systemUptime)
+        #expect(player.currentItem == nil && player.items.map(\.id) == ["a"])
+        player.insertNext([item("c")])
+        #expect(player.currentItem?.id == "c")
     }
     @Test("Finish-once removal retains current until end; a swipe consumes removal and selects its target", arguments: [false, true])
     func finishingCurrent(swipe: Bool) async throws {
@@ -328,7 +420,9 @@ struct PlayerNativeReviewTests {
         let port = try #require(origin.listener.port?.rawValue)
         let a = HMMediaItem(id: "a", url: URL(string: "http://127.0.0.1:\(port)/a.mp4")!)
         let b = HMMediaItem(id: "b", url: URL(string: "http://127.0.0.1:\(port)/b.mp4")!)
-        let transport = try HMCacheTransport(configuration: .default, directory: directory)
+        var configuration = HMPlayerConfiguration()
+        configuration.volatileSigningQueryParameters = ["token"]
+        let transport = try HMCacheTransport(configuration: configuration, directory: directory)
         #expect(await transport.start())
         await transport.prioritizePlayback(a, urgent: false)
         let plan = HMPrefetchPlan(itemsAhead: 2, itemsBehind: 0, bytesPerItem: 262144, secondsPerItem: nil,
@@ -340,7 +434,11 @@ struct PlayerNativeReviewTests {
         await transport.retainWindow([b, metadata])
         await transport.prefetch([b, metadata], keeping: [b, metadata], plan: plan)
         #expect(await transport.activePrefetchTokens == tokens)
-        await transport.retainWindow([metadata])
+        let signed = HMMediaItem(id: a.id, url: URL(string: a.url!.absoluteString + "?token=new")!)
+        await transport.retainWindow([signed, b])
+        await transport.prefetch([signed, b], keeping: [signed, b], plan: plan)
+        #expect(await transport.activePrefetchTokens == tokens)
+        await transport.retainWindow([signed])
         #expect(await transport.activePrefetchTokens == ["a": tokens["a"]!])
         _ = await transport.finish()
     }
@@ -381,8 +479,10 @@ struct PlayerNativeReviewTests {
     }
     @Test("Pool recycles a reused ID with changed media and retains an unchanged next item")
     func mediaIdentity() {
-        let pool = HMPlayerPool()
-        let old = item("next"), replacement = item("next", path: "new-media")
+        var configuration = HMPlayerConfiguration()
+        configuration.volatileSigningQueryParameters = ["token"]
+        let pool = HMPlayerPool(configuration: configuration)
+        let old = HMMediaItem(id: "next", url: URL(string: "https://example.com/next.mp4?variant=1&token=old")!), replacement = item("next", path: "new-media")
         let node = pool.node(for: old, protecting: [])
         let now = ProcessInfo.processInfo.systemUptime
         #expect(node.isWaitingForWarmFrame(at: now))
@@ -393,6 +493,11 @@ struct PlayerNativeReviewTests {
         pool.trim(keeping: [refreshed]); #expect(pool.existingNode(for: refreshed) === node)
         #expect(node.item == refreshed); #expect(node.player.currentItem === nativeItem)
         #expect(node.displayRevision == revision)
+        let signed = HMMediaItem(id: old.id, url: URL(string: "https://example.com/next.mp4?variant=1&token=new")!)
+        pool.trim(keeping: [signed]); #expect(pool.existingNode(for: signed) === node)
+        #expect(node.player.currentItem === nativeItem && node.item?.url == signed.url)
+        let variant = HMMediaItem(id: old.id, url: URL(string: "https://example.com/next.mp4?variant=2&token=new")!)
+        #expect(pool.existingNode(for: variant) == nil)
         pool.trim(keeping: [replacement]); #expect(pool.busyCount == 0)
         let replaced = pool.node(for: replacement, protecting: [])
         #expect(replaced.item == replacement)
@@ -413,6 +518,15 @@ struct PlayerNativeReviewTests {
         let metadata = HMMediaItem(id: old.id, source: old.source, title: "Refreshed")
         transport.state.prune(keeping: [metadata])
         #expect(transport.url(for: metadata) == route)
+        let signedState = HMProxyState(signingParameters: ["token"])
+        signedState.setPort(12345)
+        let signedOld = HMMediaItem(id: "signed", url: URL(string: "https://example.com/clip.mp4?token=old")!)
+        let signedNew = HMMediaItem(id: signedOld.id, url: URL(string: "https://example.com/clip.mp4?token=new")!)
+        signedState.prune(keeping: [signedOld])
+        let signedRoute = signedState.url(signedOld.url!, item: signedOld)
+        signedState.prune(keeping: [signedNew])
+        #expect(signedState.url(signedNew.url!, item: signedNew) == signedRoute)
+        #expect(signedState.allURLs() == [signedNew.url!])
         transport.state.prune(keeping: [new])
         #expect(transport.state.allURLs().isEmpty)
         await transport.interruptListenerForTesting()
@@ -570,7 +684,7 @@ struct PlayerPagingRetryTests {
         await player.start(); player.append([.reference("test", id: "c")])
         try await Task.sleep(for: .milliseconds(100))
         #expect(await source.calls == 4)
-        player.next()
+        if rejected { player.remove(ids: [player.currentItem!.id]) } else { player.next() }
         while await source.calls < 5, Date() < deadline { await Task.yield() }
         #expect(await source.calls == 5)
         while player.isLoadingPage, Date() < deadline { await Task.yield() }
@@ -616,6 +730,9 @@ struct PlayerPagingRetryTests {
         let deadline = Date().addingTimeInterval(2)
         while await source.requests.count < 2, Date() < deadline { await Task.yield() }
         #expect(await source.requests == ["nil", "cursor-1"])
+        let revision = player.playlistRevision
+        player.replaceAll(player.items, startAt: player.activeIndex)
+        #expect(player.playlistRevision == revision && player.isLoadingPage)
         #expect(!player.replaceAll(seeds, startAt: 99)) // invalid replacement leaves cursor intact
         player.replaceAll(seeds)
         await source.resume(); await pending.value

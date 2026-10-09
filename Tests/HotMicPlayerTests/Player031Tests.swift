@@ -117,7 +117,7 @@ struct Player031Tests {
         #expect(player.currentIndex == nil); #expect(player.activeIndex == 0)
         #expect(await resolver.calls == 3)
         // Headless traversal also terminates, with no failed entry retried by an automatic skip.
-        player.detachFeed(); player.replaceAll([a, b])
+        player.detachFeed(); player.replaceAll([a, b]); player.jump(toID: b.id); player.jump(toID: a.id)
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
         try await wait { player.currentItem == b }
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: b.id), b)
@@ -129,8 +129,8 @@ struct Player031Tests {
         try await wait { player.currentItem == a }
         player.configuration.failedItemPolicy = .stay
         // An identical replaceAll is now a no-op, including remembered failures.
-        // Explicitly select another index, then return, to start a fresh failure scenario.
-        player.replaceAll([a, b], startAt: 1); player.jump(toID: a.id)
+        // Explicitly retry each ID to start a fresh failure scenario.
+        player.replaceAll([a, b], startAt: 1); player.jump(toID: b.id); player.jump(toID: a.id)
         let priorErrors = errors
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
         try await wait { errors > priorErrors }
@@ -141,7 +141,7 @@ struct Player031Tests {
         // Every requested connectivity code, including nested AV errors, stays current.
         let codes: [URLError.Code] = [.notConnectedToInternet, .networkConnectionLost, .timedOut,
             .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed]
-        player.replaceAll([a, b])
+        player.replaceAll([a, b]); player.jump(toID: a.id)
         for code in codes {
             let error = URLError(code) as NSError
             #expect(HMNetworkFailure.isTransient(error))
@@ -183,7 +183,7 @@ struct Player031Tests {
         // A pending final page must win over a previous-item fallback (including an empty page).
         for empty in [false, true] {
             player.playlistSource = nil
-            player.replaceAll([a, b], startAt: 1)
+            player.replaceAll([a, b], startAt: 1); player.jump(toID: b.id)
             let appended = HMMediaItem(id: "page", url: a.url!)
             let source = GatedPage(items: empty ? [] : [appended])
             player.playlistSource = source
@@ -197,8 +197,8 @@ struct Player031Tests {
         }
         player.playlistSource = nil
         player.attachFeed()
-        // Previous scenarios marked b terminal; an explicit new selection resets that fixture.
-        player.replaceAll([a, b], startAt: 1); player.jump(toID: a.id)
+        // Previous scenarios marked b terminal; explicitly retry both fixture IDs.
+        player.replaceAll([a, b], startAt: 1); player.jump(toID: b.id); player.jump(toID: a.id)
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
         try await wait { player.requestedPageID == b.id }
         let oldRequest = player.pageRequestID
@@ -211,6 +211,38 @@ struct Player031Tests {
         #expect(player.currentItem == a)
         try await wait { !player.isInteracting && player.currentItem == b }
         player.detachFeed()
+    }
+
+    actor RefreshFailureResolver: HMItemResolver {
+        var calls = 0
+        let network: Bool
+        init(network: Bool) { self.network = network }
+        func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
+            calls += 1
+            if network { throw URLError(.notConnectedToInternet) }
+            throw HMPlayerError.resolution("Refresh failure")
+        }
+    }
+    @Test("Metadata refresh preserves resolution/network backoff and terminal memory; jump retries", arguments: ["resolution", "terminal", "network"])
+    func refreshFailureMemory(mode: String) async throws {
+        var configuration = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false, failedItemPolicy: .stay)
+        configuration.resolveAhead = 0
+        let resolver = RefreshFailureResolver(network: mode == "network")
+        let player = HMPlayer(configuration: configuration, resolver: resolver)
+        defer { player.teardown() }
+        let item = HMMediaItem.reference("hotmic", id: "refresh-failure")
+        player.replaceAll([item])
+        let attempts = mode == "terminal" ? 3 : 1
+        try await wait(until: { await resolver.calls == attempts && player.loadError != nil && (mode != "terminal" || player.snapshot.state == .failed) }, seconds: 5)
+        for title in ["Refresh 1", "Refresh 2", "Refresh 3"] {
+            player.replaceAll([HMMediaItem(id: item.id, source: item.source, title: title)])
+            try await Task.sleep(for: .milliseconds(60))
+            #expect(await resolver.calls == attempts)
+        }
+        player.replaceAll(player.items)
+        #expect(await resolver.calls == attempts)
+        player.jump(toID: item.id)
+        try await wait { await resolver.calls == attempts + 1 }
     }
 
     actor FailingPages: HMPlaylistSource {

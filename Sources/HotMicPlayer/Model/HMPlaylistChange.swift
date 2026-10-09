@@ -19,6 +19,14 @@ public struct HMPlaylistChange: Sendable, Equatable {
     /// Number of released assignments, not the number of pool slots allocated.
     public var releasedPlayerCount: Int { releasedItemIDs.count }
 
+    /// Creates an edit summary for host tests and previews. Arrays retain the supplied order.
+    /// Use from any task; mutate only an exclusively owned value.
+    public init(insertedIDs: [String], removedIDs: [String], movedIDs: [String],
+                currentChanged: Bool, releasedItemIDs: [String]) {
+        self.insertedIDs = insertedIDs; self.removedIDs = removedIDs; self.movedIDs = movedIDs
+        self.currentChanged = currentChanged; self.releasedItemIDs = releasedItemIDs
+    }
+
     init(old: [HMMediaItem], new: [HMMediaItem], currentChanged: Bool, releasedItemIDs: [String]) {
         let before = Dictionary(uniqueKeysWithValues: old.enumerated().map { ($1.id, $0) })
         let after = Dictionary(uniqueKeysWithValues: new.enumerated().map { ($1.id, $0) })

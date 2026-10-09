@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A non-identical `replaceAll` that retains the selected ID and canonical source preserves playback and overlapping pool assignments without emitting `currentItemChanged`. Identical replacements also preserve failures, the paging cursor, resume positions and `loadError`.
+- Keep terminal, network and resolution failure memory across metadata-only or signing-only refreshes; `jump(toID:)` explicitly retries a failed entry, including the selected one. Reset saved resume positions on source changes.
+- Use the cache's canonical URL identity for playback and prefetch, stripping only configured volatile signing query parameters. Count native assignment releases independently of seeks; add a public `HMPlaylistChange` initializer.
+- Empty `reconcile` lists are no-ops. History-only refreshes go idle without replaying history. Finish-once removal falls back to immediate advance for failed, failure-idle or already-ended current entries, including failures during the finishing visit.
+
 - Add ranked-feed `reconcile(_:)`, observable Sendable/Equatable `lastPlaylistChange`, and `removedCurrentPolicy` with default immediate advance or finish-once removal, including normal swipe-away behavior.
 - Preserve native players and cached bytes across identical and display-only refreshes. Keep overlapping in-flight prefetch work across playlist edits, canceling only entries that leave the window.
 - Report decoded inactive prepared entries as `warmPlayer` for upcoming badges; preserve active readiness measurements. Add a ranked-feed Sample toggle and usage documentation.

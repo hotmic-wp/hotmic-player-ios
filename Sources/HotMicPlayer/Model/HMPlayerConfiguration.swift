@@ -105,6 +105,8 @@ public enum HMRemovedCurrentPolicy: String, Sendable, Equatable {
     case advanceNow
     /// Retain current until its next natural end, suppress looping, then remove and advance.
     /// A swipe away removes it immediately. Other removals apply immediately.
+    /// Failed, failure-idle or already-ended current entries advance immediately.
+    /// Reconciliation with no upcoming entries goes idle instead of replaying history.
     case finishThenAdvance
 }
 
@@ -118,7 +120,7 @@ public struct HMPlayerConfiguration: Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public var playlistTTL: TimeInterval = 30
-    /// Exact query parameter names to remove from cache identity. Empty is safe by default.
+    /// Exact query parameter names to remove from cache and playback identity. Empty is safe by default.
     @_spi(Benchmark) public var volatileSigningQueryParameters: [String] = []
     /// Benchmark playback strategy; S3 is the default hybrid.
     @_spi(Benchmark) public var strategy: HMPlaybackStrategy

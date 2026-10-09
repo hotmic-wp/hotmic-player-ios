@@ -14,7 +14,7 @@ actor HMCacheTransport {
     private var startWaiters: [CheckedContinuation<Bool, Never>] = []
     private var disabled = false
     private var previousPort: UInt16 = 0
-    nonisolated let state = HMProxyState()
+    nonisolated let state: HMProxyState
     private let queue = DispatchQueue(label: "com.hotmic.cache.http")
     private let cache: HMDiskCache
     private var port: UInt16 = 0
@@ -57,12 +57,13 @@ actor HMCacheTransport {
 
     init(configuration: HMPlayerConfiguration, directory: URL? = nil) throws {
         self.configuration = configuration
+        state = HMProxyState(signingParameters: configuration.volatileSigningQueryParameters)
         let folder = directory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HotMicPlayer-v1")
         cache = HMDiskCache.shared(directory: folder, capacity: configuration.cacheCapacityBytes)
     }
     func setEventHandler(_ handler: @escaping @MainActor @Sendable (HMPlaybackEvent, HMMediaItem) -> Void) { onEvent = handler }
     func updateConfiguration(_ config: HMPlayerConfiguration) async {
-        configuration = config; cancelPrefetch()
+        configuration = config; state.configure(signingParameters: config.volatileSigningQueryParameters); cancelPrefetch()
         if config.strategy.usesDataCache { await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(retainedItems.compactMap(\.url).map { key($0) })) }
     }
     func start() async -> Bool {
@@ -132,14 +133,17 @@ actor HMCacheTransport {
         return state.url(url, item: item)
     }
     private func proxyURL(_ url: URL, item: HMMediaItem) -> URL { state.url(url, item: item) }
+    private func identity(_ item: HMMediaItem) -> HMMediaItem.MediaIdentity {
+        item.mediaIdentity(ignoring: configuration.volatileSigningQueryParameters)
+    }
     private func key(_ url: URL) -> String { HMCacheKey.canonical(url, ignoring: configuration.volatileSigningQueryParameters) }
     func retainWindow(_ items: [HMMediaItem]) {
         retainedItems = items
-        let media = Set(items.map(\.mediaIdentity))
-        prefixQueue.removeAll { !media.contains($0.mediaIdentity) }
+        let media = Set(items.map(identity))
+        prefixQueue.removeAll { !media.contains(identity($0)) }
         for identity in Array(prefixWork.keys) where !media.contains(identity) { cancelPrefix(identity) }
         let ids = Set(items.map(\.id))
-        for (id, item) in responseItems where !items.contains(where: { $0.hasSameMedia(as: item) }) { close(id, reason: "outside-window") }
+        for (id, item) in responseItems where !items.contains(where: { $0.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) }) { close(id, reason: "outside-window") }
         played.formIntersection(ids)
         warmDeliveries = warmDeliveries.filter { ids.contains($0.key) }
         let retained = Set(items.compactMap(\.url).map { key($0) })
@@ -180,7 +184,7 @@ actor HMCacheTransport {
     func prioritizePlayback(_ item: HMMediaItem, urgent: Bool) {
         priorityItem = item; playbackUrgent = urgent
         if urgent { cancelPrefetch() }
-        for (id, (owner, waiter)) in priorityWaiters where !urgent || owner.hasSameMedia(as: item) {
+        for (id, (owner, waiter)) in priorityWaiters where !urgent || owner.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) {
             priorityWaiters[id] = nil
             emit(.transfer, item: owner, metrics: ["proxy_priority_resume": 1])
             waiter.resume()
@@ -189,7 +193,7 @@ actor HMCacheTransport {
     private func waitForPlaybackPriority(_ item: HMMediaItem) async throws {
         try Task.checkCancellation()
         guard !isFinishing else { throw CancellationError() }
-        guard playbackUrgent, let priorityItem, !priorityItem.hasSameMedia(as: item) else { return }
+        guard playbackUrgent, let priorityItem, !priorityItem.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) else { return }
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
@@ -233,9 +237,9 @@ actor HMCacheTransport {
         // Budget/config changes may restart work; playlist edits retain every overlapping download.
         if !prefixBudget.isEmpty, prefixBudget != budget { cancelPrefetch() }
         prefixBudget = budget; prefixPlan = plan
-        let keep = Set(keeping.map(\.mediaIdentity))
+        let keep = Set(keeping.map(identity))
         for identity in Array(prefixWork.keys) where !keep.contains(identity) { cancelPrefix(identity) }
-        prefixQueue = items.filter { prefixWork[$0.mediaIdentity] == nil }
+        prefixQueue = items.filter { prefixWork[identity($0)] == nil }
         await cache.configure(capacity: configuration.cacheCapacityBytes, pinned: Set(keeping.compactMap(\.url).map { key($0) }))
         cachedBytes = await cache.sizes(); state.setBytes(cachedBytes)
         prefetched = prefetched.filter { cachedBytes[$0.key] != nil }
@@ -249,9 +253,9 @@ actor HMCacheTransport {
             let task = Task(priority: .utility) { [weak self] in
                 guard let self else { return }
                 await prefetchEntry(item, plan: plan, epoch: epoch)
-                await self.completePrefix(item.mediaIdentity, token: token)
+                await self.completePrefix(identity(item), token: token)
             }
-            prefixWork[item.mediaIdentity] = PrefixWork(token: token, item: item, task: task)
+            prefixWork[identity(item)] = PrefixWork(token: token, item: item, task: task)
             emit(.transfer, item: item, properties: ["prefetch_work": "started", "work_token": token.uuidString])
         }
     }
@@ -688,6 +692,17 @@ actor HMCacheTransport {
 /// assignment path. Payloads and all network state remain actor isolated.
 final class HMProxyState: @unchecked Sendable {
     private let lock = NSLock()
+    private var signingParameters: [String]
+    init(signingParameters: [String] = []) { self.signingParameters = signingParameters }
+    func configure(signingParameters: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        guard self.signingParameters != signingParameters else { return }
+        self.signingParameters = signingParameters
+        routes.removeAll(); tokens.removeAll(); allowedItems = nil
+    }
+    private func identity(_ item: HMMediaItem) -> HMMediaItem.MediaIdentity {
+        item.mediaIdentity(ignoring: signingParameters)
+    }
     private var listeningPort: UInt16 = 0
     private var routes: [String: HMCacheTransport.Route] = [:]
     private var tokens: [String: String] = [:]
@@ -702,8 +717,8 @@ final class HMProxyState: @unchecked Sendable {
     func contains(url: URL) -> Bool { lock.lock(); defer { lock.unlock() }; return routes.values.contains { $0.url == url } }
     func url(_ url: URL, item: HMMediaItem) -> URL {
         lock.lock(); defer { lock.unlock() }
-        guard listeningPort != 0, allowedItems?.contains(item.mediaIdentity) != false else { return url }
-        let key = item.id + "|" + url.absoluteString
+        guard listeningPort != 0, allowedItems?.contains(identity(item)) != false else { return url }
+        let key = item.id + "|" + HMCacheKey.canonical(url, ignoring: signingParameters)
         let token = tokens[key] ?? UUID().uuidString
         tokens[key] = token; routes[token] = HMCacheTransport.Route(url: url, item: item)
         let ext = url == item.url && item.format == .hls ? "m3u8" : (url.pathExtension.isEmpty ? "bin" : url.pathExtension)
@@ -711,10 +726,13 @@ final class HMProxyState: @unchecked Sendable {
     }
     func prune(keeping items: Set<HMMediaItem>) {
         lock.lock(); defer { lock.unlock() }
-        allowedItems = Set(items.map(\.mediaIdentity))
-        let updated = Dictionary(uniqueKeysWithValues: items.map { ($0.mediaIdentity, $0) })
+        allowedItems = Set(items.map(identity))
+        let updated = Dictionary(uniqueKeysWithValues: items.map { (identity($0), $0) })
         routes = routes.compactMapValues { route in
-            updated[route.item.mediaIdentity].map { HMCacheTransport.Route(url: route.url, item: $0) }
+            updated[identity(route.item)].map { item in
+                let isRoot = route.item.url.map { HMCacheKey.canonical($0, ignoring: signingParameters) } == HMCacheKey.canonical(route.url, ignoring: signingParameters)
+                return HMCacheTransport.Route(url: isRoot ? (item.url ?? route.url) : route.url, item: item)
+            }
         }
         let valid = Set(routes.keys); tokens = tokens.filter { valid.contains($0.value) }
     }

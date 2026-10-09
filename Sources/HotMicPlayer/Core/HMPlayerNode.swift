@@ -22,6 +22,9 @@ final class HMPlayerNode: Identifiable {
     private(set) var snapshot = HMPlaybackSnapshot()
     /// A seek invalidates visible-frame continuity even when the layer stays ready.
     private(set) var displayRevision = 0
+    /// Changes only when a media assignment is prepared or released, never on seeks.
+    private(set) var assignmentGeneration = 0
+    private(set) var hasReachedEnd = false
     @ObservationIgnored private(set) var isSeekingFrame = false
 
     /// Set by the pool; drives eviction order.
@@ -91,7 +94,7 @@ final class HMPlayerNode: Identifiable {
     /// A deferred playlist removal suppresses only this visit's loop.
     var finishesThenLeaves = false
     func updateMetadata(_ updated: HMMediaItem) {
-        guard item?.hasSameMedia(as: updated) == true else { return }
+        guard item?.hasSameMedia(as: updated, ignoring: configuration.volatileSigningQueryParameters) == true else { return }
         item = updated
     }
     var playbackSnapshot: HMPlaybackSnapshot {
@@ -119,6 +122,7 @@ final class HMPlayerNode: Identifiable {
         isActive = false
         teardownItemObservers()
         item = newItem
+        assignmentGeneration += 1; hasReachedEnd = false
         displayRevision += 1; isSeekingFrame = false
         snapshot = HMPlaybackSnapshot()
         snapshot.isMuted = player.isMuted
@@ -243,6 +247,7 @@ final class HMPlayerNode: Identifiable {
 
     /// Detach content entirely and free the decoder.
     func release() {
+        if item != nil { assignmentGeneration += 1 }; hasReachedEnd = false
         if isActive { deactivate(retainingPosition: false) }
         summaryTask?.cancel()
         durationTask?.cancel()
@@ -265,6 +270,7 @@ final class HMPlayerNode: Identifiable {
 
     private func seekForDisplay(to time: CMTime, toleranceBefore: CMTime = .zero, toleranceAfter: CMTime = .zero, completion: (() -> Void)? = nil) {
         guard let currentItem = player.currentItem else { return }
+        hasReachedEnd = false
         displayRevision += 1
         let revision = displayRevision
         isSeekingFrame = true; snapshot.isFrameReady = false; setLayerVisible(false)
@@ -609,10 +615,11 @@ final class HMPlayerNode: Identifiable {
 
     private func handleReachedEnd() {
         guard let item else { return }
+        hasReachedEnd = true
         handleStallEnded()
         let shouldLoop = configuration.loops && !finishesThenLeaves
         emit(.ended, item: item, position: snapshot.currentTime)
-        if shouldLoop, self.item?.hasSameMedia(as: item) == true {
+        if shouldLoop, self.item?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true {
             seekForDisplay(to: .zero)
             if isActive && wantsPlayback { player.play() }
         }

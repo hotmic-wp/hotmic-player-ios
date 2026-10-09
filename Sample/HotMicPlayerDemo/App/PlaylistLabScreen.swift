@@ -114,12 +114,15 @@ struct PlaylistLabScreen: View {
     /// A complete ranked response every three seconds, including edits while the feed is scrolling.
     private func startRankedRefresh() {
         guard rankedTask == nil else { return }
+        let review = BenchmarkOptions().values["review-refresh"] == "1"
         var configuration = player.configuration
+        configuration.volatileSigningQueryParameters = review ? ["token"] : []
+        if review { configuration.poolSize = 3; configuration.restoresPlaybackPosition = false }
         configuration.removedCurrentPolicy = .finishThenAdvance
         configuration.loops = true; configuration.adaptive = false
         player.configuration = configuration
         let seeds = (0..<12).map { index in
-            HMMediaItem(id: "ranked-\(index)", url: URL(string: origin + "/item-\(index % 8)/clip.mp4")!,
+            HMMediaItem(id: "ranked-\(index)", url: URL(string: origin + "/item-\(index % 8)/clip.mp4" + (review ? "?token=initial" : ""))!,
                         title: "Ranked clip \(index)", durationHint: 10)
         }
         player.replaceAll(seeds); rankedTick = 0
@@ -131,6 +134,13 @@ struct PlaylistLabScreen: View {
                 // Use the same view-driven animated swipe path as benchmark automation.
                 if tick == 3 || tick == 6 { player.requestPage(at: player.activeIndex + 1) }
                 switch tick {
+                case 4 where review:
+                    let signed = player.items.map { item in
+                        var components = URLComponents(url: item.url!, resolvingAgainstBaseURL: true)!
+                        components.queryItems = [URLQueryItem(name: "token", value: "refresh-\(tick)")]
+                        return HMMediaItem(id: item.id, url: components.url!, title: item.title, durationHint: item.durationHint)
+                    }
+                    perform("ranked-resigned-reconcile") { player.reconcile(signed) }
                 case 7:
                     // Real end notification follows the seek; loops remains true throughout.
                     perform("finish-once-remove") { player.reconcile(player.items.filter { $0.id != player.currentItem?.id }) }
@@ -138,6 +148,38 @@ struct PlaylistLabScreen: View {
                 case 10:
                     perform("finish-swipe-remove") { player.remove(ids: Set(player.currentItem.map { [$0.id] } ?? [])) }
                     player.requestPage(at: player.activeIndex + 1)
+                case 12 where review:
+                    perform("visible-current-replaceAll") { player.replaceAll(player.items, startAt: player.activeIndex + 1) }
+                case 13 where review:
+                    perform("ranked-empty-no-op") { player.reconcile([]) }
+                case 14 where review:
+                    let history = Array(player.items.prefix(player.activeIndex))
+                    perform("ranked-history-only-finish") { player.reconcile(history) }
+                    if player.snapshot.duration > 1 { player.seek(to: player.snapshot.duration - 0.5) }
+                case 15 where review:
+                    perform("history-only-idle-observation") { true }
+                    player.configuration.loops = false
+                    perform("ended-fixture") { player.replaceAll(Array(seeds.prefix(2))) }
+                case 16 where review:
+                    if player.snapshot.duration > 1 { player.seek(to: player.snapshot.duration - 0.5) }
+                case 17 where review:
+                    perform("already-ended-remove") { player.remove(ids: Set(player.currentItem.map { [$0.id] } ?? [])) }
+                case 18 where review:
+                    player.configuration.failedItemPolicy = .stay
+                    let failed = HMMediaItem(id: "failed-stay", url: URL(string: origin + "/missing.mp4")!)
+                    perform("failed-stay-fixture") { player.replaceAll([failed, seeds[1]]) }
+                case 19 where review:
+                    perform("failed-stay-metadata-refresh") {
+                        player.replaceAll(player.items.map { HMMediaItem(id: $0.id, source: $0.source, title: "Updated failure") })
+                    }
+                    perform("failed-stay-remove") { player.reconcile(Array(player.items.dropFirst())) }
+                case 20 where review:
+                    player.configuration.failedItemPolicy = .skip
+                    let failed = HMMediaItem(id: "failed-idle", url: URL(string: origin + "/missing.mp4")!)
+                    perform("failure-idle-fixture") { player.replaceAll([failed]) }
+                case 21 where review:
+                    perform("failure-idle-remove") { player.remove(ids: ["failed-idle"]) }
+                    perform("resume-from-idle") { player.reconcile([seeds[1]]) }
                 default:
                     if tick % 3 == 1 {
                         perform("ranked-identical-replaceAll") { player.replaceAll(player.items, startAt: player.activeIndex) }
@@ -155,7 +197,7 @@ struct PlaylistLabScreen: View {
                         perform("ranked-reconcile") { player.reconcile(ranked) }
                     }
                 }
-                if tick >= 12 {
+                if tick >= (review ? 22 : 12) {
                     LabEvidence.append(["phase": "ranked-complete"], to: "playlist-lab-operations.jsonl")
                     return
                 }
@@ -235,6 +277,7 @@ struct PlaylistLabScreen: View {
     }
     private func perform(_ name: String, action: () -> Bool) {
         let before = player.snapshot, oldID = player.currentItem?.id
+        let beforeRevision = player.playlistRevision
         let beforePlayers = player.preparedItemIdentities
         let beforeBuffers = Dictionary(uniqueKeysWithValues: player.items.filter { beforePlayers[$0.id] != nil }.map {
             ($0.id, player.snapshot(for: $0).bufferedAhead)
@@ -245,15 +288,16 @@ struct PlaylistLabScreen: View {
         let accepted = action(), after = player.snapshot
         let preserved = oldID == player.currentItem?.id && before.activationID == after.activationID && before.currentTime == after.currentTime && before.isFrameReady == after.isFrameReady && before.stallCount == after.stallCount
         status = "\(name): \(accepted ? "accepted" : "rejected") · \(preserved ? "current preserved" : "current changed")"
-        let record: [String: Any] = ["operation": name, "accepted": accepted, "current_preserved": preserved,
+        let record: [String: Any] = ["operation": name, "accepted": accepted, "before_state": before.state.rawValue, "after_state": after.state.rawValue, "load_error": player.loadError ?? "", "before_revision": beforeRevision, "current_preserved": preserved,
             "before_id": oldID ?? "", "after_id": player.currentItem?.id ?? "", "before_activation": before.activationID,
             "after_activation": after.activationID, "before_time": before.currentTime, "after_time": after.currentTime,
             "before_frame": before.isFrameReady, "after_frame": after.isFrameReady, "stalls": after.stallCount,
             "before_players": beforePlayers, "after_players": player.preparedItemIdentities,
             "before_buffers": beforeBuffers,
             "after_buffers": Dictionary(uniqueKeysWithValues: player.items.filter { player.preparedItemIdentities[$0.id] != nil }.map { ($0.id, player.snapshot(for: $0).bufferedAhead) }),
-            "warm_tiers": warmTiers, "released_ids": player.lastPlaylistChange?.releasedItemIDs ?? [],
-            "removed_ids": player.lastPlaylistChange?.removedIDs ?? [],
+            "warm_tiers": warmTiers, "summary_changed": beforeRevision != player.playlistRevision,
+            "released_ids": beforeRevision != player.playlistRevision ? (player.lastPlaylistChange?.releasedItemIDs ?? []) : [],
+            "removed_ids": player.lastPlaylistChange?.removedIDs ?? [], "summary_current_changed": player.lastPlaylistChange?.currentChanged ?? false,
             "loops": player.configuration.loops, "prepared_items": player.preparedItemCount, "items": player.items.map(\.id), "revision": player.playlistRevision, "monotonic": ProcessInfo.processInfo.systemUptime]
         if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), let line = String(data: data, encoding: .utf8) {
             changes.append(line)

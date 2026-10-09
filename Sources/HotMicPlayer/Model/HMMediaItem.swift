@@ -121,8 +121,17 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     }
     /// Playback identity excludes display metadata so refreshes reuse decoders and bytes.
     struct MediaIdentity: Hashable { let id: String; let source: Source }
-    var mediaIdentity: MediaIdentity { MediaIdentity(id: id, source: source) }
-    func hasSameMedia(as other: Self) -> Bool { mediaIdentity == other.mediaIdentity }
+    var mediaIdentity: MediaIdentity { mediaIdentity(ignoring: []) }
+    func mediaIdentity(ignoring parameters: [String]) -> MediaIdentity {
+        let identitySource: Source
+        if !parameters.isEmpty, case let .url(url, format) = source {
+            identitySource = .url(URL(string: HMCacheKey.canonical(url, ignoring: parameters)) ?? url, format: format)
+        } else { identitySource = source }
+        return MediaIdentity(id: id, source: identitySource)
+    }
+    func hasSameMedia(as other: Self, ignoring parameters: [String] = []) -> Bool {
+        mediaIdentity(ignoring: parameters) == other.mediaIdentity(ignoring: parameters)
+    }
     func resolved(_ result: HMResolvedItem) -> Self {
         Self(id: id, url: result.url, format: result.format, posterURL: posterURL ?? result.poster,
              title: title ?? result.title, author: author, durationHint: durationHint ?? result.duration, metadata: metadata)

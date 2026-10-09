@@ -12,7 +12,7 @@ player.reconcile(rankedItems)
 let change = player.lastPlaylistChange // insertedIDs, removedIDs, movedIDs, currentChanged, releasedItemIDs, releasedPlayerCount
 ```
 
-`reconcile` preserves history, refreshes current metadata and replaces upcoming entries after current. Duplicate/empty IDs anywhere in the incoming list reject it; history IDs ranked into upcoming are ignored. If current is absent, all incoming nonhistory entries become upcoming. `removedCurrentPolicy` defaults to `.advanceNow` (next survivor, previous, idle); `.finishThenAdvance` retains current until its next end without looping, or removes it on a swipe away. Effective `replaceAll` clears deferred removal; identical replacements preserve it. Identical replacements are silent no-ops; display-only refreshes preserve warm players and cached bytes. Edits retain overlapping prefetch work. Inactive prepared snapshots report `.warmPlayer` once a decoded frame is ready, otherwise `.resolved`; active readiness remains the activation measurement. See [Playlist management](../Sources/HotMicPlayer/HotMicPlayer.docc/PlaylistManagement.md) for full contracts.
+Empty `reconcile` lists are no-ops. History-only responses apply removal policy and go idle without replaying history. `reconcile` preserves history, refreshes current metadata and replaces upcoming entries after current. Duplicate/empty IDs anywhere in the incoming list reject it; history IDs ranked into upcoming are ignored. If current is absent, all incoming nonhistory entries become upcoming. `removedCurrentPolicy` defaults to `.advanceNow` (next survivor, previous, idle); `.finishThenAdvance` retains current until its next end without looping, or removes it on a swipe away. Failed, failure-idle or already-ended current entries advance immediately, including failures during a finishing visit. Effective `replaceAll` clears deferred removal; identical replacements preserve it. Identical replacements are silent no-ops preserving failures, paging cursor, resume positions and loadError. Non-identical replacements with the same selected ID and canonical source preserve playback and overlapping pool assignments without currentItemChanged. Display-only refreshes preserve warm players and cached bytes. Identity uses ID plus source/format, with only configured volatileSigningQueryParameters stripped from URL identity as in the cache. Failure memory survives metadata/signing refreshes; jump(toID:) explicitly retries failed media, including the selected entry. Source changes reset saved resume positions. HMPlaylistChange has a public initializer; movedIDs includes absolute-index shifts. Edits retain overlapping prefetch work. Inactive prepared snapshots report `.warmPlayer` once a decoded frame is ready, otherwise `.resolved`; active readiness remains the activation measurement. See [Playlist management](../Sources/HotMicPlayer/HotMicPlayer.docc/PlaylistManagement.md) for full contracts.
 
 # HotMicPlayer
 
@@ -534,6 +534,7 @@ enum HMPlayerEvent
 ## HMPlaylistChange
 
 ```swift
+init(insertedIDs: [String], removedIDs: [String], movedIDs: [String], currentChanged: Bool, releasedItemIDs: [String])
 let currentChanged: Bool
 let insertedIDs: [String]
 let movedIDs: [String]

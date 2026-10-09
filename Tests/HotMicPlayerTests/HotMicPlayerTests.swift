@@ -10,10 +10,7 @@ struct PrefetchPolicyTests {
         // Order matters: whichever item is warmed first gets the bandwidth.
         #expect(HMPrefetchPolicy(ahead: 2, behind: 1).windowOffsets == [1, -1, 2])
         #expect(HMPrefetchPolicy.aggressive.windowOffsets == [1, -1, 2, -2, 3])
-    }
-
-    @Test("Asymmetric windows only extend on the requested side")
-    func asymmetric() {
+        // Asymmetric cases share the same distance-order contract.
         #expect(HMPrefetchPolicy(ahead: 3, behind: 0).windowOffsets == [1, 2, 3])
         #expect(HMPrefetchPolicy(ahead: 0, behind: 2).windowOffsets == [-1, -2])
         #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
@@ -369,6 +366,10 @@ struct LiveWindowTrackerTests {
 struct CacheTransportTests {
     @Test("Unchanged windows never restart; cancellation invalidates an epoch; buffer hysteresis prevents churn")
     func epochsAndSafety() {
+        #expect(HMPlaybackPriority.isUrgent(displayed: false, stalling: false))
+        #expect(HMPlaybackPriority.isUrgent(displayed: false, stalling: true))
+        #expect(HMPlaybackPriority.isUrgent(displayed: true, stalling: true))
+        #expect(!HMPlaybackPriority.isUrgent(displayed: true, stalling: false))
         var epoch = HMPrefetchEpoch()
         let first = epoch.begin("window/config-A")
         for _ in 0..<100 { #expect(epoch.begin("window/config-A") == nil) }
@@ -510,7 +511,7 @@ struct JSONLExportTests {
         let properties = decision["properties"] as! [String: String]
         let recordedPlan = try JSONSerialization.jsonObject(with: Data(properties["plan"]!.utf8)) as! [String: Any]
         #expect(decision["event"] as? String == "prefetchDecision")
-        #expect(recordedPlan["bytesPerItem"] as? Int == 200_000)
+        #expect(recordedPlan["bytesPerItem"] as? Int == 131_072)
         #expect(exported[4].contains("playing"))
         hub.remove(named: sink.sinkName)
         hub.recordPrefetchDecision(inputs: inputs, plan: plan, item: item, policy: "test")

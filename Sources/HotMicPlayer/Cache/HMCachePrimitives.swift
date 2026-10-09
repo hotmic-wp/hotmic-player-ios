@@ -116,3 +116,7 @@ enum HMBufferSafety {
         (hasDuration && ahead >= remaining - 0.1) || ahead >= max(0, threshold) * (wasSafe ? 0.5 : 1)
     }
 }
+
+enum HMPlaybackPriority {
+    static func isUrgent(displayed: Bool, stalling: Bool) -> Bool { !displayed || stalling }
+}

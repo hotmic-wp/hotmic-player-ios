@@ -214,6 +214,7 @@ private final class FormatProtocol: URLProtocol {
 
 #if canImport(AVFoundation) && !os(macOS)
 import AVFoundation
+import Network
 
 @Suite("Native review regressions") @MainActor
 struct PlayerNativeReviewTests {
@@ -305,7 +306,50 @@ struct PlayerNativeReviewTests {
         let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(transport.state.port)/health")!)
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(transport.url(for: new)?.host == "127.0.0.1")
+        // A two-byte native probe establishes total size. The subsequent miss
+        // must reach the client before the upstream range completes.
+        let origin = try PrefixOrigin()
+        defer { origin.listener.cancel() }
+        while origin.listener.port == nil, Date() < deadline { await Task.yield() }
+        let port = try #require(origin.listener.port)
+        let media = URL(string: "http://127.0.0.1:\(port.rawValue)/slow.mp4")!
+        let entry = HMMediaItem(id: "progressive", url: media)
+        let cache = HMDiskCache.shared(directory: directory, capacity: 128_000_000)
+        await cache.put(key: media.absoluteString, start: 0, data: Data([7, 7]), total: 262144,
+                        mime: "video/mp4", base: media, owner: media.absoluteString, prefetched: false, played: true)
+        transport.state.prune(keeping: [entry])
+        let reader = Task {
+            var request = URLRequest(url: transport.url(for: entry)!)
+            request.setValue("bytes=0-262143", forHTTPHeaderField: "Range")
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            #expect((response as? HTTPURLResponse)?.statusCode == 206)
+            var prefix = Data()
+            for try await byte in bytes { prefix.append(byte); if prefix.count == 16 { break } }
+            return prefix
+        }
+        let timeout = Task { try await Task.sleep(for: .seconds(3)); reader.cancel() }
+        defer { timeout.cancel() }
+        #expect(try await reader.value == Data(repeating: 7, count: 16))
         _ = await transport.finish()
+    }
+
+    /// Deliberately never completes its range. A full-buffer proxy cannot pass.
+    final class PrefixOrigin: @unchecked Sendable {
+        let listener: NWListener
+        init() throws {
+            listener = try NWListener(using: .tcp, on: .any)
+            listener.newConnectionHandler = { connection in
+                connection.start(queue: .global())
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { _, _, _, _ in
+                    let head = "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: bytes 2-262143/262144\r\nContent-Length: 262142\r\nConnection: close\r\n\r\n"
+                    var body = Data(head.utf8); body.append(Data(repeating: 7, count: 1024))
+                    connection.send(content: body, completion: .contentProcessed { _ in })
+                    // Retain until the client cancels, without delivering a tail.
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, _, _ in connection.cancel() }
+                }
+            }
+            listener.start(queue: .global())
+        }
     }
 }
 #endif

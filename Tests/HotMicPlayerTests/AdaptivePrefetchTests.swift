@@ -26,7 +26,7 @@ struct AdaptivePrefetchTests {
         cap.maxPrefetchConcurrency = 0
         var rows = [
             Row(name: "unknown", ahead: 3, behind: 1, bytes: 400_000, bitrate: 1_000_000, reason: "unmeasured-or-medium"),
-            Row(name: "slow", inputs: slow, ahead: 2, behind: 0, bytes: 200_000, bitrate: 600_000, reason: "slow"),
+            Row(name: "slow", inputs: slow, ahead: 1, behind: 0, bytes: 131_072, bitrate: 600_000, reason: "slow"),
             Row(name: "fast", inputs: fast, ahead: 5, behind: 1, bytes: 800_000, bitrate: 1_600_000, reason: "fast"),
             Row(name: "fixed ignores telemetry", inputs: slow, configuration: fixed, ahead: 5, behind: 1, bytes: 800_000, bitrate: 1_600_000, reason: "fixed"),
             Row(name: "app caps", inputs: fast, configuration: cap, ahead: 1, behind: 0, bytes: 50_000, bitrate: 300_000, ready: false, concurrency: 0, reason: "fast")
@@ -45,9 +45,9 @@ struct AdaptivePrefetchTests {
             previousPlan.speedTier = previous
             let inputs = HMPrefetchInputs(throughputBytesPerSecond: rate, bufferedAheadSeconds: 6, previousPlan: previousPlan)
             rows.append(Row(name: "speed band \(previous)/\(rate)", inputs: inputs,
-                ahead: expected == .slow ? 2 : expected == .fast ? 5 : 3,
+                ahead: expected == .slow ? 1 : expected == .fast ? 5 : 3,
                 behind: expected == .slow ? 0 : 1,
-                bytes: expected == .slow ? 200_000 : expected == .fast ? 800_000 : 400_000,
+                bytes: expected == .slow ? 131_072 : expected == .fast ? 800_000 : 400_000,
                 bitrate: expected == .slow ? 600_000 : expected == .fast ? 1_600_000 : 1_000_000,
                 reason: expected == .slow ? "slow" : expected == .fast ? "fast" : "unmeasured-or-medium"))
         }
@@ -63,16 +63,16 @@ struct AdaptivePrefetchTests {
             let inputs = HMPrefetchInputs(throughputBytesPerSecond: 4_000_000, latencySeconds: latency,
                 bufferedAheadSeconds: 6, previousPlan: previousPlan)
             rows.append(Row(name: "latency band \(latched)/\(latency)", inputs: inputs,
-                ahead: expectedSlow ? 2 : 5, behind: expectedSlow ? 0 : 1,
-                bytes: expectedSlow ? 200_000 : 800_000, bitrate: expectedSlow ? 600_000 : 1_600_000,
+                ahead: expectedSlow ? 1 : 5, behind: expectedSlow ? 0 : 1,
+                bytes: expectedSlow ? 131_072 : 800_000, bitrate: expectedSlow ? 600_000 : 1_600_000,
                 reason: expectedSlow ? "slow" : "fast"))
         }
         fast.latencySeconds = 0.5
-        rows.append(Row(name: "high latency", inputs: fast, ahead: 2, behind: 0, bytes: 200_000, bitrate: 600_000, reason: "slow"))
+        rows.append(Row(name: "high latency", inputs: fast, ahead: 1, behind: 0, bytes: 131_072, bitrate: 600_000, reason: "slow"))
         slow.dwellSeconds = 1; slow.readyHitRate = 0.2
-        rows.append(Row(name: "binge misses", inputs: slow, ahead: 2, behind: 0, bytes: 300_000, bitrate: 600_000, reason: "slow+binge-misses"))
+        rows.append(Row(name: "binge misses", inputs: slow, ahead: 1, behind: 0, bytes: 131_072, bitrate: 600_000, reason: "slow+binge-misses"))
         slow.dwellSeconds = 10
-        rows.append(Row(name: "long dwell", inputs: slow, ahead: 2, behind: 0, bytes: 300_000, bitrate: 600_000, delay: 5, reason: "slow+long-dwell"))
+        rows.append(Row(name: "long dwell", inputs: slow, ahead: 1, behind: 0, bytes: 131_072, bitrate: 600_000, delay: 5, reason: "slow+long-dwell"))
         for (buffer, wasPaused, pauses) in [(1.4, false, true), (1.5, false, false), (2.9, true, true), (3.0, true, false)] {
             rows.append(Row(name: "hysteresis \(buffer)/\(wasPaused)", inputs: HMPrefetchInputs(bufferedAheadSeconds: buffer, wasPaused: wasPaused),
                 ahead: 3, behind: 1, bytes: 400_000, bitrate: 1_000_000, paused: pauses, ready: !pauses,

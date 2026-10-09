@@ -584,6 +584,7 @@ import Observation
         guard isFeedVisible, !ended, let original = currentItem, !terminalFailures.contains(original),
               networkFailures[original].map({ $0.nextAttempt.isFinite }) != true, let item = resolutions.cached(original), let url = item.url else { return }
         guard ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        if currentNode?.isActive != true { proxy?.prioritizePlayback(item, urgent: true) }
         let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
         node.setMuted(isMuted)
@@ -599,7 +600,10 @@ import Observation
         guard isFeedVisible, !ended, let node = currentNode, node.isActive, let item = currentItem else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let t = configuration.adaptiveThresholds
-        let dangerous = node.snapshot.state == .buffering || !node.snapshot.bufferedAhead.isFinite ||
+        let playbackUrgent = HMPlaybackPriority.isUrgent(displayed: node.snapshot.timeToFirstFrame != nil,
+                                                        stalling: node.snapshot.state == .buffering)
+        proxy?.prioritizePlayback(resolutions.cached(item) ?? item, urgent: playbackUrgent)
+        let dangerous = playbackUrgent || !node.snapshot.bufferedAhead.isFinite ||
             node.snapshot.bufferedAhead < max(nonnegative(t.safetyBufferSeconds), nonnegative(configuration.prefetch.startThreshold) * 0.5)
         // Evaluate on the existing 100ms buffer ticks at most four times/sec;
         // safety transitions bypass the cadence and are applied immediately.
@@ -623,6 +627,7 @@ import Observation
                 threshold: nonnegative(configuration.prefetch.startThreshold), wasSafe: prefetchSafe)
             plan.paused = plan.paused || inputs.isStalling
         }
+        if playbackUrgent { plan.paused = true; plan.reason += "+active-playback" }
         if plan.paused && !plan.reason.contains("buffer-safety") && !plan.reason.contains("stall") {
             plan.reason += inputs.isStalling ? "+stall" : "+buffer-safety"
         }
@@ -821,7 +826,9 @@ import Observation
         case .preloadReady:
             networkFailures[entry] = nil
             emit(.itemReady(entry))
-        case .firstFrame: emit(.firstFrame(entry, ttff: (event.metrics["ttff_ms"] ?? 0) / 1000, readiness: currentNode?.snapshot.readinessTier ?? .cold))
+        case .firstFrame:
+            emit(.firstFrame(entry, ttff: (event.metrics["ttff_ms"] ?? 0) / 1000, readiness: currentNode?.snapshot.readinessTier ?? .cold))
+            updatePrefetch(force: true)
         case .rebufferStart: emit(.stallStarted(entry)); updatePrefetch(force: true)
         case .rebufferEnd: emit(.stallEnded(entry)); updatePrefetch(force: true)
         case .error, .transportError:

@@ -90,7 +90,7 @@ numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 | `longDwellBudgetMultiplier` | 1.5 | `adaptive-long-dwell-budget-multiplier` |
 | `longDwellDelayFraction` | 0.5 | `adaptive-long-dwell-delay-fraction` |
 | `maximumDelaySeconds` | 6 | `adaptive-maximum-delay-seconds` |
-| `slowAhead` | 2 | `adaptive-slow-ahead` |
+| `slowAhead` | 1 | `adaptive-slow-ahead` |
 | `mediumAhead` | 3 | `adaptive-medium-ahead` |
 | `slowBitRate` | 600_000 | `adaptive-slow-bit-rate` |
 | `mediumBitRate` | 1_000_000 | `adaptive-medium-bit-rate` |
@@ -106,7 +106,7 @@ and exits at or below **0.32s**. With no previous plan it uses **0.4s**. The fir
 valid TTFB sample remains excluded. A slow throughput tier does not by itself
 latch the latency override.
 
-Slow throughput or high latency uses 25% of the app budget, two ahead, no behind,
+Slow throughput or high latency uses at most 128 KiB (and 25% of the app budget), one ahead, no behind,
 and a 600 kbps starting rendition. Unknown/medium uses 50%, three ahead and
 1 Mbps; fast uses the full app window/budget and a desired 3 Mbps ceiling, still
 capped by the app (default 1.6 Mbps). Slow concurrency is at most one; faster
@@ -127,3 +127,17 @@ Validate threshold changes against a physical-device benchmark grid.
 
 See [benchmark setup](BENCHMARKING.md) for reproducible simulator checks and
 physical-device measurement workflows.
+
+## Device performance round 1: playback priority
+
+Until the active item displays its first frame, and during a stall, explicit
+prefix transfers and warm-player responses are cancelled. The active request
+never waits for a speculative prefix. A known resource size (including a two-byte
+AVPlayer probe) no longer changes a missing range into a fully buffered 512 KiB
+response: cached bytes are sent first, then the missing suffix streams as it
+arrives. This applies to MP4, HLS init resources and HLS segments alike.
+
+Slow-link speculation is limited to +1 and a 128 KiB head, including binge misses.
+The starting bitrate is applied before the native item is attached, so the first
+HLS selection uses the same cap as the warm path; the master remains intact for
+later ABR. A ceiling is advisory to AVPlayer, not a bandwidth guarantee.

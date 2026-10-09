@@ -33,7 +33,7 @@ import Foundation
     /// Maximum long-dwell delay after activation.
     public var maximumDelaySeconds: Double = 6
     /// Slow-condition forward window, still bounded by the app ahead limit.
-    public var slowAhead: Int = 2
+    public var slowAhead: Int = 1
     /// Unmeasured/medium-condition forward window, bounded by app limits.
     public var mediumAhead: Int = 3
     /// Desired slow-condition starting HLS bitrate, bits/sec.
@@ -263,6 +263,9 @@ public struct HMAdaptivePrefetchPolicy: HMPrefetchPolicyProviding {
             p.reason += "+long-dwell"
         }
         p.bytesPerItem = Int(Double(max(0, min(HMPrefetchPolicy.maximumBytesPerItem, c.prefetch.bytesPerItem))) * fraction)
+        // Binge misses must not multiply work on an already constrained link.
+        // A small next-item head is the entire slow-link speculation window.
+        if slow { p.itemsAhead = min(1, p.itemsAhead); p.bytesPerItem = min(128 * 1024, p.bytesPerItem) }
         if let seconds = c.prefetch.secondsPerItem { p.secondsPerItem = nonnegative(seconds) * fraction }
         let safety = max(nonnegative(t.safetyBufferSeconds), nonnegative(c.prefetch.startThreshold) * 0.5)
         let recovery = max(safety, nonnegative(t.recoveryBufferSeconds), nonnegative(c.prefetch.startThreshold))

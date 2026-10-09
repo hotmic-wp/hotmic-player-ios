@@ -20,6 +20,7 @@ actor HMCacheTransport {
     private var port: UInt16 = 0
     private var isFinishing = false
     private var played: Set<String> = []
+    private var playbackUrgent = true
     private var retainedItems: [HMMediaItem] = []
     private var resourceOwners: [String: Set<String>] = [:]
     private var inFlightResources: [String: Int] = [:]
@@ -159,6 +160,15 @@ actor HMCacheTransport {
         let owner = key(url)
         Task { await cache.markPlayed(owner) }
     }
+    /// Native playback and explicit prefixes share the origin's capacity, even
+    /// when URLSession uses separate connection pools. Cancel both kinds of
+    /// speculative work until the current item has actually displayed/recovered.
+    func prioritizePlayback(_ item: HMMediaItem, urgent: Bool) {
+        playbackUrgent = urgent
+        guard urgent else { return }
+        cancelPrefetch()
+        for (id, owner) in responseItems where owner != item { close(id) }
+    }
     func cancelPrefetch() {
         workEpoch.cancel()
         if let task = prefetchTask {
@@ -170,7 +180,7 @@ actor HMCacheTransport {
     private func removeRetiring(_ id: UUID) { retiringPrefetch[id] = nil; retainWindow(retainedItems) }
     func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) {
         let identity = configuration.fingerprint + "|" + plan.workIdentity + "|" + items.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|") + "|" + keeping.map(\.id).joined(separator: "|")
-        guard port != 0, !disabled, configuration.strategy.usesDataCache, !plan.paused, plan.concurrency > 0, !workEpoch.matches(identity) else { return }
+        guard port != 0, !disabled, !playbackUrgent, configuration.strategy.usesDataCache, !plan.paused, plan.concurrency > 0, !workEpoch.matches(identity) else { return }
         cancelPrefetch()
         guard let epoch = workEpoch.begin(identity) else { return }
         let kept = Set(keeping.map(\.id))
@@ -428,10 +438,20 @@ actor HMCacheTransport {
                 var cursor = range.start
                 while cursor <= range.end {
                     try Task.checkCancellation()
-                    let t = try await fetch(route.url, item: route.item, start: cursor, count: min(512 * 1024, range.end - cursor + 1), prefetch: false)
-                    guard !t.data.isEmpty else { throw URLError(.badServerResponse) }
-                    try await sendBlock(connection, data: t.data)
-                    cursor += t.data.count
+                    if let hit = await cache.available(key: key, start: cursor, count: range.end - cursor + 1) {
+                        recordDelivery(key: key, item: route.item, start: cursor, count: hit.data.count)
+                        emit(.transfer, item: route.item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
+                        try await sendBlock(connection, data: hit.data)
+                        cursor += hit.data.count
+                    } else {
+                        // Knowing the total (often from AVPlayer's two-byte probe)
+                        // must not turn a miss into a fully buffered 512 KiB fetch.
+                        // Stream the missing suffix immediately, independently of
+                        // any cancelled/overlapping speculative range.
+                        try await stream(route, range: "bytes=\(cursor)-\(range.end)", headOnly: false,
+                                         connection: connection, sendHeaders: false)
+                        break
+                    }
                 }
             }
             close(id)
@@ -444,7 +464,7 @@ actor HMCacheTransport {
             }
         }
     }
-    private func stream(_ route: Route, range: String?, headOnly: Bool, connection: NWConnection) async throws {
+    private func stream(_ route: Route, range: String?, headOnly: Bool, connection: NWConnection, sendHeaders: Bool = true) async throws {
         let streamID = UUID()
         let resource = key(route.url); inFlightResources[resource, default: 0] += 1
         defer { releaseResource(resource) }
@@ -456,6 +476,12 @@ actor HMCacheTransport {
             measurement: measurementHandler(route.item, speculative: !played.contains(route.item.id)), headers: { [weak self] response in
             guard let self else { throw CancellationError() }
             await self.beginStream(streamID, response: response)
+            if !sendHeaders {
+                let start = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
+                guard (response.statusCode == 206 && response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(start)-") == true) ||
+                        (response.statusCode == 200 && start == 0) else { throw URLError(.badServerResponse) }
+                return
+            }
             var headers: [String: String] = [:]
             for name in ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Type"] {
                 headers[name] = response.value(forHTTPHeaderField: name)
@@ -554,6 +580,8 @@ actor HMCacheTransport {
     private var commands: Task<Void, Never>?
     private var retainedWindow: [HMMediaItem]?
     private var retainedPlaylist: [HMMediaItem]?
+    private var playbackPriority: HMMediaItem?
+    private var playbackUrgent = true
     private func enqueue(_ action: @escaping @Sendable (HMCacheTransport) async -> Void) {
         let previous = commands, transport = transport
         commands = Task { await previous?.value; await action(transport) }
@@ -581,6 +609,11 @@ actor HMCacheTransport {
     }
     func retainPlaylist(_ items: [HMMediaItem]) { guard retainedPlaylist != items else { return }; retainedPlaylist = items; enqueue { await $0.retainPlaylist(items) } }
     func markPlayed(_ item: HMMediaItem) { enqueue { await $0.markPlayed(item) } }
+    func prioritizePlayback(_ item: HMMediaItem, urgent: Bool) {
+        guard playbackPriority != item || playbackUrgent != urgent else { return }
+        playbackPriority = item; playbackUrgent = urgent
+        enqueue { await $0.prioritizePlayback(item, urgent: urgent) }
+    }
     func cancelPrefetch() { enqueue { await $0.cancelPrefetch() } }
     func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) { enqueue { await $0.prefetch(items, keeping: keeping, plan: plan) } }
     func finish() async -> Int { await commands?.value; return await transport.finish() }

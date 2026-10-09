@@ -14,7 +14,7 @@ player.replaceAll([
 ])
 ```
 
-IDs are app-chosen, nonempty and unique within the playlist. Duplicate edits are rejected as a whole and emit `.error(item:kind:)`. Items carry an explicit source, optional poster/title/author/duration hint and `[String: String]` metadata. `.auto` uses the extension, then HTTP content type for extensionless URLs; supplying `.mp4` or `.hls` avoids that detection request. Ergonomic `.url(url, poster: poster, id: "clip")` and `.reference("partner", id: "external", playlistID: "clip")` constructors are available. Without an explicit playlist ID the URL constructor uses its absolute URL and the reference constructor uses namespace plus reference ID.
+IDs are app-chosen, nonempty and unique within the playlist. Duplicate edits are rejected as a whole and emit `.error(item:kind:)`. Items carry an explicit source, optional poster/title/author/duration hint and `[String: String]` metadata. `.auto` uses the extension, then HTTP content type for extensionless URLs (HEAD, with a GET of bytes 0–1 if HEAD fails); supplying `.mp4` or `.hls` avoids that detection request. Ergonomic `.url(url, poster: poster, id: "clip")` and `.reference("partner", id: "external", playlistID: "clip")` constructors are available. Without an explicit playlist ID the URL constructor uses its absolute URL and the reference constructor uses namespace plus reference ID.
 
 ## Step 2 — render video with your overlay
 
@@ -36,7 +36,7 @@ struct FeedScreen: View {
 
 [MinimalIntegration.swift](../Sample/HotMicPlayerDemo/Integration/MinimalIntegration.swift) compiles this shape in the Sample app with only `import HotMicPlayer`. The overlay gets the item (including resolved metadata fallbacks) and an observable snapshot with state, position, duration, buffer, bitrate, stalls, TTFF and readiness tier. Use `snapshot.currentTime` to query `player.timeline(for: item)`; overlays render from the media clock, so seeking rewinds engagement along with video.
 
-Use `player.isFeedVisible = false` when the host disappears or backgrounds. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. Hosts that manage their own audio session should set `configuration.managesAudioSession = false`.
+Use `player.isFeedVisible = false` when the host disappears or backgrounds. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. The default player manages its playback audio session; experimental audio-session tuning is Benchmark SPI.
 
 ## Atomic editing and navigation
 
@@ -50,9 +50,9 @@ player.remove(ids: ["expired"])
 player.replaceAll(newPlaylist, startAt: 2)
 ```
 
-During a swipe, the current entry means the last settled page. An accepted edit cancels the pending scroll destination and snaps back to that current item's new position. If current was removed, it snaps to the selected survivor. Old scroll commits are invalidated by playlist revision. No surviving current item is reattached, activated, sought, or paused by an edit. New next media replaces a displaced warm assignment, subject to current-buffer gating.
+During a swipe, the current entry means the last settled page. Swipes commit by stable item ID. Appends preserve an in-progress drag or animation. Other edits preserve it when both current and destination IDs remain at the same positions; otherwise the bridge cancels the move and anchors to current (or its selected survivor). Edits to an unrelated tail therefore preserve the swipe. Empty append/insert and removal of unknown IDs emit no event and do not change revision. No surviving current item is reattached, activated, sought, or paused by an edit. New next media replaces a displaced warm assignment, subject to current-buffer gating.
 
-`next()` and `previous()` do nothing at the ends. `jump(toID:)` reports an error for unknown IDs. `seek(to:)` takes seconds, rejects negative/non-finite values, and clamps to the known duration. `isMuted` applies to current and prepared players. `play()` and `pause()` preserve position. `seek(toProgress:)`, toggle helpers, animated `requestPage(at:)` and async `requestPlay(at:requestedAt:)` support overlay and benchmark integrations.
+`next()` and `previous()` do nothing at the ends. `jump(toID:)` reports an error for unknown IDs. `seek(to:)` takes seconds, rejects negative/non-finite values, and clamps to the known duration. `isMuted` applies to current and prepared players. `play()` and `pause()` preserve position. `seek(toProgress:)` and toggle helpers support overlays. Animated `requestPage(at:)` and async `requestPlay(at:requestedAt:)` are Benchmark SPI.
 
 ## Optional paging
 
@@ -67,7 +67,7 @@ struct ClipPlaylist: HMPlaylistSource {
 }
 ```
 
-Assign `player.playlistSource`, then `await player.start()`. Pages append through the same duplicate-validation and prefetch path as `append`. `configuration.lowWaterMark` (default 3) triggers fetching when that many entries remain after current. A nil next cursor ends the source. Source replacement or `replaceAll` invalidates pending pages and resets the cursor. Tail edits invalidate pending pages while retaining the last committed cursor. Manual `loadNextPage()` can retry a paging failure. `HMStaticPlaylistSource` supports samples/tests, finite lists and looping lists with distinct IDs.
+Assign `player.playlistSource`, then `await player.start()`. Pages drop already-loaded IDs and within-page repetitions, emit the non-fatal `.sourcePageDuplicates(ids:)` event, and append new entries through the usual prefetch path. The cursor advances even on an all-duplicate page. Partner-called operations still reject duplicates atomically. Paging triggers when three entries remain after current (the low-water tuning is Benchmark SPI). A nil next cursor ends the source; a repeated cursor ends automatic paging to prevent a request loop. Partner edits, including `replaceAll`, preserve an in-flight source request and cursor; the returned page merges against the latest list. Assigning a new source resets the cursor and invalidates the old request. Manual `loadNextPage()` can retry a paging failure. `HMStaticPlaylistSource` supports samples/tests, finite lists and looping lists with distinct IDs.
 
 ## Optional reference resolution
 
@@ -82,11 +82,11 @@ let player = HMPlayer(resolver: CatalogueResolver())
 player.replaceAll([.reference("partner", id: "episode-7")])
 ```
 
-Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window, hiding or teardown. Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Already-resolved entries activate synchronously. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The future Core adapter will use namespace `hotmic` in a separate package.
+Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window, hiding or teardown. Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Transient failures retry up to three automatic attempts with 1/2/4-second capped backoff; becoming current resets the budget. Pending work is promoted to user-initiated priority when its item becomes current or next, without a second resolver call. Already-resolved entries activate synchronously. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The future Core adapter will use namespace `hotmic` in a separate package.
 
 ## Optional engagement
 
-Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)` returns an `HMStreamTimeline` without opening a session. Lifecycle hooks manage only current and next: `willBecomeNext`, `didBecomeCurrent`, `didLeave`. Promotion keeps the next session open; entries that leave both roles, disappear or tear down receive `didLeave`. Optional async `sendChat`, `react`, and `vote` default to throwing `.unsupportedAction`. The host retains its adapter and invokes these actions from its overlay. The default `HMMockInteractionSource` supplies deterministic demo timelines without network sessions.
+Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)` returns an `HMStreamTimeline` without opening a session. Lifecycle hooks manage only current and next: `willBecomeNext`, `didBecomeCurrent`, `didLeave`. Promotion keeps the next session open; entries that leave both roles, disappear or tear down receive `didLeave`. Optional async `sendChat`, `react`, and `vote` default to throwing `.unsupportedAction`. The host retains its adapter and invokes these actions from its overlay. The default implementation supplies deterministic demo timelines without network sessions.
 
 ## Events and analytics
 
@@ -94,18 +94,31 @@ Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)`
 .task {
     for await event in player.events {
         // currentItemChanged, itemReady, firstFrame(ttff:readiness:),
-        // stallStarted, stallEnded, error, playlistChanged, nearingEnd
+        // stallStarted, stallEnded, error, playlistChanged, nearingEnd, sourcePageDuplicates
         handle(event)
     }
 }
 ```
 
-Each access to `events` creates an independent ordered subscription, buffering the newest 256 events; slow consumers can lose older events. Cancelling the consuming task releases that subscription. Observation clients can read `items`, `activeIndex`, `currentItem`, `snapshot`, paging state, `loadError`, `lastEvent` and `preparedItemCount`. Subscribe before mutation when the first edit matters. TTFF is seconds in `HMPlayerEvent`; analytics `ttff_ms` remains milliseconds. Readiness (`cold`, `cachedBytes`, `warmPlayer`) is measured at activation, not retroactively after decoding.
+Each access to `events` creates an independent ordered subscription, buffering the newest 256 events; slow consumers can lose older events. Cancelling the consuming task releases that subscription. Observation clients can read `items`, `activeIndex`, `currentItem`, `snapshot`, paging state, `loadError` and `lastEvent`. Snapshots expose getters with internal setters; activation/frame flags are Benchmark SPI diagnostics. Subscribe before mutation when the first edit matters. TTFF is seconds in `HMPlayerEvent`; analytics `ttff_ms` remains milliseconds. Readiness (`cold`, `cachedBytes`, `warmPlayer`) is measured at activation, not retroactively after decoding.
 
-Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existing `HMAnalyticsSink`, `HMConsoleSink`, `HMJSONLFileSink`, and `HMMuxAnalyticsSink` contracts remain. The real Mux bridge belongs to the host; see [Mux integration](../Integrations/Mux/README.md). `finishRun()` drains transport metrics and emits runEnd for benchmark runs, after which the player is terminal.
+Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existing `HMAnalyticsSink`, `HMConsoleSink` and `HMMuxAnalyticsSink` contracts remain. JSONL, mock timelines and the logging Mux bridge are Benchmark SPI. The real Mux bridge belongs to the host; see [Mux integration](../Integrations/Mux/README.md). `finishRun()` and transfer/prefetch-error/startup-summary/run-end telemetry are Benchmark SPI.
 
 ## Transport settings and limits
 
-Default S3 has two native players, a 128 MB disk cap and a fixed data window. Media prefetch waits for a safe current buffer. Resolution does not wait for that gate. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
+The default preset has two native players, a 128 MB disk cap and a fixed data window. Media prefetch waits for a safe current buffer. Resolution does not wait for that gate. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. A dead listener is re-armed on next use or foreground, and each restart repeats the health check before publishing its port. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
 
-Use versioned VOD paths. Signing query parameters are stripped from cache identity only when explicitly named in `volatileSigningQueryParameters`. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, HLS byte-range/alternate-audio coverage and concurrent active players sharing the same disk directory remain outside the supported contract. Playback UI is iOS/tvOS; macOS package tests exercise platform-independent logic.
+Use versioned VOD paths. Query parameters are preserved in cache identity; volatile signing-parameter tuning is Benchmark SPI. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, HLS byte-range/alternate-audio coverage and concurrent active players sharing the same disk directory remain outside the supported contract. Playback UI is iOS/tvOS; macOS package tests exercise platform-independent logic.
+
+## Stable configuration
+
+Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), and `playlistTTL` (memory-only, seconds). `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
+
+```swift
+var configuration = HMPlayerConfiguration.instantStart
+configuration.prefetch = HMPrefetchPolicy(ahead: 2, behind: 1, bytesPerItem: 800_000, secondsPerItem: 3)
+configuration.cacheCapacityBytes = 64_000_000
+let player = HMPlayer(configuration: configuration)
+```
+
+All other engine tuning, S0–S3 names, configuration serialization (`benchmarkRecord` is Codable)/fingerprint, cache reset and benchmark entry points require `@_spi(Benchmark) import HotMicPlayer`. SPI is experimental and is excluded from [the compiled partner API inventory](PUBLIC_API.md).

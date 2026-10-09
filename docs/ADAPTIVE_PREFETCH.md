@@ -144,12 +144,6 @@ arrives. Short 206 replies continue with the remaining range; the stream's byte
 limit prevents a range-ignoring origin from overrunning the downstream response.
 This applies to MP4, HLS init resources and HLS segments alike.
 
-Streaming sends the first delegate chunk immediately. Subsequent chunks use a
-64 KiB delivery high-water mark (plus at most an already-delivered delegate
-chunk), resuming at 16 KiB. This avoids a native suspend/resume round trip for
-every small chunk on fast origins while retaining bounded backpressure. All
-queued deliveries are cancelled together, including those held for priority.
-
 Slow-link speculation is limited to +1 and a 128 KiB head, including binge misses.
 The starting bitrate is applied before the native item is attached, so the first
 HLS selection uses the same cap as the warm path; the master remains intact for

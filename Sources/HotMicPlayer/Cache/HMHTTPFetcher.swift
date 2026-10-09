@@ -32,9 +32,6 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private let priority: Float
     private var cancelled = false
     private var pending: Task<Void, Never>?
-    private var streamTasks: [UUID: Task<Void, Never>] = [:]
-    private var queuedBytes = 0
-    private var streamSuspended = false
     private var streamingError: Error?
     private var watchdog: DispatchWorkItem?
     private var watchdogID = UUID()
@@ -65,9 +62,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         } onCancel: { self.cancel() }
     }
     private func cancel() {
-        lock.lock(); cancelled = true; watchdog?.cancel(); watchdogID = UUID(); task?.cancel(); pending?.cancel()
-        for pending in streamTasks.values { pending.cancel() }
-        lock.unlock()
+        lock.lock(); cancelled = true; watchdog?.cancel(); watchdogID = UUID(); task?.cancel(); pending?.cancel(); lock.unlock()
     }
     /// Caller holds lock. The generation prevents an already-enqueued expired timer from cancelling resumed work.
     private func armWatchdogLocked() {
@@ -82,24 +77,14 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         watchdog = work; DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 20, execute: work)
     }
     private func suspendWatchdogLocked() { watchdog?.cancel(); watchdogID = UUID() }
-    private func streamFailed(_ error: Error) {
-        lock.lock()
-        if streamingError == nil { streamingError = error }
-        task?.cancel()
-        for pending in streamTasks.values { pending.cancel() }
-        lock.unlock()
-    }
-    private func streamDelivered(_ dataTask: URLSessionDataTask, count: Int, atLimit: Bool) {
+    private func streamFailed(_ error: Error) { lock.lock(); streamingError = error; task?.cancel(); lock.unlock() }
+    private func resumeStream(_ dataTask: URLSessionDataTask, atLimit: Bool) {
         lock.lock(); defer { lock.unlock() }
-        queuedBytes -= count
         guard !cancelled, task === dataTask else { return }
         if atLimit { dataTask.cancel(); return }
-        guard streamSuspended, queuedBytes <= 16 * 1024 else { return }
-        streamSuspended = false
         receiveAt = ProcessInfo.processInfo.systemUptime
         armWatchdogLocked(); dataTask.resume()
     }
-    private func removeStreamTask(_ id: UUID) { lock.lock(); streamTasks[id] = nil; lock.unlock() }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { completionHandler(.cancel); return }
         lock.lock(); self.response = http
@@ -122,30 +107,21 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         sampleBytes += chunk.count; sampleSeconds += max(0, now - receiveAt); receiveAt = now
         if sampleSeconds >= 0.25 { flushMeasurementLocked() }
         if let bytes {
+            dataTask.suspend(); suspendWatchdogLocked()
             let accepted = Data(chunk.prefix(max(0, limit - delivered)))
             delivered += accepted.count
             let atLimit = delivered >= limit
             reachedStreamLimit = atLimit
-            queuedBytes += accepted.count
-            // A suspend/resume round trip for every tiny delegate chunk adds
-            // latency on fast origins. Stream the first chunk immediately and
-            // only backpressure when a bounded 64 KiB delivery queue fills.
-            if !streamSuspended && (atLimit || queuedBytes >= 64 * 1024) {
-                streamSuspended = true; dataTask.suspend(); suspendWatchdogLocked()
-            }
-            let id = UUID()
             let previous = pending
             pending = Task {
                 await previous?.value
                 do {
                     try Task.checkCancellation()
                     if !accepted.isEmpty { try await bytes(accepted) }
-                    self.streamDelivered(dataTask, count: accepted.count, atLimit: atLimit)
+                    self.resumeStream(dataTask, atLimit: atLimit)
                 }
                 catch { self.streamFailed(error) }
-                self.removeStreamTask(id)
             }
-            streamTasks[id] = pending
         } else {
             data.append(chunk.prefix(max(0, limit - data.count)))
             let expected = response?.expectedContentLength ?? -1
@@ -168,7 +144,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         let c = continuation; continuation = nil
         let wasCancelled = cancelled, streamError = streamingError, response = response, data = data, received = received
         let delivered = delivered, limitCancellation = reachedStreamLimit && (error as NSError?)?.code == NSURLErrorCancelled
-        task = nil; pending = nil; streamTasks.removeAll(); suspendWatchdogLocked(); lock.unlock()
+        task = nil; pending = nil; suspendWatchdogLocked(); lock.unlock()
         if let response, !wasCancelled, streamError == nil,
            (bytes != nil ? (error == nil || limitCancellation) : (!data.isEmpty && (data.count >= limit || (error == nil && data.count >= max(0, Int(response.expectedContentLength)))))) {
             c?.resume(returning: Result(data: data, response: response, received: received, delivered: bytes != nil ? delivered : data.count))

@@ -384,7 +384,7 @@ struct PlayerNativeReviewTests {
                         return
                     }
                     let head = "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: bytes 2-262143/262144\r\nContent-Length: 262142\r\nConnection: close\r\n\r\n"
-                    var body = Data(head.utf8); body.append(Data(repeating: 7, count: 128 * 1024))
+                    var body = Data(head.utf8); body.append(Data(repeating: 7, count: 1024))
                     connection.send(content: body, completion: .contentProcessed { _ in })
                     // Retain until the client cancels, without delivering a tail.
                     connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, _, _ in connection.cancel() }

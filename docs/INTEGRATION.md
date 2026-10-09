@@ -1,4 +1,4 @@
-# Integrating HotMicPlayer 0.2.0
+# Integrating HotMicPlayer 0.3.0
 
 The SDK is a source Swift package with no third-party dependencies, for iOS 17+. Playback supports immutable VOD MP4 and HLS; hosts supply their catalogue, overlays and optional adapters.
 

@@ -48,6 +48,7 @@ struct BenchmarkOptions {
         if let n = try number("resolve-ahead", 0...32) { guard n.rounded() == n else { throw Invalid("resolve-ahead") }; c.resolveAhead = Int(n) }
         if let n = try number("adaptive-slow-bytes-per-second", 0...100_000_000) { c.adaptiveThresholds.slowBytesPerSecond = n }
         if let n = try number("adaptive-fast-bytes-per-second", 0...100_000_000) { c.adaptiveThresholds.fastBytesPerSecond = n }
+        if let n = try number("adaptive-speed-hysteresis-fraction", 0...1) { c.adaptiveThresholds.speedHysteresisFraction = n }
         if let n = try number("adaptive-high-latency-seconds", 0...100_000_000) { c.adaptiveThresholds.highLatencySeconds = n }
         if let n = try number("adaptive-low-hit-rate", 0...1) { c.adaptiveThresholds.lowHitRate = n }
         if let n = try number("adaptive-binge-dwell-seconds", 0...100_000_000) { c.adaptiveThresholds.bingeDwellSeconds = n }

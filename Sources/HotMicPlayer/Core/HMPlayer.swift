@@ -315,7 +315,7 @@ import Observation
     private func refreshWindow() {
         guard !ended else { return }
         updateInteractions()
-        let window = isFeedVisible ? windowItems : []
+        let window = windowItems
         resolutions.retain(Set(window))
         for (item, task) in resolutionTasks where !window.contains(item) { task.cancel(); resolutionTasks[item] = nil }
         let currentIDs = Set(items.map(\.id))
@@ -341,8 +341,7 @@ import Observation
         let mediaIDs = Set(playlist.window(offsets: [0] + (prefetchPlan?.windowOffsets ?? configuration.prefetch.windowOffsets) +
             configuration.warmOffsets).map(\.id))
         for item in windowItems {
-            let metadataOnly = !mediaIDs.contains(item.id)
-            guard item == currentItem || !configuration.adaptive || prefetchSafe else { continue }
+            let metadataOnly = item != currentItem && (!prefetchSafe || !mediaIDs.contains(item.id))
             let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
             if urgent { resolutions.promote(item) }
             guard resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item] == nil,
@@ -414,7 +413,7 @@ import Observation
             bufferedAheadSeconds: node.snapshot.bufferedAhead,
             remainingSeconds: node.snapshot.duration > 0 ? max(0, node.snapshot.duration - node.snapshot.currentTime) : nil,
             isStalling: node.snapshot.state == .buffering, wasPaused: !prefetchSafe,
-            elapsedOnItemSeconds: max(0, now - (activatedAt ?? now)))
+            elapsedOnItemSeconds: max(0, now - (activatedAt ?? now)), previousPlan: prefetchPlan)
         var plan = (configuration.adaptive ? prefetchPolicy.decide(inputs, configuration: configuration) :
                     HMAdaptivePrefetchPolicy().decide(inputs, configuration: configuration)).clamped(to: configuration)
         // The safety gate is enforced even for a custom provider. Fixed mode
@@ -431,21 +430,18 @@ import Observation
             plan.reason += inputs.isStalling ? "+stall" : "+buffer-safety"
         }
         plan = plan.clamped(to: configuration)
-        let changed = prefetchPlan?.workIdentity != plan.workIdentity
+        let changed = prefetchPlan != plan
+        let bitrateChanged = pool.configuration.startupPeakBitRate != plan.startingBitRate
         let recovered = !prefetchSafe && !plan.paused
-        prefetchPlan = plan; prefetchSafe = !plan.paused
-        analytics.emit(HMPlaybackEvent(kind: .prefetchDecision, itemID: item.id, metrics: [
-            "plan_changed": changed ? 1 : 0, "budget_bytes": Double(plan.bytesPerItem),
-            "items_ahead": Double(plan.itemsAhead), "items_behind": Double(plan.itemsBehind),
-            "paused": plan.paused ? 1 : 0, "concurrency": Double(plan.concurrency),
-            "starting_bitrate": plan.startingBitRate, "ready_hit_rate": measurements.hitRate ?? -1,
-            "throughput_bytes_s": measurements.throughput ?? -1, "latency_s": measurements.latency ?? -1,
-            "dwell_s": measurements.dwell ?? -1, "buffered_ahead_s": inputs.bufferedAheadSeconds
-        ], properties: ["inputs": json(inputs), "plan": json(plan), "reason": plan.reason,
-                         "policy": configuration.adaptive ? String(reflecting: type(of: prefetchPolicy)) : "fixed"]), item: item)
-        var effective = configuration; effective.startupPeakBitRate = plan.startingBitRate
-        pool.configuration = effective; pool.applyConfiguration()
-        for node in pool.nodes { node.applyStartingBitRate(plan.startingBitRate) }
+        prefetchSafe = !plan.paused
+        if changed {
+            prefetchPlan = plan
+            analytics.recordPrefetchDecision(inputs: inputs, plan: plan, item: item,
+                policy: configuration.adaptive ? String(reflecting: type(of: prefetchPolicy)) : "fixed")
+            var effective = configuration; effective.startupPeakBitRate = plan.startingBitRate
+            pool.configuration = effective; pool.applyConfiguration()
+            if bitrateChanged { for node in pool.nodes { node.applyStartingBitRate(plan.startingBitRate) } }
+        }
         let deferred = inputs.elapsedOnItemSeconds < plan.startAfterSeconds
         let warmOffsets = plan.keepReadyPlayer && !deferred ? configuration.warmOffsets : []
         let warmItems = warmOffsets.compactMap { offset -> HMMediaItem? in
@@ -453,10 +449,6 @@ import Observation
         }
         pool.trim(keeping: Set([resolutions.cached(item)].compactMap { $0 } + warmItems))
         if plan.paused || deferred {
-            if plan.paused && configuration.adaptive {
-                resolutions.retain(Set([currentItem].compactMap { $0 }))
-                for (entry, task) in resolutionTasks where entry != currentItem { task.cancel(); resolutionTasks[entry] = nil }
-            }
             if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
             if recovered && !plan.paused { refreshWindowAfterTransport() }
             return
@@ -504,8 +496,7 @@ import Observation
         proxy?.cancelPrefetch(); prefetchSafe = false; prefetchIdentity = ""
         for node in pool.nodes where node.isActive { node.pause() }
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
-        resolutions.cancelAll()
-        for task in resolutionTasks.values { task.cancel() }; resolutionTasks.removeAll()
+        // Visibility pauses media work, but in-flight URL/poster resolution survives.
         updateInteractions()
     }
     /// Ends a benchmark session, drains transport accounting and emits runEnd. The player is terminal afterwards.
@@ -538,7 +529,9 @@ import Observation
     private func finishSubscribers() { for continuation in subscribers.values { continuation.finish() }; subscribers.removeAll() }
     private func applyConfiguration() {
         guard !ended else { return }
-        pool.configuration = configuration
+        var effective = configuration
+        if let plan = prefetchPlan { effective.startupPeakBitRate = plan.clamped(to: configuration).startingBitRate }
+        pool.configuration = effective
         for node in pool.nodes.dropFirst(max(1, min(4, configuration.poolSize))) { analytics.detach(playerKey: node.id) }
         pool.resize(to: configuration.poolSize); proxy?.configuration = configuration; prefetchSafe = false
         prefetchIdentity = ""; lastDecisionAt = -Double.infinity

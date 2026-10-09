@@ -31,6 +31,26 @@ struct AdaptivePrefetchTests {
             Row(name: "fixed ignores telemetry", inputs: slow, configuration: fixed, ahead: 5, behind: 1, bytes: 800_000, bitrate: 1_600_000, reason: "fixed"),
             Row(name: "app caps", inputs: fast, configuration: cap, ahead: 1, behind: 0, bytes: 50_000, bitrate: 300_000, ready: false, concurrency: 0, reason: "fast")
         ]
+        // Retain a tier inside its ±20% band; move only after crossing the band.
+        for (previous, rate, expected) in [
+            (HMPrefetchSpeedTier.slow, 450_000.0, HMPrefetchSpeedTier.slow),
+            (.slow, 550_000, .slow), (.slow, 600_000, .medium),
+            (.medium, 450_000, .medium), (.medium, 550_000, .medium),
+            (.medium, 399_999, .slow), (.medium, 2_200_000, .medium),
+            (.medium, 2_400_000, .fast), (.fast, 1_800_000, .fast),
+            (.fast, 1_599_999, .medium), (.fast, 300_000, .slow),
+            (.slow, 3_000_000, .fast)
+        ] {
+            var previousPlan = HMPrefetchPlan(itemsAhead: 3, bytesPerItem: 400_000, reason: "previous")
+            previousPlan.speedTier = previous
+            let inputs = HMPrefetchInputs(throughputBytesPerSecond: rate, bufferedAheadSeconds: 6, previousPlan: previousPlan)
+            rows.append(Row(name: "speed band \(previous)/\(rate)", inputs: inputs,
+                ahead: expected == .slow ? 2 : expected == .fast ? 5 : 3,
+                behind: expected == .slow ? 0 : 1,
+                bytes: expected == .slow ? 200_000 : expected == .fast ? 800_000 : 400_000,
+                bitrate: expected == .slow ? 600_000 : expected == .fast ? 1_600_000 : 1_000_000,
+                reason: expected == .slow ? "slow" : expected == .fast ? "fast" : "unmeasured-or-medium"))
+        }
         fast.latencySeconds = 0.5
         rows.append(Row(name: "high latency", inputs: fast, ahead: 2, behind: 0, bytes: 200_000, bitrate: 600_000, reason: "slow"))
         slow.dwellSeconds = 1; slow.readyHitRate = 0.2
@@ -85,11 +105,12 @@ struct AdaptivePrefetchTests {
         let unsafe = HMAdaptivePrefetchPolicy().decide(HMPrefetchInputs(bufferedAheadSeconds: .nan), configuration: c)
         #expect(unsafe.paused)
         var m = HMPrefetchMeasurements()
-        m.transfer(bytes: 1000, seconds: 1, ttfb: 0.2, alpha: 0.25)
+        m.transfer(bytes: 1000, seconds: 1, ttfb: 2, alpha: 0.25)
+        #expect(m.latency == nil) // Ignore a cold first request, even when it exceeds the slow threshold.
         m.transfer(bytes: 3000, seconds: 1, ttfb: 0.6, alpha: 0.25)
         m.transfer(bytes: 0, seconds: 1, ttfb: nil, alpha: 0.25)
         m.arrival(hit: false, dwell: 1, alpha: 0.25); m.arrival(hit: true, dwell: 5, alpha: 0.25)
-        #expect(m.throughput == 1500 && abs((m.latency ?? 0) - 0.3) < 0.0001)
+        #expect(m.throughput == 1500 && abs((m.latency ?? 0) - 0.6) < 0.0001)
         #expect(m.hitRate == 0.25 && m.dwell == 2)
         #expect(HMReadinessTier.atActivation(warm: false, cachedBytes: 2, minimumBytes: 32_768) == .resolved)
         #expect(HMReadinessTier.atActivation(warm: false, cachedBytes: 32_768, minimumBytes: 32_768) == .cachedBytes)

@@ -10,14 +10,13 @@ Zero bitrate means uncapped; zero cache capacity prevents explicit disk prefetch
 ```swift
 var configuration = HMPlayerConfiguration(adaptive: true)
 configuration.prefetch = HMPrefetchPolicy(ahead: 5, behind: 1, bytesPerItem: 800_000)
-configuration.adaptiveThresholds.slowBytesPerSecond = 400_000
 let player = HMPlayer(configuration: configuration)
 // Optional: player.prefetchPolicy = PartnerPrefetchPolicy()
 ```
 
 `HMPrefetchPolicyProviding.decide(_:configuration:)` accepts `HMPrefetchInputs`
 and returns `HMPrefetchPlan`. `HMAdaptivePrefetchPolicy` is the stateless default;
-`wasPaused` carries hysteresis explicitly. A partner provider receives the same
+`wasPaused` and `previousPlan` carry buffer and speed-tier hysteresis explicitly. Inputs and Plan have no Codable conformance; thresholds are Benchmark SPI tuning. A partner provider receives the same
 smoothed measurements. The engine clamps every returned plan and independently
 enforces buffer safety. `player.prefetchPlan` exposes the last applied plan.
 
@@ -34,35 +33,39 @@ The cache window follows distance order with forward entries first at equal
 distance. Binge misses suppress behind work and focus on +1/+2. The default
 hybrid uses two players; explicit benchmark strategies retain their player knobs.
 A long dwell delays ready-player and disk work from activation, then uses a deeper
-budget. Resolving metadata can continue once the current buffer is safe.
-Stalls/unsafe buffers cancel prefix tasks, release warm players and cancel pending
-speculative resolutions; recovery needs the higher buffer threshold. A fully
+budget. URL/poster resolution continues regardless of buffer safety or media pauses.
+Stalls/unsafe buffers cancel prefix tasks and release warm players, preserving pending
+neighbour resolution and resolved posters; recovery needs the higher buffer threshold. A fully
 buffered finite tail can recover below that threshold, but never during a stall.
 
 Throughput and request time to response headers come from the existing upstream
-URLSession delegate for both playback and speculative transfers. Receive timing
+URLSession delegate for both playback and speculative transfers. Throughput is **per connection**,
+a conservative estimate rather than aggregate link capacity. Receive timing
 excludes deliberate streaming backpressure. Samples smaller than 32 KiB or 10 ms
 are excluded from throughput to avoid tiny manifest/tail bursts inflating capacity;
-headers still update latency. Cache hits do not update throughput. Readiness and
+The first valid TTFB sample is ignored to avoid cold DNS/TLS bias; subsequent headers update latency. Cache hits do not update throughput. Readiness and
 dwell update on actual sequential forward activations, excluding the initial item,
 backward revisits and jumps. No network-type, radio, Low Data Mode or Wi-Fi rule exists.
 
-Every evaluation emits `prefetchDecision` into the normal analytics stream and
-JSONL: complete JSON `inputs` and `plan` properties, `reason`, provider name, and
-numeric budget/window/concurrency/bitrate/pause metrics. Evaluation uses the
-existing buffer ticks, at most four times/sec unless safety changes require an
-immediate decision. Stable plans do not restart transfers. A changed budget can
-extend a previously completed prefix. `transferSample` is separate from byte
-accounting so measurement events never inflate network totals.
+`prefetchDecision` is Benchmark SPI and is recorded **only when the applied plan
+changes and an HMJSONLFileSink is attached**. Partner sinks, including Mux, receive
+no policy snapshots. Inputs/Plan JSON encoding and event serialization run on the
+JSONL writer queue. Without a benchmark sink no decision event is built or encoded.
+Evaluation uses existing buffer ticks, at most four times/sec unless safety changes
+require an immediate decision. Stable plans do not assign observable state, reapply
+pool configuration, or restart transfers. A changed cap updates prepared neighbours
+only when the value changes; the current item's cap is set once at activation,
+then lifted under the existing startup-window rules. A changed budget can extend a
+completed prefix. `transferSample` remains separate from byte accounting.
 
 The analyzer adds actual forward-arrival `ready_hit_rate`, `plan_changes`,
-`average_budget_bytes` and `policy_decisions`. Budget average is evaluation-weighted,
+`average_budget_bytes` and `policy_decisions`. Budget average is change-weighted,
 including paused plans; it is not bytes downloaded. Configuration fingerprints
 include adaptive mode, every threshold, resolution horizon and concurrency cap.
 
 ## Default thresholds and benchmark knobs
 
-All thresholds are mutable on `configuration.adaptiveThresholds`. Grid knobs use
+All thresholds are mutable on `configuration.adaptiveThresholds` under `@_spi(Benchmark) import HotMicPlayer`. They are experimental tuning, excluded from partner API. Grid knobs use
 numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 `resolve-ahead` (0–32), and `cached-start-bytes` (tier-2 readiness floor). Direct arguments/environment use the same names:
 `--hm-adaptive 0`, `HM_ADAPTIVE=0`. Existing knobs still override strategy presets.
@@ -71,6 +74,7 @@ numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 | --- | --- | --- |
 | `slowBytesPerSecond` | 500_000 | `adaptive-slow-bytes-per-second` |
 | `fastBytesPerSecond` | 2_000_000 | `adaptive-fast-bytes-per-second` |
+| `speedHysteresisFraction` | 0.2 | `adaptive-speed-hysteresis-fraction` |
 | `highLatencySeconds` | 0.4 | `adaptive-high-latency-seconds` |
 | `lowHitRate` | 0.7 | `adaptive-low-hit-rate` |
 | `bingeDwellSeconds` | 2 | `adaptive-binge-dwell-seconds` |
@@ -89,6 +93,11 @@ numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 | `mediumBitRate` | 1_000_000 | `adaptive-medium-bit-rate` |
 | `fastBitRate` | 3_000_000 | `adaptive-fast-bit-rate` |
 | `ewmaAlpha` | 0.25 | `adaptive-ewma-alpha` |
+
+Speed tiers retain their previous state within ±20% of each throughput boundary.
+Slow exits at 600000 B/s; medium enters slow below 400000. Medium enters fast at
+2400000 B/s; fast exits below 1600000. The band is configurable from 0 to 1.
+A direct jump can cross both boundaries. High smoothed latency still forces slow.
 
 Slow throughput or high latency uses 25% of the app budget, two ahead, no behind,
 and a 600 kbps starting rendition. Unknown/medium uses 50%, three ahead and

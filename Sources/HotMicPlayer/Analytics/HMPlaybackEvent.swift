@@ -41,8 +41,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         case preloadReady
         /// A pooled `AVPlayer` was recycled onto a different item.
         case playerRecycled
-        /// Complete measured inputs, applied plan and reason for each policy evaluation.
-        case prefetchDecision
+        /// Changed applied plan and measured inputs, delivered only to benchmark sinks.
+        @_spi(Benchmark) case prefetchDecision
         /// Active upstream receive timing, separate from delivered payload accounting.
         @_spi(Benchmark) case transferSample
         /// One response's network or cache byte totals.

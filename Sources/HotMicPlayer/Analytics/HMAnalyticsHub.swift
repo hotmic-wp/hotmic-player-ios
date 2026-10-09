@@ -32,6 +32,15 @@ public final class HMAnalyticsHub {
         for sink in sinks { sink.handle(event, item: item) }
     }
 
+    // Benchmark snapshots never fan out to partner sinks, including Mux.
+    func recordPrefetchDecision(inputs: HMPrefetchInputs, plan: HMPrefetchPlan, item: HMMediaItem, policy: String) {
+        let benchmarks = sinks.compactMap { $0 as? HMJSONLFileSink }
+        guard !benchmarks.isEmpty else { return }
+        let decision = HMPrefetchDecision(itemID: item.id, monotonicTime: ProcessInfo.processInfo.systemUptime,
+            inputs: inputs, plan: plan, policy: policy)
+        for sink in benchmarks { sink.record(decision) }
+    }
+
     #if canImport(AVFoundation)
     func attach(playerLayer: AVPlayerLayer, playerKey: String, item: HMMediaItem) {
         for sink in sinks { sink.attach(playerLayer: playerLayer, playerKey: playerKey, item: item) }

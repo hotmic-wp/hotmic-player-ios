@@ -16,33 +16,6 @@ init()
 struct HMAdaptivePrefetchPolicy
 ```
 
-## HMAdaptivePrefetchThresholds
-
-```swift
-init()
-struct HMAdaptivePrefetchThresholds
-var bingeBudgetMultiplier: Double
-var bingeDwellSeconds: Double
-var ewmaAlpha: Double
-var fastBitRate: Double
-var fastBytesPerSecond: Double
-var highLatencySeconds: Double
-var longDwellBudgetMultiplier: Double
-var longDwellDelayFraction: Double
-var longDwellSeconds: Double
-var lowHitRate: Double
-var maximumDelaySeconds: Double
-var mediumAhead: Int
-var mediumBitRate: Double
-var mediumBudgetFraction: Double
-var recoveryBufferSeconds: Double
-var safetyBufferSeconds: Double
-var slowAhead: Int
-var slowBitRate: Double
-var slowBudgetFraction: Double
-var slowBytesPerSecond: Double
-```
-
 ## HMAnalyticsHub
 
 ```swift
@@ -279,7 +252,6 @@ case pause
 case play
 case playerRecycled
 case playing
-case prefetchDecision
 case preloadReady
 case preloadStart
 case rebufferEnd
@@ -382,7 +354,6 @@ static let highQuality: HMPlayerConfiguration
 static let instantStart: HMPlayerConfiguration
 struct HMPlayerConfiguration
 var adaptive: Bool
-var adaptiveThresholds: HMAdaptivePrefetchThresholds
 var cacheCapacityBytes: Int
 var loops: Bool
 var managesAudioSession: Bool
@@ -445,13 +416,14 @@ protocol HMPlaylistSource : Sendable
 ## HMPrefetchInputs
 
 ```swift
-init(throughputBytesPerSecond: Double? = nil, latencySeconds: Double? = nil, readyHitRate: Double? = nil, dwellSeconds: Double? = nil, bufferedAheadSeconds: Double = 0, remainingSeconds: Double? = nil, isStalling: Bool = false, wasPaused: Bool = true, elapsedOnItemSeconds: Double = 0)
+init(throughputBytesPerSecond: Double? = nil, latencySeconds: Double? = nil, readyHitRate: Double? = nil, dwellSeconds: Double? = nil, bufferedAheadSeconds: Double = 0, remainingSeconds: Double? = nil, isStalling: Bool = false, wasPaused: Bool = true, elapsedOnItemSeconds: Double = 0, previousPlan: HMPrefetchPlan? = nil)
 struct HMPrefetchInputs
 var bufferedAheadSeconds: Double
 var dwellSeconds: Double?
 var elapsedOnItemSeconds: Double
 var isStalling: Bool
 var latencySeconds: Double?
+var previousPlan: HMPrefetchPlan?
 var readyHitRate: Double?
 var remainingSeconds: Double?
 var throughputBytesPerSecond: Double?

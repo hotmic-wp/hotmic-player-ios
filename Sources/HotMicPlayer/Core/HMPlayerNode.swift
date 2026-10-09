@@ -135,9 +135,9 @@ final class HMPlayerNode: Identifiable {
         emit(.preloadStart, item: newItem)
     }
 
-    /// Change only the startup phase; never reapply a ceiling after it was lifted.
+    /// Only prepared neighbours may adopt a changed cap; activation sets the current cap once.
     func applyStartingBitRate(_ cap: Double) {
-        if !didLiftStartupCap { player.currentItem?.preferredPeakBitRate = cap }
+        if !isActive, let item = player.currentItem, item.preferredPeakBitRate != cap { item.preferredPeakBitRate = cap }
     }
 
     /// Promote this node to the on-screen item and begin playback.

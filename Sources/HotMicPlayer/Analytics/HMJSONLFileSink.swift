@@ -31,15 +31,19 @@ import UIKit
     }
     /// Consumes one telemetry event on the main actor.
     public func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+        writer.append(event)
+    }
+    func record(_ decision: HMPrefetchDecision) { writer.append(decision) }
+    nonisolated private static func eventLine(_ event: HMPlaybackEvent) throws -> Data {
         let object: [String: Any] = ["type": "event", "event": event.kind.rawValue,
             "event_id": event.id.uuidString, "item_id": event.itemID,
             "monotonic_s": event.monotonicTime, "position_s": event.position,
             "metrics": event.metrics.filter { $0.value.isFinite }, "properties": event.properties]
-        do { writer.append(try Self.line(object)) } catch { writer.record(error) }
+        return try line(object)
     }
     /// Waits for queued file writes and reports any write failure.
     public func flush() async throws { try await writer.flush() }
-    private static func line(_ object: [String: Any]) throws -> Data {
+    nonisolated private static func line(_ object: [String: Any]) throws -> Data {
         var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         data.append(10); return data
     }
@@ -55,6 +59,16 @@ import UIKit
         deinit { try? handle.close() }
         func append(_ data: Data) {
             queue.async { [self] in do { try handle.write(contentsOf: data) } catch { failure = error } }
+        }
+        func append(_ event: HMPlaybackEvent) {
+            queue.async { [self] in
+                do { try handle.write(contentsOf: HMJSONLFileSink.eventLine(event)) } catch { failure = error }
+            }
+        }
+        func append(_ decision: HMPrefetchDecision) {
+            queue.async { [self] in
+                do { try handle.write(contentsOf: HMJSONLFileSink.eventLine(decision.event)) } catch { failure = error }
+            }
         }
         func record(_ error: Error) { queue.async { [self] in failure = error } }
         func flush() async throws {

@@ -41,26 +41,38 @@ class Origin(http.server.BaseHTTPRequestHandler):
                     while remaining:
                         block=f.read(min(16*1024 if self.server.bandwidth else 64*1024,remaining))
                         if not block: break
-                        if self.server.bandwidth:
+                        bandwidth=self.server.bandwidth
+                        if self.server.profile:
+                            elapsed=(time.monotonic()-self.server.started)%self.server.period
+                            bandwidth=next(rate for until,rate in self.server.profile if elapsed<until)
+                        if bandwidth:
                             # One shared origin capacity across all connections, rather
                             # than multiplying bandwidth by prefetch concurrency.
                             with self.server.rate_lock:
-                                self.server.next_send=max(time.monotonic(),self.server.next_send)+len(block)/self.server.bandwidth
+                                self.server.next_send=max(time.monotonic(),self.server.next_send)+len(block)/bandwidth
                                 ready=self.server.next_send
                             time.sleep(max(0,ready-time.monotonic()))
                         self.wfile.write(block); remaining-=len(block); sent+=len(block)
         except (BrokenPipeError,ConnectionResetError): pass
         finally:
-            row=dict(connection=f"{self.client_address[0]}:{self.client_address[1]}",timestamp=time.time(),path=urlsplit(self.path).path,method=self.command,status=status,bytes=sent,range=self.headers.get('Range'),duration_ms=(time.monotonic()-began)*1000,bandwidth_bytes_s=self.server.bandwidth,latency_ms=self.server.latency*1000)
+            row=dict(connection=f"{self.client_address[0]}:{self.client_address[1]}",timestamp=time.time(),path=urlsplit(self.path).path,method=self.command,status=status,bytes=sent,range=self.headers.get('Range'),duration_ms=(time.monotonic()-began)*1000,bandwidth_bytes_s=self.server.bandwidth,bandwidth_profile=self.server.profile,origin_elapsed_s=time.monotonic()-self.server.started,latency_ms=self.server.latency*1000)
             with self.server.log_lock:
                 with self.server.log.open('a') as f: f.write(json.dumps(row)+'\n')
     def log_message(self,*args): pass
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--root',default='bench/generated'); p.add_argument('--host',default='127.0.0.1'); p.add_argument('--port',type=int,default=8088); p.add_argument('--log',default='bench/results/origin.jsonl'); p.add_argument('--bandwidth-bytes-per-second',type=float,default=0,help='Shared media payload rate; 0 is unlimited'); p.add_argument('--latency-ms',type=float,default=0,help='Delay before each response header'); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--root',default='bench/generated'); p.add_argument('--host',default='127.0.0.1'); p.add_argument('--port',type=int,default=8088); p.add_argument('--log',default='bench/results/origin.jsonl'); p.add_argument('--bandwidth-bytes-per-second',type=float,default=0,help='Shared media payload rate; 0 is unlimited'); p.add_argument('--latency-ms',type=float,default=0,help='Delay before each response header'); p.add_argument('--bandwidth-profile',default='',help='Repeating duration:bytes-per-second phases, e.g. 4:450000,4:550000'); a=p.parse_args()
     if not all(__import__('math').isfinite(v) and v>=0 for v in (a.bandwidth_bytes_per_second,a.latency_ms)): p.error('throttle values must be finite and nonnegative')
+    profile=[]; period=0
+    try:
+        for phase in filter(None,a.bandwidth_profile.split(',')):
+            duration,rate=map(float,phase.split(':'))
+            if not all(__import__('math').isfinite(v) and v>0 for v in (duration,rate)): raise ValueError()
+            period+=duration; profile.append((period,rate))
+    except ValueError: p.error('profile requires positive finite duration:rate phases')
     s=http.server.ThreadingHTTPServer((a.host,a.port),Origin); s.root=pathlib.Path(a.root).resolve(); s.log=pathlib.Path(a.log); s.log.parent.mkdir(parents=True,exist_ok=True); s.log_lock=threading.Lock()
     s.bandwidth=a.bandwidth_bytes_per_second; s.latency=a.latency_ms/1000; s.rate_lock=threading.Lock(); s.next_send=0
+    s.profile=profile; s.period=period; s.started=time.monotonic()
     print(f'Origin http://{a.host}:{a.port} -> {s.root}',flush=True)
     try: s.serve_forever()
     except KeyboardInterrupt: pass

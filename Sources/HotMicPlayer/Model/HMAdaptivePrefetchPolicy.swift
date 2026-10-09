@@ -1,11 +1,13 @@
 import Foundation
 
 /// Measured-performance tuning. No network type or system network preferences are consulted.
-public struct HMAdaptivePrefetchThresholds: Codable, Sendable, Equatable {
+@_spi(Benchmark) public struct HMAdaptivePrefetchThresholds: Codable, Sendable, Equatable {
     /// Throughput below this is slow, in payload bytes/sec.
     public var slowBytesPerSecond: Double = 500_000
     /// Throughput at or above this is fast, in payload bytes/sec.
     public var fastBytesPerSecond: Double = 2_000_000
+    /// Fractional speed-tier hysteresis band; default ±20% around each boundary.
+    public var speedHysteresisFraction: Double = 0.2
     /// Request time to response headers above this forces the slow plan.
     public var highLatencySeconds: Double = 0.4
     /// EWMA readiness hit rate below this triggers binge prioritisation.
@@ -47,8 +49,8 @@ public struct HMAdaptivePrefetchThresholds: Codable, Sendable, Equatable {
 }
 
 /// Smoothed telemetry and explicit hysteresis state; nil means no observation yet.
-public struct HMPrefetchInputs: Codable, Sendable, Equatable {
-    /// EWMA upstream payload rate; cache reads are excluded.
+public struct HMPrefetchInputs: Sendable, Equatable {
+    /// EWMA upstream payload rate per connection, a conservative estimate; cache reads are excluded.
     public var throughputBytesPerSecond: Double?
     /// EWMA request time to response headers.
     public var latencySeconds: Double?
@@ -66,21 +68,27 @@ public struct HMPrefetchInputs: Codable, Sendable, Equatable {
     public var wasPaused: Bool
     /// Wall time since current activation.
     public var elapsedOnItemSeconds: Double
+    /// Previous applied plan, supplying explicit speed-tier hysteresis state.
+    public var previousPlan: HMPrefetchPlan?
     /// Creates measured inputs, with unknown metrics represented by nil.
     public init(throughputBytesPerSecond: Double? = nil, latencySeconds: Double? = nil,
                 readyHitRate: Double? = nil, dwellSeconds: Double? = nil,
                 bufferedAheadSeconds: Double = 0, remainingSeconds: Double? = nil,
-                isStalling: Bool = false, wasPaused: Bool = true, elapsedOnItemSeconds: Double = 0) {
+                isStalling: Bool = false, wasPaused: Bool = true, elapsedOnItemSeconds: Double = 0,
+                previousPlan: HMPrefetchPlan? = nil) {
         self.throughputBytesPerSecond = throughputBytesPerSecond; self.latencySeconds = latencySeconds
         self.readyHitRate = readyHitRate; self.dwellSeconds = dwellSeconds
         self.bufferedAheadSeconds = bufferedAheadSeconds; self.remainingSeconds = remainingSeconds
+        self.previousPlan = previousPlan
         self.isStalling = isStalling; self.wasPaused = wasPaused; self.elapsedOnItemSeconds = elapsedOnItemSeconds
     }
 }
 
 /// Tier 1 is a prerolled next player; tier 2 is a nearest-first disk prefix;
 /// tier 3 resolves URL/poster only. Delay is measured from current activation.
-public struct HMPrefetchPlan: Codable, Sendable, Equatable {
+public struct HMPrefetchPlan: Sendable, Equatable {
+    // Default-policy state is not a partner wire contract.
+    var speedTier: HMPrefetchSpeedTier = .medium
     /// Number of following entries to cache, nearest first.
     public var itemsAhead: Int
     /// Number of previous entries to cache, nearest first.
@@ -95,7 +103,7 @@ public struct HMPrefetchPlan: Codable, Sendable, Equatable {
     public var startingBitRate: Double
     /// Maximum simultaneous explicit prefix transfers; zero admits none.
     public var concurrency: Int
-    /// Safety pause for all speculative work.
+    /// Safety pause for speculative media downloads; URL/poster resolution continues.
     public var paused: Bool
     /// Earliest elapsed activation time for ready-player and disk work.
     public var startAfterSeconds: Double
@@ -139,8 +147,7 @@ public struct HMPrefetchPlan: Codable, Sendable, Equatable {
         }
     }
     var workIdentity: String {
-        var copy = self; copy.reason = ""
-        return json(copy)
+        "\(itemsAhead)|\(itemsBehind)|\(bytesPerItem)|\(secondsPerItem.map(String.init(describing:)) ?? "nil")|\(keepReadyPlayer)|\(startingBitRate)|\(concurrency)|\(paused)|\(startAfterSeconds)"
     }
 }
 
@@ -150,7 +157,7 @@ public protocol HMPrefetchPolicyProviding: Sendable {
     func decide(_ inputs: HMPrefetchInputs, configuration: HMPlayerConfiguration) -> HMPrefetchPlan
 }
 
-/// Stateless default policy; hysteresis uses inputs.wasPaused so simulations are reproducible.
+/// Stateless default policy; previousPlan and wasPaused make hysteresis reproducible.
 public struct HMAdaptivePrefetchPolicy: HMPrefetchPolicyProviding {
     /// Creates the stateless default provider.
     public init() {}
@@ -161,9 +168,19 @@ public struct HMAdaptivePrefetchPolicy: HMPrefetchPolicyProviding {
             bytesPerItem: c.prefetch.bytesPerItem, secondsPerItem: c.prefetch.secondsPerItem,
             startingBitRate: c.startupPeakBitRate, concurrency: c.maxPrefetchConcurrency, reason: "fixed")
         guard c.adaptive else { return p.clamped(to: c) }
-        let slow = i.throughputBytesPerSecond.map { $0 < nonnegative(t.slowBytesPerSecond) } == true ||
-            i.latencySeconds.map { $0 > nonnegative(t.highLatencySeconds) } == true
-        let fast = !slow && i.throughputBytesPerSecond.map { $0 >= max(nonnegative(t.slowBytesPerSecond), nonnegative(t.fastBytesPerSecond)) } == true
+        let low = nonnegative(t.slowBytesPerSecond)
+        let high = max(low, nonnegative(t.fastBytesPerSecond))
+        let band = unit(t.speedHysteresisFraction)
+        let previous = i.previousPlan?.speedTier
+        var tier = previous ?? .medium
+        if let rate = i.throughputBytesPerSecond, rate.isFinite {
+            let slowBoundary = low * (previous == .slow ? 1 + band : previous == nil ? 1 : 1 - band)
+            let fastBoundary = high * (previous == .fast ? 1 - band : previous == nil ? 1 : 1 + band)
+            tier = rate < slowBoundary ? .slow : rate >= fastBoundary ? .fast : .medium
+        }
+        if i.latencySeconds.map({ $0 > nonnegative(t.highLatencySeconds) }) == true { tier = .slow }
+        p.speedTier = tier
+        let slow = tier == .slow, fast = tier == .fast
         var fraction = slow ? unit(t.slowBudgetFraction) : fast ? 1 : unit(t.mediumBudgetFraction)
         p.itemsAhead = slow ? max(0, t.slowAhead) : fast ? c.prefetch.ahead : max(0, t.mediumAhead)
         p.itemsBehind = slow ? 0 : c.prefetch.behind
@@ -201,6 +218,7 @@ func json<T: Encodable>(_ value: T) -> String {
 
 /// Only actual transfers and page arrivals update these EWMAs; cache reads never inflate throughput.
 struct HMPrefetchMeasurements {
+    private var sawFirstLatency = false
     private(set) var throughput: Double?
     private(set) var latency: Double?
     private(set) var hitRate: Double?
@@ -211,10 +229,16 @@ struct HMPrefetchMeasurements {
     }
     mutating func transfer(bytes: Double, seconds: Double, ttfb: Double?, alpha: Double) {
         if bytes > 0, seconds > 0, (bytes / seconds).isFinite { throughput = smoothed(throughput, bytes / seconds, alpha: alpha) }
-        if let ttfb, ttfb >= 0, ttfb.isFinite { latency = smoothed(latency, ttfb, alpha: alpha) }
+        if let ttfb, ttfb >= 0, ttfb.isFinite {
+            // Cold DNS/TLS must not determine the first speed tier.
+            if sawFirstLatency { latency = smoothed(latency, ttfb, alpha: alpha) }
+            sawFirstLatency = true
+        }
     }
     mutating func arrival(hit: Bool, dwell seconds: Double, alpha: Double) {
         hitRate = smoothed(hitRate, hit ? 1 : 0, alpha: alpha)
         if seconds > 0, seconds.isFinite { dwell = smoothed(dwell, seconds, alpha: alpha) }
     }
 }
+
+enum HMPrefetchSpeedTier: String, Sendable { case slow, medium, fast }

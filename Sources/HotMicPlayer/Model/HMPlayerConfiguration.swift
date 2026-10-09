@@ -79,7 +79,7 @@ public struct HMPlayerConfiguration: Sendable {
     /// Adapt within app limits using measured performance; false uses fixed numbers.
     public var adaptive: Bool = true
     /// All thresholds for the default measured-performance policy.
-    public var adaptiveThresholds = HMAdaptivePrefetchThresholds()
+    @_spi(Benchmark) public var adaptiveThresholds = HMAdaptivePrefetchThresholds()
     /// Maximum simultaneous prefix downloads, bounded to 0...4; default serial.
     public var maxPrefetchConcurrency: Int = 1
     /// URL/poster-only forward resolution horizon, bounded to 0...32.

@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Live analytics inspector: the normalised event stream the SDK emits.
 struct PlayerEventsList: View {

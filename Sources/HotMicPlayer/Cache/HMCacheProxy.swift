@@ -7,6 +7,8 @@ import Network
 actor HMCacheTransport {
     struct Route { let url: URL; let item: HMMediaItem }
     struct Transfer { let data: Data; let total: Int; let mime: String; let base: URL; let start: Int }
+    private var startup: Task<Bool, Never>?
+    private var playlistOwners: Set<String> = []
     private var listener: NWListener?
     private var listenerID = UUID()
     private var startWaiters: [CheckedContinuation<Bool, Never>] = []
@@ -27,6 +29,7 @@ actor HMCacheTransport {
     private var eventDelivery: Task<Void, Never>?
     private var connections: [UUID: NWConnection] = [:]
     private var responseTasks: [UUID: Task<Void, Never>] = [:]
+    private var responseItems: [UUID: HMMediaItem] = [:]
     private var prefetchTask: Task<Void, Never>?
     private var workEpoch = HMPrefetchEpoch()
     private var generation: Int { workEpoch.generation }
@@ -49,9 +52,15 @@ actor HMCacheTransport {
     func setEventHandler(_ handler: @escaping @MainActor @Sendable (HMPlaybackEvent, HMMediaItem) -> Void) { onEvent = handler }
     func updateConfiguration(_ config: HMPlayerConfiguration) async {
         configuration = config; cancelPrefetch()
-        if config.strategy.usesDataCache { await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(retainedItems.map { key($0.url) })) }
+        if config.strategy.usesDataCache { await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(retainedItems.compactMap(\.url).map { key($0) })) }
     }
     func start() async -> Bool {
+        if state.port != 0 { return true }
+        if let startup { return await startup.value }
+        let task = Task { await performStart() }; startup = task
+        let ready = await task.value; startup = nil; return ready
+    }
+    private func performStart() async -> Bool {
         guard !isFinishing, !disabled else { return false }
         if port != 0 { return true }
         let ready = await withCheckedContinuation { c in
@@ -82,6 +91,8 @@ actor HMCacheTransport {
         }
         if configuration.strategy.usesDataCache { await cache.configure(capacity: configuration.cacheCapacityBytes, pinned: []) }
         cachedBytes = await cache.sizes(); state.setBytes(cachedBytes)
+        guard !isFinishing, port != 0 else { return false }
+        state.setPort(port)
         return true
     }
     private func resolveStart(_ ready: Bool) {
@@ -93,26 +104,31 @@ actor HMCacheTransport {
         guard listenerID == identifier else { return }
         switch value {
         case .ready:
-            port = listener?.port?.rawValue ?? 0; previousPort = port; state.setPort(port); resolveStart(port != 0)
+            port = listener?.port?.rawValue ?? 0; previousPort = port; resolveStart(port != 0)
         case .failed: previousPort = 0; resolveStart(false)
         case .cancelled: resolveStart(false)
         default: break
         }
     }
+    #if DEBUG
+    func interruptListenerForTesting() { listener?.cancel() }
+    #endif
     private func startTimedOut(_ identifier: UUID) { if identifier == listenerID, port == 0 { resolveStart(false) } }
-    nonisolated func url(for item: HMMediaItem) -> URL {
+    nonisolated func url(for item: HMMediaItem) -> URL? {
+        guard let url = item.url else { return nil }
+        guard !url.isFileURL else { return url }
         if state.port == 0 { Task { _ = await start() } }
-        guard !item.url.isFileURL, item.streamKind != .live else { return item.url }
-        return state.url(item.url, item: item)
+        return state.url(url, item: item)
     }
     private func proxyURL(_ url: URL, item: HMMediaItem) -> URL { state.url(url, item: item) }
     private func key(_ url: URL) -> String { HMCacheKey.canonical(url, ignoring: configuration.volatileSigningQueryParameters) }
     func retainWindow(_ items: [HMMediaItem]) {
         retainedItems = items
         let ids = Set(items.map(\.id))
+        for (id, item) in responseItems where !items.contains(item) { close(id) }
         played.formIntersection(ids)
         warmDeliveries = warmDeliveries.filter { ids.contains($0.key) }
-        let retained = Set(items.map { key($0.url) })
+        let retained = Set(items.compactMap(\.url).map { key($0) })
         // Completed resources can be folded into one waste counter as soon as
         // their route leaves the window. Active/canceling requests retain their
         // accounting until completion and are revisited on the next commit.
@@ -122,13 +138,25 @@ actor HMCacheTransport {
             prefetchRanges[resource] = nil; playedRanges[resource] = nil; resourceOwners[resource] = nil
         }
         prefetched.formIntersection(retained)
-        memoryPlaylists = memoryPlaylists.filter { ProcessInfo.processInfo.systemUptime - $0.value.1 < 3 && state.contains(url: $0.value.0.base) }
+        memoryPlaylists = memoryPlaylists.filter { ProcessInfo.processInfo.systemUptime - $0.value.1 < max(0, configuration.playlistTTL) && state.contains(url: $0.value.0.base) }
+    }
+    func retainPlaylist(_ items: [HMMediaItem]) async {
+        let owners = Set(items.compactMap(\.url).map { key($0) })
+        let removed = playlistOwners.subtracting(owners)
+        playlistOwners = owners
+        // Shared HLS child resources retain all known owners, independent of entry IDs.
+        let shared = Dictionary(uniqueKeysWithValues: resourceOwners.compactMap { resource, roots -> (String, String)? in
+            roots.intersection(owners).sorted().first.map { (resource, $0) }
+        })
+        await cache.release(owners: removed, sharedResources: shared)
+        cachedBytes = await cache.sizes(); state.setBytes(cachedBytes)
     }
     func markPlayed(_ item: HMMediaItem) {
+        guard let url = item.url else { return }
         played.insert(item.id)
         for (key, ranges) in warmDeliveries.removeValue(forKey: item.id) ?? [:] { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + ranges) }
         // Repeated playlist IDs share a media path and disk entries.
-        let owner = key(item.url)
+        let owner = key(url)
         Task { await cache.markPlayed(owner) }
     }
     func cancelPrefetch() {
@@ -141,25 +169,26 @@ actor HMCacheTransport {
     }
     private func removeRetiring(_ id: UUID) { retiringPrefetch[id] = nil; retainWindow(retainedItems) }
     func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem]) {
-        let identity = configuration.fingerprint + "|" + items.map { $0.id + $0.url.absoluteString }.joined(separator: "|") + "|" + keeping.map(\.id).joined(separator: "|")
+        let identity = configuration.fingerprint + "|" + items.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|") + "|" + keeping.map(\.id).joined(separator: "|")
         guard port != 0, !disabled, configuration.strategy.usesDataCache, !workEpoch.matches(identity) else { return }
         cancelPrefetch()
         guard let epoch = workEpoch.begin(identity) else { return }
         let kept = Set(keeping.map(\.id))
         warmDeliveries = warmDeliveries.filter { kept.contains($0.key) }
-        memoryPlaylists = memoryPlaylists.filter { ProcessInfo.processInfo.systemUptime - $0.value.1 < 3 && state.contains(url: $0.value.0.base) }
+        memoryPlaylists = memoryPlaylists.filter { ProcessInfo.processInfo.systemUptime - $0.value.1 < max(0, configuration.playlistTTL) && state.contains(url: $0.value.0.base) }
 
         let config = configuration
-        prefetchTask = Task { [weak self] in await self?.runPrefetch(items, keeping: keeping, config: config, epoch: epoch) }
+        prefetchTask = Task(priority: .utility) { [weak self] in await self?.runPrefetch(items, keeping: keeping, config: config, epoch: epoch) }
     }
     private func runPrefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], config: HMPlayerConfiguration, epoch: Int) async {
         guard !Task.isCancelled, epoch == generation else { return }
-        await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(keeping.map { key($0.url) }))
+        await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(keeping.compactMap(\.url).map { key($0) }))
         cachedBytes = await cache.sizes(); state.setBytes(cachedBytes)
         prefetched.formIntersection(Set(cachedBytes.keys))
-        for item in items where !item.url.isFileURL && item.streamKind != .live {
+        for item in items {
+            guard let url = item.url, !url.isFileURL else { continue }
             guard !Task.isCancelled, epoch == generation else { break }
-            let identity = key(item.url)
+            let identity = key(url)
             guard !prefetched.contains(identity) else { continue }
             do {
                 try await prefetchWithRetry(item, budget: max(0, min(HMPrefetchPolicy.maximumBytesPerItem, config.prefetch.bytesPerItem)), seconds: config.prefetch.secondsPerItem, epoch: epoch)
@@ -183,12 +212,13 @@ actor HMCacheTransport {
         }
     }
     private func prefetchItem(_ item: HMMediaItem, budget: Int, seconds: Double?) async throws {
+        guard let mediaURL = item.url else { return }
         guard budget > 0, seconds == nil || seconds! > 0 else { return }
         var remaining = budget
-        if item.url.pathExtension.lowercased() != "m3u8" {
+        if item.format != .hls {
             var cursor = 0
             while cursor < remaining {
-                let t = try await fetch(item.url, item: item, start: cursor, count: min(512 * 1024, remaining - cursor), prefetch: true)
+                let t = try await fetch(mediaURL, item: item, start: cursor, count: min(512 * 1024, remaining - cursor), prefetch: true)
                 cursor += t.data.count
                 remaining = min(remaining, t.total)
                 if let seconds, let duration = item.durationHint, duration > 0 {
@@ -198,14 +228,14 @@ actor HMCacheTransport {
             }
             return
         }
-        var url = item.url
+        var url = mediaURL
         var mediaText: String?
         // Master -> selected rendition -> init and first segment(s). Other
         // renditions are rewritten on demand, never prefetched in parallel.
         for _ in 0..<4 {
-            let t = try await fetch(url, item: item, start: 0, count: min(remaining, url.pathExtension == "m3u8" ? 64 * 1024 : remaining), prefetch: true)
+            let t = try await fetch(url, item: item, start: 0, count: min(remaining, 64 * 1024), prefetch: true)
             remaining -= t.data.count
-            guard url.pathExtension == "m3u8", let text = String(data: t.data, encoding: .utf8) else { return }
+            guard let text = String(data: t.data, encoding: .utf8), text.hasPrefix("#EXTM3U") else { return }
             if text.contains("#EXT-X-STREAM-INF") {
                 let lines = text.components(separatedBy: .newlines)
                 var choices: [(Double, URL)] = []
@@ -246,15 +276,16 @@ actor HMCacheTransport {
         let key = key(url)
         inFlightResources[key, default: 0] += 1
         defer { releaseResource(key) }
-        let playlist = url.pathExtension.lowercased() == "m3u8"
-        if playlist, let (hit, time) = memoryPlaylists[url.absoluteString], ProcessInfo.processInfo.systemUptime - time < 3 {
+        let playlist = url.pathExtension.lowercased() == "m3u8" || (url == item.url && item.format == .hls)
+        if playlist, let (hit, time) = memoryPlaylists[url.absoluteString], ProcessInfo.processInfo.systemUptime - time < max(0, configuration.playlistTTL) {
             if !prefetch {
                 recordDelivery(key: key, item: item, start: start, count: hit.data.count)
                 emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
             }
             return hit
         }
-        let owner = self.key(item.url)
+        guard let mediaURL = item.url else { throw URLError(.unsupportedURL) }
+        let owner = self.key(mediaURL)
         if !playlist, configuration.strategy.usesDataCache, let total = await cache.total(for: key) {
             let end = min(total - 1, start + count - 1)
             if end >= start, let hit = await (prefetch || url.pathExtension == "m3u8" ? cache.read(key: key, range: HMByteRange(start: start, end: end)) : cache.available(key: key, start: start, count: count)) {
@@ -269,7 +300,7 @@ actor HMCacheTransport {
         request.setValue("bytes=\(start)-\(start + count - 1)", forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let result: HMHTTPFetcher.Result
-        do { result = try await HMHTTPFetcher(limit: count).load(request) }
+        do { result = try await HMHTTPFetcher(limit: count, priority: prefetch ? URLSessionTask.lowPriority : URLSessionTask.highPriority).load(request) }
         catch {
             if let failure = error as? HMHTTPFetcher.Failure { account(failure.received, url: url, item: item, prefetch: prefetch) }
             throw error
@@ -299,16 +330,15 @@ actor HMCacheTransport {
     private func releaseResource(_ key: String) {
         if let count = inFlightResources[key], count > 1 { inFlightResources[key] = count - 1 }
         else { inFlightResources[key] = nil }
-        retainWindow(retainedItems)
     }
     private func recordDelivery(key: String, item: HMMediaItem, start: Int, count: Int) {
         let range = HMByteRange(start: start, end: start + count - 1)
-        resourceOwners[key, default: []].insert(self.key(item.url))
+        if let url = item.url { resourceOwners[key, default: []].insert(self.key(url)) }
         if played.contains(item.id) { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + [range]) }
         else { warmDeliveries[item.id, default: [:]][key] = HMRangeCoverage.union((warmDeliveries[item.id]?[key] ?? []) + [range]) }
     }
     private func account(_ bytes: Int, url: URL, item: HMMediaItem, prefetch: Bool) {
-        resourceOwners[key(url), default: []].insert(key(item.url))
+        if let mediaURL = item.url { resourceOwners[key(url), default: []].insert(key(mediaURL)) }
         if prefetch { prefetchedNetwork[key(url), default: 0] += bytes }
         emit(.transfer, item: item, metrics: ["network_bytes": Double(bytes), "cache_bytes": 0, "prefetch_bytes": prefetch ? Double(bytes) : 0], properties: ["resource": HMCacheKey.hash(key(url))])
     }
@@ -344,9 +374,10 @@ actor HMCacheTransport {
         let token = request[1].split(separator: "/").first.map(String.init) ?? ""
         if token == "health" { send(connection, id: id, code: 200, headers: [:], body: Data()); return }
         guard let route = state.route(token) else { send(connection, id: id, code: 404, headers: [:], body: Data()); return }
+        responseItems[id] = route.item
         let rangeHeader = lines.dropFirst().first { $0.lowercased().hasPrefix("range:") }.map { $0.dropFirst(6).trimmingCharacters(in: .whitespaces) }
         do {
-            if route.url.pathExtension == "m3u8" {
+            if route.url.pathExtension.lowercased() == "m3u8" || (route.url == route.item.url && route.item.format == .hls) {
                 let t = try await fetch(route.url, item: route.item, start: 0, count: 512 * 1024, prefetch: false)
                 guard t.data.count == t.total, let text = String(data: t.data, encoding: .utf8) else { throw URLError(.badServerResponse) }
                 let body = Data(HMPlaylist.rewrite(text, base: t.base) { proxyURL($0, item: route.item) }.utf8)
@@ -397,7 +428,7 @@ actor HMCacheTransport {
         request.httpMethod = headOnly ? "HEAD" : "GET"
         request.setValue(range, forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        let fetcher = HMHTTPFetcher(limit: Int.max, headers: { [weak self] response in
+        let fetcher = HMHTTPFetcher(limit: Int.max, priority: played.contains(route.item.id) ? URLSessionTask.highPriority : URLSessionTask.defaultPriority, headers: { [weak self] response in
             guard let self else { throw CancellationError() }
             await self.beginStream(streamID, response: response)
             var headers: [String: String] = [:]
@@ -410,12 +441,17 @@ actor HMCacheTransport {
             try await self.sendBlock(connection, data: Data(head.utf8))
         }, bytes: { [weak self] bytes in
             guard let self else { throw CancellationError() }
-            await self.account(bytes.count, url: route.url, item: route.item, prefetch: false)
             try await self.sendBlock(connection, data: bytes)
             await self.cacheStream(streamID, bytes: bytes, route: route)
         })
-        do { _ = try await fetcher.load(request); await cacheStream(streamID, bytes: Data(), route: route, finishing: true) }
-        catch { await cacheStream(streamID, bytes: Data(), route: route, finishing: true); throw error }
+        do {
+            let result = try await fetcher.load(request)
+            account(result.received, url: route.url, item: route.item, prefetch: false)
+            await cacheStream(streamID, bytes: Data(), route: route, finishing: true)
+        } catch {
+            if let failure = error as? HMHTTPFetcher.Failure { account(failure.received, url: route.url, item: route.item, prefetch: false) }
+            await cacheStream(streamID, bytes: Data(), route: route, finishing: true); throw error
+        }
     }
     private func beginStream(_ id: UUID, response: HTTPURLResponse) {
         guard response.statusCode == 200 || response.statusCode == 206 else { return }
@@ -425,7 +461,7 @@ actor HMCacheTransport {
         streams[id] = StreamState(cursor: cursor, total: total, mime: response.mimeType ?? HMCacheKey.mime(response.url!), base: response.url!)
     }
     private func cacheStream(_ id: UUID, bytes: Data, route: Route, finishing: Bool = false) async {
-        guard var stream = streams[id] else { return }
+        guard var stream = streams[id], let mediaURL = route.item.url else { return }
         if !bytes.isEmpty { recordDelivery(key: key(route.url), item: route.item, start: stream.cursor + stream.buffer.count, count: bytes.count) }
         stream.buffer.append(bytes)
         while stream.buffer.count >= 512 * 1024 || (finishing && !stream.buffer.isEmpty) {
@@ -433,13 +469,13 @@ actor HMCacheTransport {
             let chunk = Data(stream.buffer.prefix(size)); stream.buffer.removeFirst(size)
             if configuration.strategy.usesDataCache, stream.total > 0 {
                 await cache.put(key: key(route.url), start: stream.cursor, data: chunk, total: stream.total, mime: stream.mime, base: stream.base,
-                                owner: key(route.item.url), prefetched: false, played: played.contains(route.item.id))
+                                owner: key(mediaURL), prefetched: false, played: played.contains(route.item.id))
             }
             stream.cursor += size
         }
         streams[id] = finishing ? nil : stream
         if finishing, configuration.strategy.usesDataCache {
-            let owner = key(route.item.url); cachedBytes[owner] = await cache.bytes(for: owner); state.setBytes(cachedBytes)
+            let owner = key(mediaURL); cachedBytes[owner] = await cache.bytes(for: owner); state.setBytes(cachedBytes)
         }
     }
     private func sendBlock(_ connection: NWConnection, data: Data) async throws {
@@ -457,6 +493,7 @@ actor HMCacheTransport {
         connection.send(content: packet, completion: .contentProcessed { [weak self] _ in Task { await self?.close(id) } })
     }
     private func close(_ id: UUID) {
+        responseItems[id] = nil
         responseTasks.removeValue(forKey: id)?.cancel()
         connections.removeValue(forKey: id)?.cancel()
     }
@@ -490,6 +527,8 @@ actor HMCacheTransport {
 @MainActor final class HMCacheProxy {
     private let transport: HMCacheTransport
     private var commands: Task<Void, Never>?
+    private var retainedWindow: [HMMediaItem]?
+    private var retainedPlaylist: [HMMediaItem]?
     private func enqueue(_ action: @escaping @Sendable (HMCacheTransport) async -> Void) {
         let previous = commands, transport = transport
         commands = Task { await previous?.value; await action(transport) }
@@ -505,14 +544,17 @@ actor HMCacheTransport {
         await transport.setEventHandler { [weak self] event, item in self?.onEvent?(event, item) }
         _ = await transport.start() // Failure deliberately leaves direct playback available.
     }
-    func url(for item: HMMediaItem) -> URL { transport.url(for: item) }
+    func url(for item: HMMediaItem) -> URL? { transport.url(for: item) }
     func cachedByteCount(for item: HMMediaItem) -> Int {
-        configuration.strategy.usesDataCache && transport.state.port != 0 ? transport.state.bytes(for: HMCacheKey.canonical(item.url, ignoring: configuration.volatileSigningQueryParameters)) : 0
+        item.url.map { configuration.strategy.usesDataCache && transport.state.port != 0 ? transport.state.bytes(for: HMCacheKey.canonical($0, ignoring: configuration.volatileSigningQueryParameters)) : 0 } ?? 0
     }
     func retainWindow(_ items: [HMMediaItem]) {
-        transport.state.prune(keeping: Set(items.map(\.id)))
+        guard retainedWindow != items else { return }
+        retainedWindow = items
+        transport.state.prune(keeping: Set(items))
         enqueue { await $0.retainWindow(items) }
     }
+    func retainPlaylist(_ items: [HMMediaItem]) { guard retainedPlaylist != items else { return }; retainedPlaylist = items; enqueue { await $0.retainPlaylist(items) } }
     func markPlayed(_ item: HMMediaItem) { enqueue { await $0.markPlayed(item) } }
     func cancelPrefetch() { enqueue { await $0.cancelPrefetch() } }
     func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem]) { enqueue { await $0.prefetch(items, keeping: keeping) } }
@@ -527,7 +569,7 @@ final class HMProxyState: @unchecked Sendable {
     private var routes: [String: HMCacheTransport.Route] = [:]
     private var tokens: [String: String] = [:]
     private var cachedBytes: [String: Int] = [:]
-    private var allowedIDs: Set<String>?
+    private var allowedItems: Set<HMMediaItem>?
     var port: UInt16 { lock.lock(); defer { lock.unlock() }; return listeningPort }
     func setPort(_ value: UInt16) { lock.lock(); listeningPort = value; lock.unlock() }
     func setBytes(_ value: [String: Int]) { lock.lock(); cachedBytes = value; lock.unlock() }
@@ -537,16 +579,17 @@ final class HMProxyState: @unchecked Sendable {
     func contains(url: URL) -> Bool { lock.lock(); defer { lock.unlock() }; return routes.values.contains { $0.url == url } }
     func url(_ url: URL, item: HMMediaItem) -> URL {
         lock.lock(); defer { lock.unlock() }
-        guard listeningPort != 0, allowedIDs?.contains(item.id) != false else { return url }
+        guard listeningPort != 0, allowedItems?.contains(item) != false else { return url }
         let key = item.id + "|" + url.absoluteString
         let token = tokens[key] ?? UUID().uuidString
         tokens[key] = token; routes[token] = HMCacheTransport.Route(url: url, item: item)
-        return URL(string: "http://127.0.0.1:\(listeningPort)/\(token)/media.\(url.pathExtension.isEmpty ? "bin" : url.pathExtension)")!
+        let ext = url == item.url && item.format == .hls ? "m3u8" : (url.pathExtension.isEmpty ? "bin" : url.pathExtension)
+        return URL(string: "http://127.0.0.1:\(listeningPort)/\(token)/media.\(ext)")!
     }
-    func prune(keeping ids: Set<String>) {
+    func prune(keeping items: Set<HMMediaItem>) {
         lock.lock(); defer { lock.unlock() }
-        allowedIDs = ids
-        routes = routes.filter { ids.contains($0.value.item.id) }
+        allowedItems = items
+        routes = routes.filter { items.contains($0.value.item) }
         let valid = Set(routes.keys); tokens = tokens.filter { valid.contains($0.value) }
     }
 }

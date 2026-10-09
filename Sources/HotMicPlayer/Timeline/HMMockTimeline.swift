@@ -6,11 +6,15 @@ import Foundation
 /// replay history fetch. Seeded from the item id so every run of the demo looks
 /// identical, which matters when you are showing the same clip twice on stage.
 @MainActor
-public final class HMMockTimeline: HMStreamTimeline {
+@_spi(Benchmark) public final class HMMockTimeline: HMStreamTimeline {
 
+    /// Media-clock duration in seconds.
     public let duration: TimeInterval
+    /// Timeline events sorted by media offset.
     public private(set) var events: [HMTimelineEvent] = []
+    /// Precomputed engagement density for the scrubber.
     public private(set) var density: [HMDensityBucket] = []
+    /// Precomputed clustered peaks for the scrubber.
     public private(set) var markers: [HMTimelineMarker] = []
 
     private static let chatLines = [
@@ -38,6 +42,7 @@ public final class HMMockTimeline: HMStreamTimeline {
     /// a rebuild of the same timeline.
     private var nextEventNumber = 0
 
+    /// Generates deterministic demo events from an item ID, duration and intensity.
     public init(itemID: String, duration: TimeInterval, intensity: Double = 1.0) {
         self.itemID = itemID
         self.duration = max(duration, 1)

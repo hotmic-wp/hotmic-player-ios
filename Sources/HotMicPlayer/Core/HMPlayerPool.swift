@@ -10,22 +10,22 @@ import Observation
 /// and forth as the viewer scrolls.
 @MainActor
 @Observable
-public final class HMPlayerPool {
+final class HMPlayerPool {
 
-    public private(set) var nodes: [HMPlayerNode] = []
+    private(set) var nodes: [HMPlayerNode] = []
     private var assignments: [String: HMPlayerNode] = [:]  // itemID -> node
     @ObservationIgnored var configuration: HMPlayerConfiguration
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     /// Called when a node is about to be reassigned, so analytics can detach.
     @ObservationIgnored var willRecycle: ((HMPlayerNode, HMMediaItem) -> Void)?
 
-    public init(configuration: HMPlayerConfiguration = .default) {
+    init(configuration: HMPlayerConfiguration = .default) {
         self.configuration = configuration
         resize(to: configuration.poolSize)
     }
 
     /// Number of nodes currently holding content. Surfaced in the sample HUD.
-    public var busyCount: Int { nodes.filter { $0.item != nil }.count }
+    var busyCount: Int { nodes.filter { $0.item != nil }.count }
 
     func resize(to size: Int) {
         let target = max(1, min(4, size))
@@ -50,8 +50,9 @@ public final class HMPlayerPool {
     }
 
     /// The node already responsible for `item`, if any. Does not allocate.
-    public func existingNode(for item: HMMediaItem) -> HMPlayerNode? {
-        assignments[item.id]
+    func existingNode(for item: HMMediaItem) -> HMPlayerNode? {
+        guard let node = assignments[item.id], node.item == item else { return nil }
+        return node
     }
 
     /// Get a node for `item`, recycling the least-useful one if needed.
@@ -60,12 +61,12 @@ public final class HMPlayerPool {
     ///   are never evicted, which is what stops back-swipes from re-buffering.
     @discardableResult
     func node(for item: HMMediaItem, protecting protectedItemIDs: Set<String>, playbackURL: URL? = nil) -> HMPlayerNode {
-        if let existing = assignments[item.id] {
+        if let existing = existingNode(for: item) {
             existing.lastTouched = Date()
             return existing
         }
 
-        let node = evictionCandidate(protecting: protectedItemIDs)
+        let node = assignments[item.id] ?? evictionCandidate(protecting: protectedItemIDs)
         if let displaced = node.item {
             willRecycle?(node, item)
             assignments[displaced.id] = nil
@@ -89,9 +90,9 @@ public final class HMPlayerPool {
     }
 
     /// Release every node not in `keepItemIDs`. Called after each page change.
-    func trim(keeping keepItemIDs: Set<String>) {
+    func trim(keeping keepItems: Set<HMMediaItem>) {
         for node in nodes {
-            guard let item = node.item, !keepItemIDs.contains(item.id) else { continue }
+            guard let item = node.item, !keepItems.contains(item) else { continue }
             willRecycle?(node, item)
             assignments[item.id] = nil
             node.release()

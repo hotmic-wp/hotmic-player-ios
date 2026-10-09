@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Hosts the two screens and owns everything long-lived: the feed controller,
 /// the analytics sinks and the runtime settings.
@@ -8,10 +8,11 @@ struct DemoRootView: View {
     @State private var settings = DemoSettings()
     @State private var console = HMConsoleSink()
     @State private var muxBridge = HMLoggingMuxBridge()
-    @State private var controller: HMFeedController?
+    @State private var controller: HMPlayer?
 
     private let benchmark = BenchmarkOptions()
     @State private var showsBenchmark = false
+    @State private var showsLab = BenchmarkOptions().values["playlist-lab"] == "1"
     @State private var fileSink: HMJSONLFileSink?
     @State private var bootstrapError: String?
     @State private var isFeedPresented = false
@@ -59,6 +60,8 @@ struct DemoRootView: View {
             }
         }
         .overlay(alignment: .bottom) {
+            HStack {
+            Button("Playlist lab") { showsLab = true }.accessibilityIdentifier("playlist-lab")
             Button("Benchmark mode") {
                 controller?.teardown()
                 controller = nil
@@ -66,7 +69,9 @@ struct DemoRootView: View {
                 showsBenchmark = true
             }
                 .accessibilityIdentifier("benchmark-mode").padding(12)
+            }
         }
+        .fullScreenCover(isPresented: $showsLab) { PlaylistLabScreen { showsLab = false } }
         .fullScreenCover(isPresented: $showsBenchmark, onDismiss: {
             Task { await bootstrapIfNeeded() }
         }) { BenchmarkScreen() }
@@ -82,7 +87,7 @@ struct DemoRootView: View {
 
     // MARK: - Navigation
 
-    private func open(_ controller: HMFeedController, at index: Int) {
+    private func open(_ controller: HMPlayer, at index: Int) {
         let requestedAt = ProcessInfo.processInfo.systemUptime
         Task {
             await controller.requestPlay(at: index, requestedAt: requestedAt)
@@ -90,7 +95,7 @@ struct DemoRootView: View {
         }
     }
 
-    private func close(_ controller: HMFeedController) {
+    private func close(_ controller: HMPlayer) {
         controller.isFeedVisible = false
         isFeedPresented = false
     }
@@ -98,7 +103,7 @@ struct DemoRootView: View {
     // MARK: - Wiring
 
     private func bootstrapIfNeeded() async {
-        guard controller == nil, !showsBenchmark else { return }
+        guard controller == nil, !showsBenchmark, !showsLab else { return }
 
         let hub = HMAnalyticsHub()
         hub.add(console)
@@ -132,12 +137,12 @@ struct DemoRootView: View {
                 script: benchmark.script, buildSHA: benchmark.values["build-sha"] ?? (Bundle.main.object(forInfoDictionaryKey: "HMBuildSHA") as? String ?? "unknown"))
             fileSink = sink; hub.add(sink)
         }
-        let created = HMFeedController(
-            dataSource: source,
+        let created = HMPlayer(
             configuration: configuration,
             analytics: hub
         )
         // Load playlist metadata while browsing, before the measured play tap.
+        created.playlistSource = source
         created.isFeedVisible = false
         settings.applyConfiguration = { [weak created] configuration in
             created?.configuration = configuration

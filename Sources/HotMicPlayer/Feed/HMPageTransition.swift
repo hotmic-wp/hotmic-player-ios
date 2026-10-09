@@ -21,8 +21,10 @@ public enum HMPageTransition: String, CaseIterable, Sendable, Identifiable {
     /// Incoming page slides over the outgoing one, which stays put.
     case cover
 
+    /// Stable identity for this value.
     public var id: String { rawValue }
 
+    /// Human-readable transition name.
     public var displayName: String {
         switch self {
         case .none: "None"
@@ -36,11 +38,17 @@ public enum HMPageTransition: String, CaseIterable, Sendable, Identifiable {
 
     /// Resolved transform for one cell.
     public struct Attributes: Equatable {
+        /// Resolved cell opacity.
         public var opacity: Double = 1
+        /// Resolved cell scale factor.
         public var scale: Double = 1
+        /// Resolved vertical translation in points.
         public var offsetY: Double = 0
+        /// Resolved rotation in degrees.
         public var rotationDegrees: Double = 0
+        /// Anchor used for the cell rotation.
         public var anchor: UnitPoint = .center
+        /// Perspective applied to the cell rotation.
         public var perspective: Double = 0.5
     }
 

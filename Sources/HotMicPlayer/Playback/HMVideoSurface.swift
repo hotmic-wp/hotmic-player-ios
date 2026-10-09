@@ -9,7 +9,7 @@ import UIKit
 /// PiP/routing machinery, no view-controller lifecycle. Just the layer, sized to
 /// the cell. That is the whole "lightweight wrapper around the native player"
 /// claim, and it is what keeps a feed cell cheap enough to recycle.
-public struct HMVideoSurface: UIViewRepresentable {
+struct HMVideoSurface: UIViewRepresentable {
 
     @Environment(\.scenePhase) private var scenePhase
     private let node: HMPlayerNode?
@@ -17,14 +17,14 @@ public struct HMVideoSurface: UIViewRepresentable {
     private let active: Bool
     private let activationID: String?
 
-    public init(node: HMPlayerNode?, gravity: AVLayerVideoGravity = .resizeAspectFill) {
+    init(node: HMPlayerNode?, gravity: AVLayerVideoGravity = .resizeAspectFill) {
         self.node = node
         self.gravity = gravity
         self.active = node?.isActive ?? false
         self.activationID = node?.snapshot.activationID
     }
 
-    public func makeUIView(context: Context) -> HMVideoSurfaceView {
+    func makeUIView(context: Context) -> HMVideoSurfaceView {
         let view = HMVideoSurfaceView()
         view.backgroundColor = .clear
         view.isPlaybackVisible = scenePhase == .active
@@ -32,14 +32,14 @@ public struct HMVideoSurface: UIViewRepresentable {
         return view
     }
 
-    public func updateUIView(_ uiView: HMVideoSurfaceView, context: Context) {
+    func updateUIView(_ uiView: HMVideoSurfaceView, context: Context) {
         uiView.isPlaybackVisible = scenePhase == .active
         uiView.attach(node, gravity: gravity)
     }
 }
 
 /// Plain `UIView` whose only job is to own and size one `AVPlayerLayer`.
-public final class HMVideoSurfaceView: UIView {
+final class HMVideoSurfaceView: UIView {
 
     private weak var hostedLayer: AVPlayerLayer?
     private weak var node: HMPlayerNode?
@@ -62,7 +62,7 @@ public final class HMVideoSurfaceView: UIView {
         refreshDisplayLink()
     }
 
-    public override var isHidden: Bool { didSet { refreshDisplayLink() } }
+    override var isHidden: Bool { didSet { refreshDisplayLink() } }
 
     private func refreshDisplayLink() {
         if !isPlaybackVisible || isHidden || node?.isActive != true || window == nil || node?.snapshot.timeToFirstFrame != nil {
@@ -90,13 +90,13 @@ public final class HMVideoSurfaceView: UIView {
         displayLink?.invalidate(); displayLink = nil
     }
 
-    public override func didMoveToWindow() {
+    override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { displayLink?.invalidate(); displayLink = nil; readyActivation = nil }
         else { attach(node, gravity: hostedLayer?.videoGravity ?? .resizeAspectFill) }
     }
 
-    public override func layoutSubviews() {
+    override func layoutSubviews() {
         super.layoutSubviews()
         CATransaction.begin(); CATransaction.setDisableActions(true)
         hostedLayer?.frame = bounds

@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Everything drawn on top of one feed cell.
 ///
@@ -39,7 +39,7 @@ struct FeedOverlayView: View {
     }
 
     /// Prefer what the player actually reports over what the feed API claimed.
-    private var isLive: Bool { snapshot.isLive || item.streamKind == .live }
+    private var isLive: Bool { snapshot.isLive }
 
     /// Where the playhead sits on the *engagement* timeline.
     ///

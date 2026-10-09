@@ -1,5 +1,5 @@
 import Foundation
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// The demo reel: six bundled vertical clips.
 ///
@@ -45,14 +45,13 @@ enum DemoContent {
             title: clip.title,
             author: clip.author,
             durationHint: clip.duration,
-            streamKind: .onDemand,
-            metadata: ["series": clip.series, "aspect": clip.aspect, "source": "bundle"]
+                        metadata: ["series": clip.series, "aspect": clip.aspect, "source": "bundle"]
         )
     }
 
     static let reel: [HMMediaItem] = clips.compactMap(bundled)
 
-    static var dataSource: HMFeedDataSource {
-        HMStaticFeedDataSource(items: reel, pageSize: reel.count, loopsForever: true)
+    static var dataSource: HMPlaylistSource {
+        HMStaticPlaylistSource(items: reel, pageSize: reel.count, loopsForever: true)
     }
 }

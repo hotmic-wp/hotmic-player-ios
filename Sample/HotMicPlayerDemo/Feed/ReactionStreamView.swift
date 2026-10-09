@@ -1,5 +1,5 @@
 import SwiftUI
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 
 /// Floating reactions that rise off the action rail.
 ///

@@ -10,10 +10,12 @@ import UIKit
 }
 
 struct HMPageCommitProbe: UIViewRepresentable {
+    var itemIDs: [String]
+    var currentID: String?
     var targetIndex: Int?
     var requestID: UUID
     var reference: HMScrollViewReference? = nil
-    var commit: (Int, TimeInterval) -> Void
+    var commit: (String, TimeInterval) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(commit: commit, reference: reference) }
     func makeUIView(context: Context) -> Probe {
         let view = Probe(); view.coordinator = context.coordinator
@@ -22,6 +24,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
     func updateUIView(_ view: Probe, context: Context) {
         let coordinator = context.coordinator
         coordinator.commit = commit
+        coordinator.reconcile(items: itemIDs, current: currentID)
         coordinator.reference = reference
         coordinator.targetIndex = targetIndex; coordinator.requestID = requestID
         view.connect()
@@ -53,7 +56,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
     }
     final class Coordinator: NSObject, UIScrollViewDelegate {
-        var commit: (Int, TimeInterval) -> Void
+        var commit: (String, TimeInterval) -> Void
         var reference: HMScrollViewReference?
         var offsetObservation: NSKeyValueObservation?
         var fallback: DispatchWorkItem?
@@ -93,10 +96,43 @@ struct HMPageCommitProbe: UIViewRepresentable {
             motionChanged()
             original?.scrollViewDidScroll?(scrollView)
         }
+        private var itemIDs: [String] = []
+        private var currentID: String?
+        private var anchor: Int = 0
+        private var needsReconcile = false
+        private var suppressCommit = false
+        func reconcile(items: [String], current: String?) {
+            if !itemIDs.isEmpty, items != itemIDs {
+                let destination: String?
+                if let targetIndex, itemIDs.indices.contains(targetIndex) { destination = itemIDs[targetIndex] }
+                else if let scroll, scroll.bounds.height > 0 {
+                    let page = (scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height
+                    // Even an early drag has a destination: use its direction,
+                    // rather than rounding it back to the current page.
+                    let oldAnchor = currentID.flatMap { itemIDs.firstIndex(of: $0) } ?? anchor
+                    let index = Int(page > Double(oldAnchor) ? ceil(page) : floor(page))
+                    destination = itemIDs.indices.contains(index) ? itemIDs[index] : nil
+                } else { destination = nil }
+                if !HMPagePosition.survives(old: itemIDs, new: items, current: currentID, destination: destination) {
+                    needsReconcile = true
+                }
+            }
+            itemIDs = items; currentID = current
+            anchor = current.flatMap { items.firstIndex(of: $0) } ?? 0
+        }
         var targetIndex: Int?
         var requestID: UUID?
         private var handledRequest: UUID?
         func pageIfRequested() {
+            if needsReconcile, let scroll, scroll.bounds.height > 0 {
+                needsReconcile = false; suppressCommit = true
+                fallback?.cancel(); fallback = nil
+                // Cancels a drag/deceleration and anchors by the settled item's new index.
+                scroll.panGestureRecognizer.isEnabled = false
+                scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: Double(anchor) * scroll.bounds.height - scroll.adjustedContentInset.top), animated: false)
+                scroll.panGestureRecognizer.isEnabled = true
+                suppressCommit = false
+            }
             guard let index = targetIndex, let requestID, requestID != handledRequest,
                   let scroll, scroll.bounds.height > 0 else { return }
             handledRequest = requestID
@@ -105,7 +141,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
         weak var scroll: UIScrollView?
         weak var original: UIScrollViewDelegate?
-        init(commit: @escaping (Int, TimeInterval) -> Void, reference: HMScrollViewReference?) { self.commit = commit; self.reference = reference }
+        init(commit: @escaping (String, TimeInterval) -> Void, reference: HMScrollViewReference?) { self.commit = commit; self.reference = reference }
         override func responds(to selector: Selector!) -> Bool { super.responds(to: selector) || (original?.responds(to: selector) ?? false) }
         override func forwardingTarget(for selector: Selector!) -> Any? { original }
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
@@ -123,8 +159,10 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
         private func settled(_ scroll: UIScrollView, time: TimeInterval) {
             fallback?.cancel(); fallback = nil
-            guard scroll.bounds.height > 0 else { return }
-            commit(max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded())), time)
+            guard !suppressCommit, !needsReconcile, scroll.bounds.height > 0 else { return }
+            let index = max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded()))
+            guard itemIDs.indices.contains(index) else { return }
+            commit(itemIDs[index], time)
         }
     }
 }

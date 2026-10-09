@@ -117,6 +117,15 @@ actor HMDiskCache {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent(e.filename))
         }
     }
+    func release(owners: Set<String>, sharedResources: [String: String]) {
+        loadIfNeeded()
+        guard !owners.isEmpty else { return }
+        for (key, var entry) in entries where owners.contains(entry.owner) {
+            if let owner = sharedResources[entry.key] { entry.owner = owner; entries[key] = entry }
+            else { entries[key] = nil; try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry.filename)) }
+        }
+        persist()
+    }
     func reset() {
         loadIfNeeded()
         for e in entries.values { try? FileManager.default.removeItem(at: directory.appendingPathComponent(e.filename)) }
@@ -129,7 +138,8 @@ actor HMDiskCache {
 }
 
 /// Benchmark reset is serialized with readers/writers. Call between runs only.
-public enum HMPlayerCache {
+@_spi(Benchmark) public enum HMPlayerCache {
+    /// Clears SDK media cache bytes. Call only between playback sessions.
     public static func reset() async {
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HotMicPlayer-v1")
         await HMDiskCache.shared(directory: directory, capacity: 128_000_000).reset()

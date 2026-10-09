@@ -11,6 +11,8 @@ def main():
     p.add_argument('--fast-port', type=int, default=18413)
     p.add_argument('--slow-port', type=int, default=18414)
     p.add_argument('--results-port', type=int, default=18415)
+    p.add_argument('--swipes', type=int, default=2)
+    p.add_argument('--normal-dwell', type=float, default=5, help='Use 9 to exercise the default long-dwell rule')
     a = p.parse_args()
     root = pathlib.Path(a.root).resolve(); root.mkdir(parents=True, exist_ok=True)
     repo = pathlib.Path(__file__).resolve().parent.parent
@@ -36,7 +38,7 @@ def main():
             for script in ['binge', 'normal']:
                 for adaptive in [1, 0]:
                     cells.append(dict(id=f'{speed}-{fmt}-{script}-a{adaptive}', strategy='S3', format=f'{speed}-{fmt}',
-                        playlist_url=name, script=script, repeats=1, swipes=3, dwell_seconds=1 if script == 'binge' else 9,
+                        playlist_url=name, script=script, repeats=1, swipes=a.swipes, dwell_seconds=1 if script == 'binge' else a.normal_dwell,
                         reset_cache=True, require_frame=True, knobs={'adaptive': adaptive}))
     (root / 'grid.json').write_text(json.dumps(dict(run_prefix='adaptive-smoke', network='origin-throttle',
         results_url=f'http://127.0.0.1:{a.results_port}/runs', cells=cells), indent=2) + '\n')

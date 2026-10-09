@@ -10,6 +10,9 @@ public enum HMReadinessTier: String, Sendable {
     case cachedBytes
     /// A ready player with a decoded frame was reused.
     case warmPlayer
+    static func atActivation(warm: Bool, cachedBytes: Int, minimumBytes: Int) -> Self {
+        warm ? .warmPlayer : cachedBytes >= max(1, minimumBytes) ? .cachedBytes : .resolved
+    }
 }
 
 /// Recoverable API and playback failures. Invalid playlist operations leave the playlist untouched.

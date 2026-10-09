@@ -27,39 +27,49 @@ public protocol HMItemResolver: Sendable {
 /// Main-actor session cache. Completed results survive window changes; in-flight work does not.
 @MainActor final class HMResolutionStore {
     struct Work { let token: UUID; let task: Task<HMResolvedItem, Error> }
+    private let session: URLSession
+    init(session: URLSession = .shared) { self.session = session }
     private var completed: [HMMediaItem: HMResolvedItem] = [:]
     private var promotions: [HMMediaItem: Task<Void, Never>] = [:]
     private var pending: [HMMediaItem: Work] = [:]
-    func cached(_ item: HMMediaItem) -> HMMediaItem? {
-        if let url = item.url, item.format != .auto || url.isFileURL { return item }
-        return completed[item].map { item.resolved($0) }
+    func cached(_ item: HMMediaItem, requireFormat: Bool = true) -> HMMediaItem? {
+        if let url = item.url, !requireFormat || item.format != .auto || url.isFileURL { return item }
+        guard let value = completed[item].map({ item.resolved($0) }) else { return nil }
+        return !requireFormat || value.format != .auto ? value : nil
     }
-    func resolve(_ item: HMMediaItem, using resolver: HMItemResolver?) async throws -> HMMediaItem {
-        if let cached = cached(item) { return cached }
+    func resolve(_ item: HMMediaItem, using resolver: HMItemResolver?, metadataOnly: Bool = false) async throws -> HMMediaItem {
+        if let cached = cached(item, requireFormat: !metadataOnly) { return cached }
 
         let work: Work
         if let existing = pending[item] { work = existing }
         else {
+            let metadata = completed[item], session = session
             work = Work(token: UUID(), task: Task {
+                if let metadata { return metadataOnly ? metadata : try await Self.detectFormat(metadata, session: session) }
                 switch item.source {
                 case .reference(let namespace, let id):
                     guard let resolver else { throw HMPlayerError.missingResolver }
-                    return try await Self.detectFormat(try await resolver.resolve(.init(namespace: namespace, id: id)))
+                    let raw = try await resolver.resolve(.init(namespace: namespace, id: id))
+                    return metadataOnly ? raw : try await Self.detectFormat(raw, session: session)
                 case .url(let url, let format):
-                    return try await Self.detectFormat(HMResolvedItem(url: url, format: format))
+                    let raw = HMResolvedItem(url: url, format: format)
+                    return metadataOnly ? raw : try await Self.detectFormat(raw, session: session)
                 }
             })
             pending[item] = work
         }
         do {
-            let value = try await work.task.value
+            var value = try await work.task.value
+            // Promotion may be awaiting a metadata-only task. Probe only when
+            // the entry enters a media tier; reuse the resolver result.
+            if !metadataOnly, item.resolved(value).format == .auto { value = try await Self.detectFormat(value, session: session) }
             try Task.checkCancellation()
             guard pending[item]?.token == work.token else { throw CancellationError() }
             completed[item] = value; pending[item] = nil; promotions[item] = nil
             return item.resolved(value)
         } catch {
             // Another waiter may already have committed this result.
-            if let value = completed[item], !Task.isCancelled { return item.resolved(value) }
+            if let value = cached(item, requireFormat: !metadataOnly), !Task.isCancelled { return value }
             if pending[item]?.token == work.token { pending[item] = nil; promotions[item] = nil }
             throw error
         }

@@ -472,6 +472,6 @@ It uses the existing ffmpeg; no installation is performed. Start a receiver on
 18415 and the two origins above. Build/install on a dedicated HotMic simulator,
 then launch the app with `--hm-grid-url http://127.0.0.1:18413/grid.json`.
 The app drives settled page transitions and posts complete JSONLs. The smoke has
-three moves per cell, one-second binge dwell and nine-second normal dwell to
-exercise default long-dwell behaviour, with `require_frame=true`. This is functional
-smoke, not a physical-device benchmark or a default five-second normal-pace measurement.
+two moves per cell, one-second binge dwell and five-second normal dwell, with
+`require_frame=true`. Pass `--normal-dwell 9 --swipes 3` to exercise the default
+long-dwell rule. This is functional smoke, not a physical-device benchmark.

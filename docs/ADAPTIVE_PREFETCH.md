@@ -24,7 +24,9 @@ enforces buffer safety. `player.prefetchPlan` exposes the last applied plan.
 The readiness tiers are:
 
 1. `warmPlayer`: the nearest next entry is prepared/prerolled in the second player.
-2. `cachedBytes`: a disk prefix is available for an upcoming entry.
+2. `cachedBytes`: at least `minimumCachedStartBytes` payload bytes are on disk
+   (default 32 KiB, bounded by a positive app per-item prefix budget). This
+   excludes tiny native probes; it does not guarantee a complete decoded frame.
 3. `resolved`: media URL and poster metadata are resolved, with no ready player or disk prefix.
 
 `resolveAhead` (default 8, bounded to 32) controls the metadata-only horizon.
@@ -62,7 +64,7 @@ include adaptive mode, every threshold, resolution horizon and concurrency cap.
 
 All thresholds are mutable on `configuration.adaptiveThresholds`. Grid knobs use
 numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
-`resolve-ahead` (0–32). Direct arguments/environment use the same names:
+`resolve-ahead` (0–32), and `cached-start-bytes` (tier-2 readiness floor). Direct arguments/environment use the same names:
 `--hm-adaptive 0`, `HM_ADAPTIVE=0`. Existing knobs still override strategy presets.
 
 | Property | Default | Grid knob |
@@ -101,8 +103,8 @@ Limits: prefix seconds are MP4 duration/size estimates or HLS segment selections
 not a decoded-media guarantee. Native AVPlayer may read beyond its requested
 forward buffer and is governed by the app player/buffer settings, independently
 of explicit disk-prefix budgets. A cached prefix records availability, not proof
-that it contains a complete independently decodable frame. Metadata resolution
-uses the existing auto-format probe (HEAD, bounded two-byte fallback if necessary).
+that it contains a complete independently decodable frame. Far references resolve metadata without a media request or format probe. Auto-format
+probing (HEAD, bounded two-byte fallback if needed) waits until an entry enters a media tier.
 The cache remains immutable VOD; existing advanced-HLS/auth/DRM/live limitations
 apply. Simulator shaping is shared origin payload pacing, not radio/TLS/netem.
 Default thresholds still require the teammate's physical-device benchmark grid.

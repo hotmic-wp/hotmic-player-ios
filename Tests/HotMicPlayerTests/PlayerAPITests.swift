@@ -71,6 +71,28 @@ struct PlayerResolverTests {
         store.retain([])
         #expect(try await store.resolve(item, using: resolver) == first); #expect(await resolver.calls == 1)
     }
+    actor MetadataResolver: HMItemResolver {
+        var calls = 0
+        func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
+            calls += 1
+            return HMResolvedItem(url: URL(string: "https://unit-format.test/media")!, poster: URL(string: "https://metadata-only.invalid/poster.jpg"))
+        }
+    }
+    @Test("Far references resolve metadata without fetching media or probing format")
+    func metadataTier() async throws {
+        let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FormatProtocol.self]
+        let session = URLSession(configuration: configuration); defer { session.invalidateAndCancel() }
+        let store = HMResolutionStore(session: session), resolver = MetadataResolver(), entry = HMMediaItem.reference("partner", id: "far")
+        let result = try await store.resolve(entry, using: resolver, metadataOnly: true)
+        #expect(result.format == .auto && result.posterURL != nil)
+        #expect(store.cached(entry) == nil)
+        #expect(store.cached(entry, requireFormat: false) == result)
+        #expect(try await store.resolve(entry, using: resolver, metadataOnly: true) == result)
+        #expect(await resolver.calls == 1)
+        let promoted = try await store.resolve(entry, using: resolver)
+        #expect(promoted.format == .hls && promoted.posterURL == result.posterURL)
+        #expect(await resolver.calls == 1)
+    }
     @Test("Leaving the window cancels pending work and a missing resolver is a recoverable error")
     func cancellation() async throws {
         let store = HMResolutionStore(), resolver = Resolver(slow: true), item = HMMediaItem.reference("partner", id: "a")

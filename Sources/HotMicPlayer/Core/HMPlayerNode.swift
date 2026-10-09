@@ -158,9 +158,12 @@ final class HMPlayerNode: Identifiable {
         syncBufferHealth()
         let status = player.currentItem?.status.rawValue ?? 0
         let warmReady = status == AVPlayerItem.Status.readyToPlay.rawValue && playerLayer.isReadyForDisplay
-        let tier = warmReady ? "warmPlayer" : cachedBytes > 0 ? "cachedBytes" : "resolved"
-        snapshot.readinessTier = HMReadinessTier(rawValue: tier) ?? .cold
-        snapshot.wasPreloaded = warmReady || cachedBytes > 0
+        let budget = configuration.prefetch.bytesPerItem
+        let minimum = min(max(1, configuration.minimumCachedStartBytes), budget > 0 ? budget : Int.max)
+        let readiness = HMReadinessTier.atActivation(warm: warmReady, cachedBytes: cachedBytes, minimumBytes: minimum)
+        let tier = readiness.rawValue
+        snapshot.readinessTier = readiness
+        snapshot.wasPreloaded = readiness == .warmPlayer || readiness == .cachedBytes
         snapshot.isFrameReady = playerLayer.isReadyForDisplay
         setLayerVisible(snapshot.isFrameReady)
         summaryTask?.cancel()

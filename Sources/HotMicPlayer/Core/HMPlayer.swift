@@ -307,7 +307,8 @@ import Observation
     }
     private var windowItems: [HMMediaItem] {
         let resolved = max(0, min(32, configuration.resolveAhead))
-        return playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + configuration.warmOffsets +
+        let warm = configuration.strategy == .S2 || configuration.prefetch.ahead > 0 ? configuration.warmOffsets : []
+        return playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + warm +
             (resolved > 0 ? Array(1...resolved) : []))
     }
 
@@ -337,16 +338,19 @@ import Observation
     private func refreshWindowAfterTransport() {
         guard !ended, isFeedVisible else { return }
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
+        let mediaIDs = Set(playlist.window(offsets: [0] + (prefetchPlan?.windowOffsets ?? configuration.prefetch.windowOffsets) +
+            configuration.warmOffsets).map(\.id))
         for item in windowItems {
+            let metadataOnly = !mediaIDs.contains(item.id)
             guard item == currentItem || !configuration.adaptive || prefetchSafe else { continue }
             let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
             if urgent { resolutions.promote(item) }
-            guard resolutions.cached(item) == nil, resolutionTasks[item] == nil,
+            guard resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item] == nil,
                   resolutionFailures[item]?.canRetry(at: ProcessInfo.processInfo.systemUptime) != false else { continue }
             resolutionTasks[item] = Task(priority: urgent ? .userInitiated : .utility) { [weak self] in
                 guard let self else { return }
                 do {
-                    let result = try await resolutions.resolve(item, using: resolver)
+                    let result = try await resolutions.resolve(item, using: resolver, metadataOnly: metadataOnly)
                     try Task.checkCancellation()
                     guard windowItems.contains(item), !ended else { return }
                     guard let url = result.url, ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw HMPlayerError.unsupportedURL }
@@ -489,7 +493,7 @@ import Observation
     }
     var currentNode: HMPlayerNode? { currentItem.flatMap { resolutions.cached($0) }.flatMap { pool.existingNode(for: $0) } }
     func node(for item: HMMediaItem) -> HMPlayerNode? { resolutions.cached(item).flatMap { pool.existingNode(for: $0) } }
-    func displayItem(_ item: HMMediaItem) -> HMMediaItem { resolutions.cached(item) ?? item }
+    func displayItem(_ item: HMMediaItem) -> HMMediaItem { resolutions.cached(item, requireFormat: false) ?? item }
     /// Toggles current playback; useful for tap overlays.
     public func togglePlayPause() { wantsPlayback ? pause() : play() }
     /// Toggles global mute.

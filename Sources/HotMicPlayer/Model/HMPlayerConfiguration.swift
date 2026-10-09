@@ -84,6 +84,9 @@ public struct HMPlayerConfiguration: Sendable {
     public var maxPrefetchConcurrency: Int = 1
     /// URL/poster-only forward resolution horizon, bounded to 0...32.
     public var resolveAhead: Int = 8
+    /// Minimum cached payload for a tier-2 arrival hit; avoids counting tiny AVPlayer probes.
+    /// Defaults to 32 KiB, bounded by a positive app per-item prefix budget.
+    public var minimumCachedStartBytes: Int = 32 * 1024
     /// Hard disk media cache cap, in bytes.
     public var cacheCapacityBytes: Int
     /// Current player forward-buffer target in seconds.
@@ -170,6 +173,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let adaptiveThresholds: HMAdaptivePrefetchThresholds
         private let maxPrefetchConcurrency: Int
         private let resolveAhead: Int
+        private let minimumCachedStartBytes: Int
         private let lowWaterMark: Int
         private let playlistTTL: TimeInterval
         private let volatileSigningQueryParameters: [String]
@@ -187,7 +191,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
             adaptive = c.adaptive; adaptiveThresholds = c.adaptiveThresholds
-            maxPrefetchConcurrency = c.maxPrefetchConcurrency; resolveAhead = c.resolveAhead
+            maxPrefetchConcurrency = c.maxPrefetchConcurrency; resolveAhead = c.resolveAhead; minimumCachedStartBytes = c.minimumCachedStartBytes
             lowWaterMark = c.lowWaterMark; playlistTTL = c.playlistTTL
             volatileSigningQueryParameters = c.volatileSigningQueryParameters; strategy = c.strategy
             poolSize = c.poolSize; prefetch = PolicyRecord(c.prefetch); cacheCapacityBytes = c.cacheCapacityBytes
@@ -205,7 +209,7 @@ public struct HMPlayerConfiguration: Sendable {
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
             c.adaptive = adaptive; c.adaptiveThresholds = adaptiveThresholds
-            c.maxPrefetchConcurrency = maxPrefetchConcurrency; c.resolveAhead = resolveAhead
+            c.maxPrefetchConcurrency = maxPrefetchConcurrency; c.resolveAhead = resolveAhead; c.minimumCachedStartBytes = minimumCachedStartBytes
             c.volatileSigningQueryParameters = volatileSigningQueryParameters
             return c
         }

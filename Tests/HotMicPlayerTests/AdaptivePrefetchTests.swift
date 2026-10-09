@@ -91,7 +91,11 @@ struct AdaptivePrefetchTests {
         m.arrival(hit: false, dwell: 1, alpha: 0.25); m.arrival(hit: true, dwell: 5, alpha: 0.25)
         #expect(m.throughput == 1500 && abs((m.latency ?? 0) - 0.3) < 0.0001)
         #expect(m.hitRate == 0.25 && m.dwell == 2)
-        var tuned = c; tuned.adaptive = false; tuned.adaptiveThresholds.slowBytesPerSecond = 12345
+        #expect(HMReadinessTier.atActivation(warm: false, cachedBytes: 2, minimumBytes: 32_768) == .resolved)
+        #expect(HMReadinessTier.atActivation(warm: false, cachedBytes: 32_768, minimumBytes: 32_768) == .cachedBytes)
+        #expect(HMReadinessTier.atActivation(warm: true, cachedBytes: 0, minimumBytes: 32_768) == .warmPlayer)
+        #expect(HMReadinessTier.atActivation(warm: false, cachedBytes: 0, minimumBytes: 0) == .resolved)
+        var tuned = c; tuned.minimumCachedStartBytes = 65_536; tuned.adaptive = false; tuned.adaptiveThresholds.slowBytesPerSecond = 12345
         tuned.maxPrefetchConcurrency = 3; tuned.resolveAhead = 12
         let roundtrip = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self,
             from: JSONEncoder().encode(tuned.benchmarkRecord)).configuration

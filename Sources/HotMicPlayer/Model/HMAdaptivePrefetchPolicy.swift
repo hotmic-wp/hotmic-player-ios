@@ -120,7 +120,8 @@ public struct HMPrefetchPlan: Codable, Sendable, Equatable {
                                    count > 0 ? max(0, c.cacheCapacityBytes) / count : 0, p.bytesPerItem))
         if let limit = c.prefetch.secondsPerItem { p.secondsPerItem = min(nonnegative(limit), nonnegative(p.secondsPerItem ?? limit)) }
         else if let seconds = p.secondsPerItem { p.secondsPerItem = nonnegative(seconds) }
-        p.keepReadyPlayer = p.keepReadyPlayer && c.prefetch.ahead > 0 && c.poolSize > 1 && (c.strategy == .S2 || c.strategy == .S3)
+        p.keepReadyPlayer = p.keepReadyPlayer && c.poolSize > 1 &&
+            (c.strategy == .S2 ? c.prefetch.ahead > 0 || c.prefetch.behind > 0 : c.strategy == .S3 && c.prefetch.ahead > 0)
         p.startingBitRate = nonnegative(p.startingBitRate)
         for cap in c.adaptive ? [c.startupPeakBitRate, c.steadyPeakBitRate] : [c.startupPeakBitRate] where cap.isFinite && cap > 0 {
             p.startingBitRate = p.startingBitRate > 0 ? min(p.startingBitRate, cap) : cap

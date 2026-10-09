@@ -627,7 +627,10 @@ import Observation
                 threshold: nonnegative(configuration.prefetch.startThreshold), wasSafe: prefetchSafe)
             plan.paused = plan.paused || inputs.isStalling
         }
-        if playbackUrgent { plan.paused = true; plan.reason += "+active-playback" }
+        if configuration.strategy == .S2 {
+            plan.paused = false; plan.keepReadyPlayer = true
+            plan.concurrency = configuration.maxPrefetchConcurrency; plan.startAfterSeconds = 0
+        } else if playbackUrgent { plan.paused = true; plan.reason += "+active-playback" }
         if plan.paused && !plan.reason.contains("buffer-safety") && !plan.reason.contains("stall") {
             plan.reason += inputs.isStalling ? "+stall" : "+buffer-safety"
         }

@@ -275,6 +275,9 @@ struct PlayerNativeReviewTests {
         let pool = HMPlayerPool()
         let old = item("next"), replacement = item("next", path: "new-media")
         let node = pool.node(for: old, protecting: [])
+        let now = ProcessInfo.processInfo.systemUptime
+        #expect(node.isWaitingForWarmFrame(at: now))
+        #expect(!node.isWaitingForWarmFrame(at: now + 3))
         #expect(pool.existingNode(for: replacement) == nil)
         pool.trim(keeping: [old]); #expect(pool.existingNode(for: old) === node)
         pool.trim(keeping: [replacement]); #expect(pool.busyCount == 0)

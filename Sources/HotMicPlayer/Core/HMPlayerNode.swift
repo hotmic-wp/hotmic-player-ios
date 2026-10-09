@@ -246,7 +246,7 @@ final class HMPlayerNode: Identifiable {
         CATransaction.commit()
     }
 
-    private func seekForDisplay(to time: CMTime, toleranceAfter: CMTime = .zero) {
+    private func seekForDisplay(to time: CMTime, toleranceAfter: CMTime = .zero, completion: (() -> Void)? = nil) {
         guard let currentItem = player.currentItem else { return }
         displayRevision += 1
         let revision = displayRevision
@@ -259,6 +259,7 @@ final class HMPlayerNode: Identifiable {
                 self.snapshot.isFrameReady = self.playerLayer.isReadyForDisplay
                 self.setLayerVisible(self.snapshot.isFrameReady)
                 self.onBufferChanged?()
+                completion?()
             }
         }
     }
@@ -293,15 +294,9 @@ final class HMPlayerNode: Identifiable {
         // Map into the seekable window so this stays correct on DVR.
         let target = min(snapshot.duration, max(0, seconds))
         emit(.seeking, item: item, position: snapshot.currentTime)
-        player.seek(
-            to: CMTime(seconds: target, preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let item = self.item else { return }
-                self.emit(.seeked, item: item, position: target)
-            }
+        seekForDisplay(to: CMTime(seconds: target, preferredTimescale: 600)) { [weak self] in
+            guard let self, self.item == item else { return }
+            self.emit(.seeked, item: item, position: target)
         }
         snapshot.currentTime = target
     }
@@ -600,7 +595,7 @@ final class HMPlayerNode: Identifiable {
         handleStallEnded()
         emit(.ended, item: item, position: snapshot.currentTime)
         if configuration.loops {
-            player.seek(to: .zero)
+            seekForDisplay(to: .zero)
             if isActive && wantsPlayback { player.play() }
         }
     }

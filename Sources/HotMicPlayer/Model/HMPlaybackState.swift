@@ -87,7 +87,10 @@ public struct HMPlaybackSnapshot: Sendable, Equatable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public internal(set) var wasPreloaded: Bool = false
-    /// Readiness measured when this entry became current.
+    /// For active entries, readiness measured at activation, preserved through playback.
+    /// For an inactive prepared entry, snapshot(for:) reports warmPlayer once a decoded frame
+    /// is ready; otherwise resolved. Use warmPlayer for an upcoming entry's warm badge.
+    /// Unprepared entries report cold; the unresolved current reports resolving.
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public internal(set) var readinessTier: HMReadinessTier = .cold

@@ -4,11 +4,13 @@ import Foundation
 struct HMPlaylistState: Equatable {
     var items: [HMMediaItem] = []
     var index = 0
+    var finishingID: String?
     var current: HMMediaItem? { items.indices.contains(index) ? items[index] : nil }
     mutating func replaceAll(_ incoming: [HMMediaItem], startAt: Int) throws {
         try Self.validate(incoming)
         guard incoming.isEmpty ? startAt == 0 : incoming.indices.contains(startAt) else { throw HMPlayerError.invalidIndex(startAt) }
-        items = incoming; index = startAt
+        guard items != incoming || index != startAt else { return }
+        items = incoming; index = startAt; finishingID = nil
     }
     mutating func replaceUpcoming(_ incoming: [HMMediaItem]) throws {
         let next = Array(items.prefix(items.isEmpty ? 0 : index + 1)) + incoming
@@ -22,11 +24,31 @@ struct HMPlaylistState: Equatable {
     mutating func append(_ incoming: [HMMediaItem]) throws {
         let next = items + incoming; try Self.validate(next); items = next
     }
-    mutating func remove(ids: Set<String>) {
+    mutating func reconcile(_ incoming: [HMMediaItem], policy: HMRemovedCurrentPolicy) throws {
+        try Self.validate(incoming)
+        guard let current else { try replaceAll(incoming, startAt: 0); return }
+        let history = Array(items.prefix(index))
+        let historyIDs = Set(history.map(\.id))
+        if let position = incoming.firstIndex(where: { $0.id == current.id }) {
+            items[index] = incoming[position]
+            try replaceUpcoming(Array(incoming.dropFirst(position + 1)).filter { !historyIDs.contains($0.id) })
+            // An already removed current still finishes once, even if a later feed reintroduces it.
+        } else {
+            try replaceUpcoming(incoming.filter { !historyIDs.contains($0.id) })
+            remove(ids: [current.id], policy: policy)
+        }
+    }
+    mutating func remove(ids: Set<String>, policy: HMRemovedCurrentPolicy = .advanceNow) {
+        if policy == .finishThenAdvance, let current, ids.contains(current.id) {
+            finishingID = current.id
+            remove(ids: ids.subtracting([current.id]), policy: .advanceNow)
+            return
+        }
         let old = current
         let successor = items.dropFirst(index + 1).first { !ids.contains($0.id) }
         let predecessor = items.prefix(index).last { !ids.contains($0.id) }
         items.removeAll { ids.contains($0.id) }
+        if let finishingID, ids.contains(finishingID) { self.finishingID = nil }
         let target = old.flatMap { ids.contains($0.id) ? nil : $0 } ?? successor ?? predecessor
         index = target.flatMap { item in items.firstIndex { $0.id == item.id } } ?? 0
     }

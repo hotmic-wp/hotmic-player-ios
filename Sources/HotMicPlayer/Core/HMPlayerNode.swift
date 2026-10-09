@@ -88,6 +88,20 @@ final class HMPlayerNode: Identifiable {
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
 
+    /// A deferred playlist removal suppresses only this visit's loop.
+    var finishesThenLeaves = false
+    func updateMetadata(_ updated: HMMediaItem) {
+        guard item?.hasSameMedia(as: updated) == true else { return }
+        item = updated
+    }
+    var playbackSnapshot: HMPlaybackSnapshot {
+        var value = snapshot
+        if !isActive {
+            value.readinessTier = !isSeekingFrame && player.currentItem?.status == .readyToPlay && playerLayer.isReadyForDisplay ? .warmPlayer : .resolved
+        }
+        return value
+    }
+
     // MARK: - Content
 
     /// Attach `item` to this node and begin buffering, without playing.
@@ -98,6 +112,7 @@ final class HMPlayerNode: Identifiable {
         guard item != newItem, let mediaURL = newItem.url else { return }
 
         let recycledFrom = item
+        finishesThenLeaves = false
         wantsPlayback = false
         player.pause()
         setLayerVisible(false)
@@ -595,8 +610,9 @@ final class HMPlayerNode: Identifiable {
     private func handleReachedEnd() {
         guard let item else { return }
         handleStallEnded()
+        let shouldLoop = configuration.loops && !finishesThenLeaves
         emit(.ended, item: item, position: snapshot.currentTime)
-        if configuration.loops {
+        if shouldLoop, self.item?.hasSameMedia(as: item) == true {
             seekForDisplay(to: .zero)
             if isActive && wantsPlayback { player.play() }
         }

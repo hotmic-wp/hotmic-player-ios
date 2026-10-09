@@ -2,9 +2,9 @@
 
 Edit the loaded playlist atomically without rebuilding the feed.
 
-## Five operations
+## Playlist operations
 
-IDs must be nonempty and unique across the resulting playlist. All five calls are synchronous on the main actor and return a success Boolean. Invalid edits leave the previous playlist intact and emit ``HMPlayerEvent/error(item:kind:)``. Successful effective edits emit `playlistChanged` and, if necessary, `currentItemChanged`.
+IDs must be nonempty and unique across the resulting playlist. These calls are synchronous on the main actor and return a success Boolean. Invalid edits leave the previous playlist intact and emit ``HMPlayerEvent/error(item:kind:)``. Successful effective edits emit `playlistChanged` and, if necessary, `currentItemChanged`.
 
 | Operation | Playback effect |
 | --- | --- |
@@ -12,7 +12,8 @@ IDs must be nonempty and unique across the resulting playlist. All five calls ar
 | `replaceUpcoming(_:)` | Replaces every entry after current; keeps current clock, buffer and layer. |
 | `insertNext(_:)` | Inserts immediately after current; creates a playlist when empty. |
 | `append(_:)` | Adds to the end and preserves current playback. |
-| `remove(ids:)` | Removes matching IDs; if current is removed, selects the next survivor, then previous, then idle. |
+| `remove(ids:)` | Removes matching IDs using `removedCurrentPolicy`. |
+| `reconcile(_:)` | Reconciles a complete ranked feed around current, preserving history and replacing upcoming entries. |
 
 ```swift
 player.replaceAll([intro, replay], startAt: 0)
@@ -22,7 +23,43 @@ player.append([bonus])
 player.remove(ids: [sponsor.id])
 ```
 
-Empty appends/inserts and removing unknown IDs are silent no-ops. During a swipe, an edit preserves the move unless the current or destination ID changes position. Appending does not interrupt a swipe. Item identity also scopes moderation: removing an item ends its retained records; re-inserting the same ID begins a new lifetime.
+Identical `replaceAll` (including the selected index), empty appends/inserts and removing unknown IDs are silent no-ops: no revision, events, releases, cursor reset or prefetch cancellation. A same-ID refresh with an unchanged source updates title/poster/metadata in place, preserving the native player, clock, layer and downloaded bytes. Changing the media source replaces that player's assignment. Effective `replaceAll` edits still reset paging.
+
+Edits preserve overlapping prefetch work. Reordering or editing outside the media window does not cancel downloads; a window change cancels only entries that left it. Buffer safety, visibility and changed prefetch budgets may still suspend/restart speculative work. During a swipe, an edit preserves the move unless the current or destination ID changes position. Appending does not interrupt a swipe. Item identity also scopes moderation: removing an item ends its retained records; re-inserting the same ID begins a new lifetime.
+
+## Ranked feed refresh
+
+A complete ranked response can include history and current. Reconciliation finds current by ID, updates its display metadata, and routes only the entries after it through `replaceUpcoming`. Played history stays unchanged. History IDs ranked after current are ignored, so a previously played entry is not replayed or duplicated. Entries before current that are not history are ignored. Duplicate or empty IDs anywhere in the incoming list reject the entire edit, even in the ignored prefix. Invalid URLs also reject the edit.
+
+```swift
+// On the main actor, after each complete feed response:
+func refreshRankedFeed(_ rankedItems: [HMMediaItem], player: HMPlayer) {
+    guard player.reconcile(rankedItems) else { return } // inspect loadError/events on rejection
+    if let change = player.lastPlaylistChange {
+        animateFeed(inserted: change.insertedIDs,
+                    removed: change.removedIDs,
+                    moved: change.movedIDs)
+    }
+}
+```
+
+An empty player loads the incoming list. If current is missing, reconciliation keeps history, treats every incoming nonhistory item as upcoming, and applies `removedCurrentPolicy`: first upcoming, then last history, then idle.
+
+## Removed current
+
+`HMPlayerConfiguration.removedCurrentPolicy` defaults to `.advanceNow`, which immediately removes current and selects the next survivor, then previous, then idle. `.finishThenAdvance` keeps the removed current entry in `items` until its next natural end, suppresses looping for this visit even when `loops` is true, and then removes and advances it. Other requested removals apply immediately. Swiping or jumping away removes it immediately and selects the requested entry. Repeated refreshes cannot extend or loop that finishing visit, even if current reappears in the ranked feed. An effective `replaceAll` starts a new playlist selection and clears the deferred removal; an identical replacement remains a no-op.
+
+```swift
+var configuration = HMPlayerConfiguration()
+configuration.removedCurrentPolicy = .finishThenAdvance
+let player = HMPlayer(configuration: configuration)
+```
+
+## Edit summaries and warm badges
+
+`lastPlaylistChange` is an observable optional `HMPlaylistChange`, a Sendable, Equatable value. It describes the last effective edit: `insertedIDs`, `removedIDs`, `movedIDs`, `currentChanged`, `releasedItemIDs` and `releasedPlayerCount`. Moved IDs include surviving entries whose absolute index shifted because of insertion/removal. Current changes mean ID or source changes, not display metadata. Release IDs identify item assignments whose native player was released or reassigned synchronously by the edit; later asynchronous warming is separate. Deferred removal is reported as removed only when the finishing entry leaves. Metadata-only edits have empty ID lists, false currentChanged and zero releases. No-ops and rejected edits preserve the previous summary; use `playlistRevision` to observe each effective edit, including equal summaries.
+
+For an inactive prepared neighbour, `snapshot(for: entry).readinessTier` reports `.warmPlayer` once a decoded frame is ready, otherwise `.resolved`. An unprepared entry reports `.cold`. Active snapshots preserve readiness measured at activation. A warm badge can use `player.currentItem?.id != entry.id && player.snapshot(for: entry).readinessTier == .warmPlayer`.
 
 ## Paged feeds
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Readiness at activation, preserved through the first displayed frame.
+/// Readiness of an inactive prepared entry, or the measurement at activation for current playback.
 ///
 /// Use from any task; mutate only an exclusively owned value.
 public enum HMReadinessTier: String, Sendable {
@@ -20,7 +20,7 @@ public enum HMReadinessTier: String, Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     case cachedBytes
-    /// A ready player with a decoded frame was reused.
+    /// An inactive prepared player has a decoded frame, or a ready player was reused at activation.
     ///
     /// Use from any task; mutate only an exclusively owned value.
     case warmPlayer

@@ -128,7 +128,9 @@ struct Player031Tests {
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: b.id), b)
         try await wait { player.currentItem == a }
         player.configuration.failedItemPolicy = .stay
-        player.replaceAll([a, b])
+        // An identical replaceAll is now a no-op, including remembered failures.
+        // Explicitly select another index, then return, to start a fresh failure scenario.
+        player.replaceAll([a, b], startAt: 1); player.jump(toID: a.id)
         let priorErrors = errors
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
         try await wait { errors > priorErrors }
@@ -194,7 +196,9 @@ struct Player031Tests {
             try await wait { player.currentItem == (empty ? a : appended) }
         }
         player.playlistSource = nil
-        player.attachFeed(); player.replaceAll([a, b])
+        player.attachFeed()
+        // Previous scenarios marked b terminal; an explicit new selection resets that fixture.
+        player.replaceAll([a, b], startAt: 1); player.jump(toID: a.id)
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
         try await wait { player.requestedPageID == b.id }
         let oldRequest = player.pageRequestID

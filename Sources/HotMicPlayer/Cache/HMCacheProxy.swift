@@ -33,7 +33,15 @@ actor HMCacheTransport {
     private var connections: [UUID: NWConnection] = [:]
     private var responseTasks: [UUID: Task<Void, Never>] = [:]
     private var responseItems: [UUID: HMMediaItem] = [:]
-    private var prefetchTask: Task<Void, Never>?
+    private struct PrefixWork {
+        let token: UUID
+        let item: HMMediaItem
+        let task: Task<Void, Never>
+    }
+    private var prefixWork: [HMMediaItem.MediaIdentity: PrefixWork] = [:]
+    private var prefixQueue: [HMMediaItem] = []
+    private var prefixPlan: HMPrefetchPlan?
+    private var prefixBudget = ""
     private var workEpoch = HMPrefetchEpoch()
     private var generation: Int { workEpoch.generation }
     private var prefetched: [String: String] = [:]
@@ -127,8 +135,11 @@ actor HMCacheTransport {
     private func key(_ url: URL) -> String { HMCacheKey.canonical(url, ignoring: configuration.volatileSigningQueryParameters) }
     func retainWindow(_ items: [HMMediaItem]) {
         retainedItems = items
+        let media = Set(items.map(\.mediaIdentity))
+        prefixQueue.removeAll { !media.contains($0.mediaIdentity) }
+        for identity in Array(prefixWork.keys) where !media.contains(identity) { cancelPrefix(identity) }
         let ids = Set(items.map(\.id))
-        for (id, item) in responseItems where !items.contains(item) { close(id, reason: "outside-window") }
+        for (id, item) in responseItems where !items.contains(where: { $0.hasSameMedia(as: item) }) { close(id, reason: "outside-window") }
         played.formIntersection(ids)
         warmDeliveries = warmDeliveries.filter { ids.contains($0.key) }
         let retained = Set(items.compactMap(\.url).map { key($0) })
@@ -136,7 +147,7 @@ actor HMCacheTransport {
         // their route leaves the window. Active/canceling requests retain their
         // accounting until completion and are revisited on the next commit.
         let activeKeys = Set(state.allURLs().map { key($0) }).union(inFlightResources.keys)
-        for resource in Array(resourceOwners.keys) where !activeKeys.contains(resource) && resourceOwners[resource, default: []].isDisjoint(with: retained) && prefetchTask == nil && retiringPrefetch.isEmpty {
+        for resource in Array(resourceOwners.keys) where !activeKeys.contains(resource) && resourceOwners[resource, default: []].isDisjoint(with: retained) && prefixWork.isEmpty && retiringPrefetch.isEmpty {
             retiredWaste += max(0, (prefetchedNetwork.removeValue(forKey: resource) ?? 0) - HMRangeCoverage.overlap(prefetchRanges[resource] ?? [], playedRanges[resource] ?? []))
             prefetchRanges[resource] = nil; playedRanges[resource] = nil; resourceOwners[resource] = nil
         }
@@ -169,7 +180,7 @@ actor HMCacheTransport {
     func prioritizePlayback(_ item: HMMediaItem, urgent: Bool) {
         priorityItem = item; playbackUrgent = urgent
         if urgent { cancelPrefetch() }
-        for (id, (owner, waiter)) in priorityWaiters where !urgent || owner == item {
+        for (id, (owner, waiter)) in priorityWaiters where !urgent || owner.hasSameMedia(as: item) {
             priorityWaiters[id] = nil
             emit(.transfer, item: owner, metrics: ["proxy_priority_resume": 1])
             waiter.resume()
@@ -178,7 +189,7 @@ actor HMCacheTransport {
     private func waitForPlaybackPriority(_ item: HMMediaItem) async throws {
         try Task.checkCancellation()
         guard !isFinishing else { throw CancellationError() }
-        guard playbackUrgent, let priorityItem, priorityItem != item else { return }
+        guard playbackUrgent, let priorityItem, !priorityItem.hasSameMedia(as: item) else { return }
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
@@ -195,44 +206,59 @@ actor HMCacheTransport {
     }
     #if DEBUG
     var heldPlaybackRequestCount: Int { priorityWaiters.count }
+    var activePrefetchTokens: [String: UUID] {
+        Dictionary(uniqueKeysWithValues: prefixWork.values.map { ($0.item.id, $0.token) })
+    }
     #endif
     func cancelPrefetch() {
         workEpoch.cancel()
-        if let task = prefetchTask {
-            let id = UUID(); task.cancel(); retiringPrefetch[id] = task
-            Task { await task.value; removeRetiring(id) }
-        }
-        prefetchTask = nil
+        prefixQueue.removeAll(); prefixPlan = nil; prefixBudget = ""
+        for identity in Array(prefixWork.keys) { cancelPrefix(identity) }
     }
-    private func removeRetiring(_ id: UUID) { retiringPrefetch[id] = nil; retainWindow(retainedItems) }
-    func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) {
-        let identity = configuration.fingerprint + "|" + plan.workIdentity + "|" + items.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|") + "|" + keeping.map(\.id).joined(separator: "|")
-        guard port != 0, !disabled, !playbackUrgent, configuration.strategy.usesDataCache, !plan.paused, plan.concurrency > 0, !workEpoch.matches(identity) else { return }
-        cancelPrefetch()
-        guard let epoch = workEpoch.begin(identity) else { return }
-        let kept = Set(keeping.map(\.id))
-        warmDeliveries = warmDeliveries.filter { kept.contains($0.key) }
-        memoryPlaylists = memoryPlaylists.filter { ProcessInfo.processInfo.systemUptime - $0.value.1 < max(0, configuration.playlistTTL) && state.contains(url: $0.value.0.base) }
-
-        let config = configuration
-        prefetchTask = Task(priority: .utility) { [weak self] in await self?.runPrefetch(items, keeping: keeping, config: config, plan: plan, epoch: epoch) }
+    private func cancelPrefix(_ identity: HMMediaItem.MediaIdentity) {
+        guard let work = prefixWork.removeValue(forKey: identity) else { return }
+        work.task.cancel(); retiringPrefetch[work.token] = work.task
+        emit(.transfer, item: work.item, properties: ["prefetch_work": "cancelled"])
+        Task { await work.task.value; removeRetiring(work.token) }
     }
-    private func runPrefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], config: HMPlayerConfiguration, plan: HMPrefetchPlan, epoch: Int) async {
-        guard !Task.isCancelled, epoch == generation else { return }
-        await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(keeping.compactMap(\.url).map { key($0) }))
+    private func removeRetiring(_ id: UUID) {
+        retiringPrefetch[id] = nil
+        startQueuedPrefixes()
+        retainWindow(retainedItems)
+    }
+    func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) async {
+        guard port != 0, !disabled, !playbackUrgent, configuration.strategy.usesDataCache,
+              !plan.paused, plan.concurrency > 0 else { return }
+        let budget = "\(plan.bytesPerItem)|\(plan.secondsPerItem ?? -1)|\(plan.startingBitRate)"
+        // Budget/config changes may restart work; playlist edits retain every overlapping download.
+        if !prefixBudget.isEmpty, prefixBudget != budget { cancelPrefetch() }
+        prefixBudget = budget; prefixPlan = plan
+        let keep = Set(keeping.map(\.mediaIdentity))
+        for identity in Array(prefixWork.keys) where !keep.contains(identity) { cancelPrefix(identity) }
+        prefixQueue = items.filter { prefixWork[$0.mediaIdentity] == nil }
+        await cache.configure(capacity: configuration.cacheCapacityBytes, pinned: Set(keeping.compactMap(\.url).map { key($0) }))
         cachedBytes = await cache.sizes(); state.setBytes(cachedBytes)
         prefetched = prefetched.filter { cachedBytes[$0.key] != nil }
-        // Sliding window admits nearest entries first. Default concurrency is one.
-        await withTaskGroup(of: Void.self) { group in
-            var next = 0
-            func add(_ item: HMMediaItem) { group.addTask { await self.prefetchEntry(item, plan: plan, epoch: epoch) } }
-            while next < min(items.count, plan.concurrency) { add(items[next]); next += 1 }
-            while await group.next() != nil {
-                guard !Task.isCancelled, epoch == generation else { group.cancelAll(); break }
-                if next < items.count { add(items[next]); next += 1 }
+        startQueuedPrefixes()
+    }
+    private func startQueuedPrefixes() {
+        guard let plan = prefixPlan, !isFinishing, !playbackUrgent else { return }
+        // Canceled tasks count until they drain, preserving the concurrency bound.
+        while prefixWork.count + retiringPrefetch.count < plan.concurrency, !prefixQueue.isEmpty {
+            let item = prefixQueue.removeFirst(), token = UUID(), epoch = generation
+            let task = Task(priority: .utility) { [weak self] in
+                guard let self else { return }
+                await prefetchEntry(item, plan: plan, epoch: epoch)
+                await self.completePrefix(item.mediaIdentity, token: token)
             }
+            prefixWork[item.mediaIdentity] = PrefixWork(token: token, item: item, task: task)
+            emit(.transfer, item: item, properties: ["prefetch_work": "started", "work_token": token.uuidString])
         }
-        if epoch == generation { prefetchTask = nil; retainWindow(retainedItems) }
+    }
+    private func completePrefix(_ identity: HMMediaItem.MediaIdentity, token: UUID) {
+        guard prefixWork[identity]?.token == token else { return }
+        prefixWork[identity] = nil
+        startQueuedPrefixes(); retainWindow(retainedItems)
     }
     private func prefetchEntry(_ item: HMMediaItem, plan: HMPrefetchPlan, epoch: Int) async {
         guard let url = item.url, !url.isFileURL, !Task.isCancelled, epoch == generation else { return }
@@ -666,7 +692,7 @@ final class HMProxyState: @unchecked Sendable {
     private var routes: [String: HMCacheTransport.Route] = [:]
     private var tokens: [String: String] = [:]
     private var cachedBytes: [String: Int] = [:]
-    private var allowedItems: Set<HMMediaItem>?
+    private var allowedItems: Set<HMMediaItem.MediaIdentity>?
     var port: UInt16 { lock.lock(); defer { lock.unlock() }; return listeningPort }
     func setPort(_ value: UInt16) { lock.lock(); listeningPort = value; lock.unlock() }
     func setBytes(_ value: [String: Int]) { lock.lock(); cachedBytes = value; lock.unlock() }
@@ -676,7 +702,7 @@ final class HMProxyState: @unchecked Sendable {
     func contains(url: URL) -> Bool { lock.lock(); defer { lock.unlock() }; return routes.values.contains { $0.url == url } }
     func url(_ url: URL, item: HMMediaItem) -> URL {
         lock.lock(); defer { lock.unlock() }
-        guard listeningPort != 0, allowedItems?.contains(item) != false else { return url }
+        guard listeningPort != 0, allowedItems?.contains(item.mediaIdentity) != false else { return url }
         let key = item.id + "|" + url.absoluteString
         let token = tokens[key] ?? UUID().uuidString
         tokens[key] = token; routes[token] = HMCacheTransport.Route(url: url, item: item)
@@ -685,8 +711,11 @@ final class HMProxyState: @unchecked Sendable {
     }
     func prune(keeping items: Set<HMMediaItem>) {
         lock.lock(); defer { lock.unlock() }
-        allowedItems = items
-        routes = routes.filter { items.contains($0.value.item) }
+        allowedItems = Set(items.map(\.mediaIdentity))
+        let updated = Dictionary(uniqueKeysWithValues: items.map { ($0.mediaIdentity, $0) })
+        routes = routes.compactMapValues { route in
+            updated[route.item.mediaIdentity].map { HMCacheTransport.Route(url: route.url, item: $0) }
+        }
         let valid = Set(routes.keys); tokens = tokens.filter { valid.contains($0.value) }
     }
 }

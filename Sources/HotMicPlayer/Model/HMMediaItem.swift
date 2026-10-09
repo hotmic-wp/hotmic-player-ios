@@ -119,6 +119,10 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     public static func reference(_ namespace: String, id: String, playlistID: String? = nil) -> Self {
         Self(id: playlistID ?? "\(namespace):\(id)", source: .reference(namespace: namespace, id: id))
     }
+    /// Playback identity excludes display metadata so refreshes reuse decoders and bytes.
+    struct MediaIdentity: Hashable { let id: String; let source: Source }
+    var mediaIdentity: MediaIdentity { MediaIdentity(id: id, source: source) }
+    func hasSameMedia(as other: Self) -> Bool { mediaIdentity == other.mediaIdentity }
     func resolved(_ result: HMResolvedItem) -> Self {
         Self(id: id, url: result.url, format: result.format, posterURL: posterURL ?? result.poster,
              title: title ?? result.title, author: author, durationHint: durationHint ?? result.duration, metadata: metadata)

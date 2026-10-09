@@ -50,6 +50,9 @@ import Observation
     ///
     /// Access on the main actor.
     public private(set) var playlistRevision = 0
+    /// Last effective edit, including metadata-only edits. Nil before the first edit.
+    /// No-ops and rejected edits preserve this value. Access on the main actor.
+    public private(set) var lastPlaylistChange: HMPlaylistChange?
     /// Optional paging adapter. Assigning a different source resets its cursor and invalidates its pending page.
     ///
     /// Access on the main actor.
@@ -100,6 +103,13 @@ import Observation
     }
     /// Number of engine slots holding media; intended for diagnostics, without exposing native players.
     @_spi(Benchmark) public var preparedItemCount: Int { pool.busyCount }
+
+    /// Native assignment generations for local Sample diagnostics; display-only edits preserve them.
+    @_spi(Benchmark) public var preparedItemIdentities: [String: String] {
+        Dictionary(uniqueKeysWithValues: pool.nodes.compactMap { node in
+            node.item.map { ($0.id, node.id + ":" + String(node.displayRevision)) }
+        })
+    }
 
     /// Read-only interaction state: feed touches/page motion or a bounded partner interaction.
     ///
@@ -155,7 +165,7 @@ import Observation
     @ObservationIgnored private let resolver: HMItemResolver?
     @ObservationIgnored private let interactions: HMInteractionSource
     @ObservationIgnored private let resolutions = HMResolutionStore()
-    @ObservationIgnored private var resolutionTasks: [HMMediaItem: Task<Void, Never>] = [:]
+    @ObservationIgnored private var resolutionTasks: [HMMediaItem.MediaIdentity: Task<Void, Never>] = [:]
     @ObservationIgnored private var resolutionFailures: [HMMediaItem: HMResolutionRetry] = [:]
     @ObservationIgnored private var resolutionRetryTask: Task<Void, Never>?
     @ObservationIgnored private var interactionCurrent: HMMediaItem?
@@ -219,6 +229,15 @@ import Observation
     @discardableResult public func replaceAll(_ items: [HMMediaItem], startAt: Int = 0) -> Bool {
         mutate(replacingCurrent: true) { try $0.replaceAll(items, startAt: startAt) }
     }
+    /// Reconciles a complete ranked feed around current's ID, preserving played history.
+    /// Uses the replaceUpcoming path for entries after current; incoming current metadata is refreshed.
+    /// Duplicate/empty IDs anywhere in the incoming list reject the entire edit. History IDs appearing
+    /// after current are ignored rather than replayed. If current is absent, keeps history and uses all
+    /// incoming nonhistory entries as upcoming, applying removedCurrentPolicy. Empty players load the list.
+    /// Access on the main actor.
+    @discardableResult public func reconcile(_ list: [HMMediaItem]) -> Bool {
+        mutate { try $0.reconcile(list, policy: configuration.removedCurrentPolicy) }
+    }
     /// Replaces every entry after current, preserving the current player's clock, buffer and layer.
     ///
     /// Access on the main actor.
@@ -232,21 +251,22 @@ import Observation
     /// Access on the main actor.
     @discardableResult public func append(_ items: [HMMediaItem]) -> Bool { appendItems(items, fromSource: false) }
     private func appendItems(_ items: [HMMediaItem], fromSource: Bool) -> Bool { mutate { try $0.append(items) } }
-    /// Removes IDs. Removing current selects the next survivor, then previous; removing all becomes idle.
+    /// Removes IDs using removedCurrentPolicy. Deferred current stays in items until end or a swipe away.
     ///
     /// Access on the main actor.
-    @discardableResult public func remove(ids: Set<String>) -> Bool { mutate { $0.remove(ids: ids) } }
+    @discardableResult public func remove(ids: Set<String>) -> Bool { mutate { $0.remove(ids: ids, policy: configuration.removedCurrentPolicy) } }
 
-    private func mutate(replacingCurrent: Bool = false, _ edit: (inout HMPlaylistState) throws -> Void) -> Bool {
+    private func mutate(replacingCurrent: Bool = false, request: (reason: String, time: TimeInterval)? = nil, _ edit: (inout HMPlaylistState) throws -> Void) -> Bool {
         guard !ended else { return false }
         var result = playlist
         do { try edit(&result) } catch { report(error as? HMPlayerError ?? .playlistSource(error.localizedDescription)); return false }
-        guard replacingCurrent || result != playlist else { return true }
+        guard result != playlist else { loadError = nil; return true }
         let old = currentItem
-        let oldWindow = windowItems
+        let oldItems = items
+        let assignments = oldItems.compactMap { item in pool.nodes.first(where: { $0.item?.id == item.id }).map { ($0, item.id, $0.displayRevision) } }
         let preservesMove = HMPagePosition.survives(old: items.map(\.id), new: result.items.map(\.id),
             current: old?.id, destination: requestedPageID)
-        let changesCurrent = replacingCurrent || old != result.current
+        let changesCurrent = failureIdle || old?.mediaIdentity != result.current?.mediaIdentity
         if changesCurrent { saveAndDeactivate() }
         // A playlist edit invalidates the automatic-failure request's provenance.
         if failurePageID != nil { requestedPageID = nil; pageRequestID = UUID() }
@@ -261,16 +281,20 @@ import Observation
         // Edits do not supersede a source request: its page is merged against the
         // latest playlist on arrival. replaceAll resets the cursor and ignores an old
         // response without cancelling its fetch. Source assignment or teardown cancels it.
-        if replacingCurrent { resetPagingCursor(); resumePositions.removeAll(); pool.releaseAll() }
-        if oldWindow != windowItems { proxy?.cancelPrefetch(); prefetchSafe = false; prefetchIdentity = "" }
+        if replacingCurrent { resetPagingCursor(); resumePositions.removeAll() }
         if changesCurrent {
             if let currentItem { resolutionFailures[currentItem] = nil }
-            requestTime = ProcessInfo.processInfo.systemUptime; requestReason = "play"
+            requestTime = request?.time ?? ProcessInfo.processInfo.systemUptime; requestReason = request?.reason ?? "play"
             pendingSnapshot = HMPlaybackSnapshot(); pendingSnapshot.state = currentItem == nil ? .idle : .loading
             emit(.currentItemChanged(currentItem))
         }
+        refreshWindow()
+        lastPlaylistChange = HMPlaylistChange(old: oldItems, new: items, currentChanged: changesCurrent,
+            releasedItemIDs: assignments.compactMap { node, id, revision in
+                node.item?.id != id || node.displayRevision != revision ? id : nil
+            })
         emit(.playlistChanged(items))
-        refreshWindow(); checkEnd(); scheduleFailedItemAdvance()
+        checkEnd(); scheduleFailedItemAdvance()
         return true
     }
 
@@ -306,6 +330,16 @@ import Observation
     }
     private func navigate(to index: Int, reason: String = "play", requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, retryFailed: Bool = true) {
         guard items.indices.contains(index), !ended else { return }
+        if let finishingID = playlist.finishingID, items[index].id != currentItem?.id {
+            let destination = items[index].id
+            arrivalDwell = index == activeIndex + 1 ? activatedAt.map { max(0, requestedAt - $0) } : nil
+            mutate(request: (reason, requestedAt)) {
+                $0.remove(ids: [finishingID])
+                $0.index = $0.items.firstIndex { $0.id == destination } ?? $0.index
+            }
+            requestedPageID = nil; failurePageID = nil; deferredFailureCommit = nil
+            return
+        }
         let changesCurrent = failureIdle || index != activeIndex
         if changesCurrent {
             arrivalDwell = index == activeIndex + 1 ? activatedAt.map { max(0, requestedAt - $0) } : nil
@@ -481,6 +515,11 @@ import Observation
             (resolved > 0 ? Array(1...resolved) : []))
     }
 
+    /// Media retention excludes the metadata-only resolution horizon.
+    private var mediaWindowItems: [HMMediaItem] {
+        guard !failureIdle else { return [] }
+        return playlist.window(offsets: [0] + configuration.prefetch.windowOffsets + configuration.warmOffsets)
+    }
     private func refreshWindow() {
         guard !ended else { return }
         if let currentItem, resolutions.cached(currentItem) == nil {
@@ -488,15 +527,24 @@ import Observation
             if terminalFailures.contains(currentItem) { pendingSnapshot.state = .failed }
         }
         updateInteractions()
+        for node in pool.nodes { node.finishesThenLeaves = node.item?.id == playlist.finishingID && playlist.finishingID != nil }
         let window = windowItems
         resolutions.retain(Set(window))
-        for (item, task) in resolutionTasks where !window.contains(item) { task.cancel(); resolutionTasks[item] = nil }
+        for (identity, task) in resolutionTasks where !Set(window.map(\.mediaIdentity)).contains(identity) { task.cancel(); resolutionTasks[identity] = nil }
         let currentIDs = Set(items.map(\.id))
         resumePositions = resumePositions.filter { currentIDs.contains($0.key) }
         moderationByItemID = moderationByItemID.filter { currentIDs.contains($0.key) }
         // Engagement follows the window (plus the entry just behind current, for a swipe back). One
         // the viewer has sent, reacted or voted in survives anywhere in the playlist so that isn't lost.
         let keep = Set(window + [currentItem].compactMap { $0 } + (items.indices.contains(activeIndex - 1) ? [items[activeIndex - 1]] : []))
+        for entry in Array(engagements.keys) {
+            if let updated = items.first(where: { $0.hasSameMedia(as: entry) }), updated != entry {
+                let engagement = engagements.removeValue(forKey: entry)
+                engagement?.updateItem(resolutions.cached(updated) ?? updated)
+                engagements[updated] = engagement
+                if let timeline = timelines.removeValue(forKey: entry) { timelines[updated] = timeline }
+            }
+        }
         engagements = engagements.filter { items.contains($0.key) && (keep.contains($0.key) || $0.value.holdsViewerState) }
         // Same rule for timelines; a kept engagement keeps its timeline so both stay one instance.
         timelines = timelines.filter { items.contains($0.key) && (keep.contains($0.key) || engagements[$0.key] != nil) }
@@ -507,7 +555,7 @@ import Observation
         pool.trim(keeping: Set(([currentItem].compactMap { $0 } + configuration.warmOffsets.compactMap { offset in
             let i = activeIndex + offset; return items.indices.contains(i) ? items[i] : nil
         }).compactMap { resolutions.cached($0) }))
-        let playable = window.compactMap { resolutions.cached($0) }
+        let playable = mediaWindowItems.compactMap { resolutions.cached($0) }
         proxy?.retainWindow(playable)
         proxy?.retainPlaylist(items.compactMap { resolutions.cached($0) })
         guard isFeedVisible, currentItem != nil else { return }
@@ -528,22 +576,22 @@ import Observation
             let metadataOnly = item != currentItem && (!prefetchSafe || !mediaIDs.contains(item.id))
             let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
             if urgent { resolutions.promote(item) }
-            guard !terminalFailures.contains(item), resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item] == nil,
+            guard !terminalFailures.contains(item), resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item.mediaIdentity] == nil,
                   resolutionFailures[item]?.canRetry(at: ProcessInfo.processInfo.systemUptime) != false,
                   networkFailures[item].map({ retryTargets.contains(item) && (!$0.nextAttempt.isFinite || $0.nextAttempt <= ProcessInfo.processInfo.systemUptime) }) != false else { continue }
-            resolutionTasks[item] = Task(priority: urgent ? .userInitiated : .utility) { [weak self] in
+            resolutionTasks[item.mediaIdentity] = Task(priority: urgent ? .userInitiated : .utility) { [weak self] in
                 guard let self else { return }
                 do {
                     let result = try await resolutions.resolve(item, using: resolver, metadataOnly: metadataOnly)
                     try Task.checkCancellation()
-                    guard windowItems.contains(item), !ended else { return }
+                    guard windowItems.contains(where: { $0.hasSameMedia(as: item) }), !ended else { return }
                     guard let url = result.url, ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw HMPlayerError.unsupportedURL }
-                    resolutionTasks[item] = nil; resolutionFailures[item] = nil; networkFailures[item] = nil
+                    resolutionTasks[item.mediaIdentity] = nil; resolutionFailures[item] = nil; networkFailures[item] = nil
                     refreshWindow()
                 } catch is CancellationError { }
                 catch {
-                    guard !Task.isCancelled, windowItems.contains(item), !ended else { return }
-                    resolutionTasks[item] = nil
+                    guard !Task.isCancelled, windowItems.contains(where: { $0.hasSameMedia(as: item) }), !ended else { return }
+                    resolutionTasks[item.mediaIdentity] = nil
                     if HMNetworkFailure.isTransient(error) {
                         if currentItem == item { pendingSnapshot.state = .loading }
                         report(error as? HMPlayerError ?? .resolution(error.localizedDescription), item: item)
@@ -564,13 +612,15 @@ import Observation
                 }
             }
         }
-        scheduleResolutionRetry(); resumeActive(); updatePrefetch()
+        scheduleResolutionRetry(); resumeActive()
+        for node in pool.nodes { node.finishesThenLeaves = node.item?.id == playlist.finishingID && playlist.finishingID != nil }
+        updatePrefetch()
     }
     private func scheduleResolutionRetry() {
         guard isFeedVisible, !ended else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let deadlines = windowItems.compactMap { item -> TimeInterval? in
-            guard resolutionTasks[item] == nil, let retry = resolutionFailures[item], retry.attempts < HMResolutionRetry.maximumAttempts else { return nil }
+            guard resolutionTasks[item.mediaIdentity] == nil, let retry = resolutionFailures[item], retry.attempts < HMResolutionRetry.maximumAttempts else { return nil }
             return retry.nextAttempt
         }
         guard let deadline = deadlines.min() else { return }
@@ -697,22 +747,22 @@ import Observation
         let identity = plan.workIdentity + "|" + item.id + "|" + data.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|")
         guard identity != prefetchIdentity else { if recovered { refreshWindowAfterTransport() }; return }
         prefetchIdentity = identity
-        proxy?.prefetch(data, keeping: windowItems.compactMap { resolutions.cached($0) }, plan: plan)
+        proxy?.prefetch(data, keeping: mediaWindowItems.compactMap { resolutions.cached($0) }, plan: plan)
         if recovered { refreshWindowAfterTransport() }
     }
     private func updateInteractions() {
         let current = isFeedVisible ? currentItem : nil
         let next = isFeedVisible && items.indices.contains(activeIndex + 1) ? items[activeIndex + 1] : nil
         let keep = Set([current, next].compactMap { $0 })
-        for item in Set([interactionCurrent, interactionNext].compactMap { $0 }) where !keep.contains(item) { interactions.didLeave(item) }
-        if current != interactionCurrent, let current { interactions.didBecomeCurrent(current) }
-        if next != interactionNext, let next { interactions.willBecomeNext(next) }
+        for item in Set([interactionCurrent, interactionNext].compactMap { $0 }) where !keep.contains(where: { $0.hasSameMedia(as: item) }) { interactions.didLeave(item) }
+        if current?.mediaIdentity != interactionCurrent?.mediaIdentity, let current { interactions.didBecomeCurrent(current) }
+        if next?.mediaIdentity != interactionNext?.mediaIdentity, let next { interactions.willBecomeNext(next) }
         interactionCurrent = current; interactionNext = next
     }
     /// Read-only playback snapshot for an entry. Unprepared entries report idle.
     ///
     /// Access on the main actor.
-    public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.snapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
+    public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.playbackSnapshot ?? (currentItem == item ? pendingSnapshot : HMPlaybackSnapshot()) }
     /// Clock-indexed overlay data. Network session lifecycle belongs to the interaction hooks, not this accessor.
     ///
     /// Access on the main actor.
@@ -855,6 +905,10 @@ import Observation
             monotonicTime: event.monotonicTime, position: event.position, metrics: metrics, properties: event.properties), item: item)
         let entry = entry(withID: item.id) ?? item
         switch event.kind {
+        case .ended:
+            if playlist.finishingID == item.id, currentItem?.id == item.id {
+                mutate { $0.remove(ids: [item.id]) }
+            }
         case .preloadReady:
             networkFailures[entry] = nil
             emit(.itemReady(entry))

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add ranked-feed `reconcile(_:)`, observable Sendable/Equatable `lastPlaylistChange`, and `removedCurrentPolicy` with default immediate advance or finish-once removal, including normal swipe-away behavior.
+- Preserve native players and cached bytes across identical and display-only refreshes. Keep overlapping in-flight prefetch work across playlist edits, canceling only entries that leave the window.
+- Report decoded inactive prepared entries as `warmPlayer` for upcoming badges; preserve active readiness measurements. Add a ranked-feed Sample toggle and usage documentation.
+
 ## 1.0.0-rc.3
 
 - Prioritize active playback over prefetch during startup and stalls. Stream cache misses progressively, hold inactive proxy requests without forcing direct fallback, and handle short or oversized origin range replies.

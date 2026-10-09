@@ -44,3 +44,7 @@ xcodebuild build -project Sample/HotMicPlayerDemo.xcodeproj -scheme HotMicPlayer
 ```
 
 Run the command from the repository root. Installation on a physical device requires your normal development signing and device setup.
+
+## Ranked feed lab
+
+Open Playlist lab and enable **Ranked feed refresh (3s, finish once)** after setting a local fixture origin. The origin must serve `item-0/clip.mp4` through `item-7/clip.mp4` (the adaptive smoke fixture generator creates these). Launch with `--hm-playlist-lab 1 --hm-ranked-refresh 1 --hm-lab-origin URL` to enable it automatically. Swipe above the controls while identical replacements, metadata refreshes and tail re-ranking run every three seconds. The scripted removal near the end seeks to the final second, then waits for the real media-end notification with looping enabled; a later removal leaves via an animated page move. Diagnostics record assignment generations, warm tiers, edit releases and playback events under Documents. The sequence ends after twelve refreshes; disable/re-enable the toggle to restart.

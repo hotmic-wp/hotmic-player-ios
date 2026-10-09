@@ -6,6 +6,9 @@ struct PlaylistLabScreen: View {
     let onBack: () -> Void
     @State private var player = HMPlayer()
     @State private var serial = 0
+    @State private var rankedRefresh = false
+    @State private var rankedTask: Task<Void, Never>?
+    @State private var rankedTick = 0
     @State private var status = "Preparing mixed VOD playlist"
     @State private var origin = BenchmarkOptions().values["lab-origin"] ?? "http://127.0.0.1:8088"
     @State private var delayed: Task<Void, Never>?
@@ -59,6 +62,8 @@ struct PlaylistLabScreen: View {
                     }.accessibilityIdentifier("lab-retry-page")
                     Text(player.isLoadingPage ? "Loading page" : "Page idle").accessibilityIdentifier("lab-page-state")
                 }
+                Toggle("Ranked feed refresh (3s, finish once)", isOn: $rankedRefresh)
+                    .accessibilityIdentifier("lab-ranked-refresh")
                 HStack {
                     Button("Previous") { player.previous() }
                     Button(player.snapshot.state == .paused ? "Play" : "Pause") { player.togglePlayPause() }
@@ -87,7 +92,9 @@ struct PlaylistLabScreen: View {
             if let file = try? HMJSONLFileSink(fileURL: documents.appendingPathComponent("BenchRuns/playlist-lab-\(UUID().uuidString).jsonl"), runID: "playlist-lab", configuration: player.configuration, format: "mixed", network: "local", script: "playlist-lab", buildSHA: "working-tree") {
                 sink = file; player.analytics.add(file)
             }
-            player.replaceAll(batch())
+            if BenchmarkOptions().values["ranked-refresh"] == "1" {
+                rankedRefresh = true; startRankedRefresh()
+            } else { player.replaceAll(batch()) }
             status = "Swipe above the controls; operations preserve the settled current item"
             for await event in player.events {
                 if case let .error(_, kind) = event { status = kind.localizedDescription }
@@ -95,11 +102,65 @@ struct PlaylistLabScreen: View {
                 recordEvent(event)
             }
         }
+        .onChange(of: rankedRefresh) { _, enabled in
+            if enabled { startRankedRefresh() } else { rankedTask?.cancel(); rankedTask = nil }
+        }
         .onChange(of: scenePhase) { _, phase in
             player.isFeedVisible = phase == .active
             perform("scene-" + String(describing: phase)) { true }
         }
-        .onDisappear { delayed?.cancel(); player.teardown(); Task { try? await sink?.flush() } }
+        .onDisappear { rankedTask?.cancel(); delayed?.cancel(); player.teardown(); Task { try? await sink?.flush() } }
+    }
+    /// A complete ranked response every three seconds, including edits while the feed is scrolling.
+    private func startRankedRefresh() {
+        guard rankedTask == nil else { return }
+        var configuration = player.configuration
+        configuration.removedCurrentPolicy = .finishThenAdvance
+        configuration.loops = true; configuration.adaptive = false
+        player.configuration = configuration
+        let seeds = (0..<12).map { index in
+            HMMediaItem(id: "ranked-\(index)", url: URL(string: origin + "/item-\(index % 8)/clip.mp4")!,
+                        title: "Ranked clip \(index)", durationHint: 10)
+        }
+        player.replaceAll(seeds); rankedTick = 0
+        rankedTask = Task { @MainActor in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                rankedTick += 1
+                let tick = rankedTick
+                // Use the same view-driven animated swipe path as benchmark automation.
+                if tick == 3 || tick == 6 { player.requestPage(at: player.activeIndex + 1) }
+                switch tick {
+                case 7:
+                    // Real end notification follows the seek; loops remains true throughout.
+                    perform("finish-once-remove") { player.reconcile(player.items.filter { $0.id != player.currentItem?.id }) }
+                    if player.snapshot.duration > 1 { player.seek(to: player.snapshot.duration - 1) }
+                case 10:
+                    perform("finish-swipe-remove") { player.remove(ids: Set(player.currentItem.map { [$0.id] } ?? [])) }
+                    player.requestPage(at: player.activeIndex + 1)
+                default:
+                    if tick % 3 == 1 {
+                        perform("ranked-identical-replaceAll") { player.replaceAll(player.items, startAt: player.activeIndex) }
+                    } else if tick % 3 == 2 {
+                        let refreshed = player.items.map { item in
+                            HMMediaItem(id: item.id, source: item.source, posterURL: item.posterURL,
+                                title: "Refresh \(tick): \(item.id)", author: item.author,
+                                durationHint: item.durationHint, metadata: ["refresh": String(tick)])
+                        }
+                        perform("ranked-metadata-replaceAll") { player.replaceAll(refreshed, startAt: player.activeIndex) }
+                    } else {
+                        var ranked = player.items
+                        // Re-rank the tail, leaving current and its nearest prepared neighbour intact.
+                        if ranked.count > player.activeIndex + 4 { ranked.swapAt(ranked.count - 1, ranked.count - 2) }
+                        perform("ranked-reconcile") { player.reconcile(ranked) }
+                    }
+                }
+                if tick >= 12 {
+                    LabEvidence.append(["phase": "ranked-complete"], to: "playlist-lab-operations.jsonl")
+                    return
+                }
+            }
+        }
     }
     private func editDuringSwipe(replace: Bool) {
         delayed?.cancel()
@@ -174,6 +235,13 @@ struct PlaylistLabScreen: View {
     }
     private func perform(_ name: String, action: () -> Bool) {
         let before = player.snapshot, oldID = player.currentItem?.id
+        let beforePlayers = player.preparedItemIdentities
+        let beforeBuffers = Dictionary(uniqueKeysWithValues: player.items.filter { beforePlayers[$0.id] != nil }.map {
+            ($0.id, player.snapshot(for: $0).bufferedAhead)
+        })
+        let warmTiers = Dictionary(uniqueKeysWithValues: player.items.filter { beforePlayers[$0.id] != nil }.map {
+            ($0.id, player.snapshot(for: $0).readinessTier.rawValue)
+        })
         let accepted = action(), after = player.snapshot
         let preserved = oldID == player.currentItem?.id && before.activationID == after.activationID && before.currentTime == after.currentTime && before.isFrameReady == after.isFrameReady && before.stallCount == after.stallCount
         status = "\(name): \(accepted ? "accepted" : "rejected") · \(preserved ? "current preserved" : "current changed")"
@@ -181,7 +249,12 @@ struct PlaylistLabScreen: View {
             "before_id": oldID ?? "", "after_id": player.currentItem?.id ?? "", "before_activation": before.activationID,
             "after_activation": after.activationID, "before_time": before.currentTime, "after_time": after.currentTime,
             "before_frame": before.isFrameReady, "after_frame": after.isFrameReady, "stalls": after.stallCount,
-            "prepared_items": player.preparedItemCount, "items": player.items.map(\.id), "revision": player.playlistRevision, "monotonic": ProcessInfo.processInfo.systemUptime]
+            "before_players": beforePlayers, "after_players": player.preparedItemIdentities,
+            "before_buffers": beforeBuffers,
+            "after_buffers": Dictionary(uniqueKeysWithValues: player.items.filter { player.preparedItemIdentities[$0.id] != nil }.map { ($0.id, player.snapshot(for: $0).bufferedAhead) }),
+            "warm_tiers": warmTiers, "released_ids": player.lastPlaylistChange?.releasedItemIDs ?? [],
+            "removed_ids": player.lastPlaylistChange?.removedIDs ?? [],
+            "loops": player.configuration.loops, "prepared_items": player.preparedItemCount, "items": player.items.map(\.id), "revision": player.playlistRevision, "monotonic": ProcessInfo.processInfo.systemUptime]
         if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), let line = String(data: data, encoding: .utf8) {
             changes.append(line)
             let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("playlist-lab-operations.jsonl")

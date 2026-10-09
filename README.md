@@ -1,4 +1,4 @@
-# HotMicPlayer 0.2.0
+# HotMicPlayer 0.3.0
 
 A zero-dependency partner SDK for iOS 17+ apps embedding a vertical VOD playlist. MP4 and HLS can share one playlist. `HMPlayer` owns playlist edits, playback and events; `HMVerticalFeedView` renders video with your overlay.
 

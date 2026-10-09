@@ -74,8 +74,19 @@ public struct HMPlayerConfiguration: Sendable {
     @_spi(Benchmark) public var strategy: HMPlaybackStrategy
     /// Native player count, bounded to 1...4 by the engine.
     public var poolSize: Int
-    /// Fixed prefetch window and media budgets.
+    /// App maximum prefetch window and media budgets (fixed when adaptive is false).
     public var prefetch: HMPrefetchPolicy
+    /// Adapt within app limits using measured performance; false uses fixed numbers.
+    public var adaptive: Bool = true
+    /// All thresholds for the default measured-performance policy.
+    @_spi(Benchmark) public var adaptiveThresholds = HMAdaptivePrefetchThresholds()
+    /// Maximum simultaneous prefix downloads, bounded to 0...4; default serial.
+    public var maxPrefetchConcurrency: Int = 1
+    /// URL/poster-only forward resolution horizon, bounded to 0...32.
+    public var resolveAhead: Int = 8
+    /// Minimum cached payload for a tier-2 arrival hit; avoids counting tiny AVPlayer probes.
+    /// Defaults to 32 KiB, bounded by a positive app per-item prefix budget.
+    @_spi(Benchmark) public var minimumCachedStartBytes: Int = 32 * 1024
     /// Hard disk media cache cap, in bytes.
     public var cacheCapacityBytes: Int
     /// Current player forward-buffer target in seconds.
@@ -102,7 +113,8 @@ public struct HMPlayerConfiguration: Sendable {
                 steadyBufferDuration: TimeInterval = 10, startupPeakBitRate: Double = 1_600_000,
                 steadyPeakBitRate: Double = 0, startupBitRateWindow: TimeInterval = 4,
                 loops: Bool = true, startsMuted: Bool = false, managesAudioSession: Bool = true,
-                restoresPlaybackPosition: Bool = true, lowWaterMark: Int = 3, playlistTTL: TimeInterval = 30) {
+                restoresPlaybackPosition: Bool = true, lowWaterMark: Int = 3, playlistTTL: TimeInterval = 30, adaptive: Bool = true) {
+        self.adaptive = adaptive
         self.lowWaterMark = max(0, lowWaterMark)
         self.playlistTTL = playlistTTL.isFinite ? max(0, playlistTTL) : 30
         self.strategy = strategy; self.poolSize = max(1, min(4, poolSize)); self.prefetch = prefetch
@@ -116,10 +128,10 @@ public struct HMPlayerConfiguration: Sendable {
     public init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(),
                 cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000,
                 playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false,
-                managesAudioSession: Bool = true) {
+                managesAudioSession: Bool = true, adaptive: Bool = true) {
         self.init(strategy: .S3, poolSize: poolSize, prefetch: prefetch, cacheCapacityBytes: cacheCapacityBytes,
                   startupPeakBitRate: startupPeakBitRate, loops: loops, startsMuted: startsMuted,
-                  managesAudioSession: managesAudioSession, playlistTTL: playlistTTL)
+                  managesAudioSession: managesAudioSession, playlistTTL: playlistTTL, adaptive: adaptive)
     }
     /// Creates the settings for one benchmark strategy.
     @_spi(Benchmark) public static func preset(_ strategy: HMPlaybackStrategy) -> Self {
@@ -157,6 +169,11 @@ public struct HMPlayerConfiguration: Sendable {
 
     /// Complete experimental configuration serialization, excluded from partner imports.
     struct BenchmarkRecord: Codable, Sendable {
+        private let adaptive: Bool
+        private let adaptiveThresholds: HMAdaptivePrefetchThresholds
+        private let maxPrefetchConcurrency: Int
+        private let resolveAhead: Int
+        private let minimumCachedStartBytes: Int
         private let lowWaterMark: Int
         private let playlistTTL: TimeInterval
         private let volatileSigningQueryParameters: [String]
@@ -173,6 +190,8 @@ public struct HMPlayerConfiguration: Sendable {
         private let managesAudioSession: Bool
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
+            adaptive = c.adaptive; adaptiveThresholds = c.adaptiveThresholds
+            maxPrefetchConcurrency = c.maxPrefetchConcurrency; resolveAhead = c.resolveAhead; minimumCachedStartBytes = c.minimumCachedStartBytes
             lowWaterMark = c.lowWaterMark; playlistTTL = c.playlistTTL
             volatileSigningQueryParameters = c.volatileSigningQueryParameters; strategy = c.strategy
             poolSize = c.poolSize; prefetch = PolicyRecord(c.prefetch); cacheCapacityBytes = c.cacheCapacityBytes
@@ -189,6 +208,8 @@ public struct HMPlayerConfiguration: Sendable {
                 startupBitRateWindow: startupBitRateWindow, loops: loops, startsMuted: startsMuted,
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
+            c.adaptive = adaptive; c.adaptiveThresholds = adaptiveThresholds
+            c.maxPrefetchConcurrency = maxPrefetchConcurrency; c.resolveAhead = resolveAhead; c.minimumCachedStartBytes = minimumCachedStartBytes
             c.volatileSigningQueryParameters = volatileSigningQueryParameters
             return c
         }

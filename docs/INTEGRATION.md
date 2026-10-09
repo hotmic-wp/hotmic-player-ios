@@ -1,4 +1,4 @@
-# Integrating HotMicPlayer 0.2.0
+# Integrating HotMicPlayer 0.3.0
 
 The SDK is a source Swift package with no third-party dependencies, for iOS 17+. Playback supports immutable VOD MP4 and HLS; hosts supply their catalogue, overlays and optional adapters.
 
@@ -130,3 +130,9 @@ let player = HMPlayer(configuration: configuration)
 ```
 
 All other engine tuning, S0–S3 names, configuration serialization (`benchmarkRecord` is Codable)/fingerprint, cache reset and benchmark entry points require `@_spi(Benchmark) import HotMicPlayer`. SPI is experimental and is excluded from [the compiled partner API inventory](PUBLIC_API.md).
+
+
+Measured adaptive prefetch is enabled by default. The app's prefetch budgets
+remain maxima; `HMPlayerConfiguration(adaptive: false)` selects fixed settings.
+See [adaptive prefetch](ADAPTIVE_PREFETCH.md) for the replaceable public policy,
+readiness tiers, thresholds and telemetry. No network-type rules are applied.

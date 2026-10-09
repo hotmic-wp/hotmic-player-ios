@@ -5,11 +5,6 @@ import Foundation
 @Suite("Prefetch policy")
 struct PrefetchPolicyTests {
 
-    @Test("Off produces no warm window")
-    func offIsEmpty() {
-        #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
-    }
-
     @Test("Nearest neighbours are warmed first")
     func interleavesNearestFirst() {
         // Order matters: whichever item is warmed first gets the bandwidth.
@@ -21,6 +16,7 @@ struct PrefetchPolicyTests {
     func asymmetric() {
         #expect(HMPrefetchPolicy(ahead: 3, behind: 0).windowOffsets == [1, 2, 3])
         #expect(HMPrefetchPolicy(ahead: 0, behind: 2).windowOffsets == [-1, -2])
+        #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
         #expect(HMPrefetchPolicy(ahead: -1, behind: -2).windowOffsets.isEmpty)
         #expect(HMPlayerConfiguration.default.warmOffsets == [1])
         #expect(HMPlayerConfiguration.preset(.S0).warmOffsets.isEmpty)
@@ -496,5 +492,35 @@ struct JSONLExportTests {
         #expect(records[1]["event"] as? String == "viewStart")
         #expect(records[2]["event"] as? String == "firstFrame")
         #expect(records[2]["monotonic_s"] as? Double == 100.25)
+
+        // Benchmark-only snapshots preserve ordering and never reach a partner sink.
+        let partner = PartnerSink()
+        let hub = HMAnalyticsHub(sinks: [partner])
+        let inputs = HMPrefetchInputs(throughputBytesPerSecond: 250_000, bufferedAheadSeconds: 6)
+        let plan = HMAdaptivePrefetchPolicy().decide(inputs, configuration: configuration)
+        hub.recordPrefetchDecision(inputs: inputs, plan: plan, item: item, policy: "test")
+        #expect(partner.events.isEmpty)
+        hub.add(sink)
+        hub.recordPrefetchDecision(inputs: inputs, plan: plan, item: item, policy: "test")
+        hub.emit(HMPlaybackEvent(kind: .playing, itemID: item.id), item: item)
+        try await sink.flush()
+        #expect(partner.events == [.playing])
+        let exported = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+        let decision = try JSONSerialization.jsonObject(with: Data(exported[3].utf8)) as! [String: Any]
+        let properties = decision["properties"] as! [String: String]
+        let recordedPlan = try JSONSerialization.jsonObject(with: Data(properties["plan"]!.utf8)) as! [String: Any]
+        #expect(decision["event"] as? String == "prefetchDecision")
+        #expect(recordedPlan["bytesPerItem"] as? Int == 200_000)
+        #expect(exported[4].contains("playing"))
+        hub.remove(named: sink.sinkName)
+        hub.recordPrefetchDecision(inputs: inputs, plan: plan, item: item, policy: "test")
+        try await sink.flush()
+        #expect(try String(contentsOf: file, encoding: .utf8).split(separator: "\n").count == 5)
     }
+}
+
+@MainActor private final class PartnerSink: HMAnalyticsSink {
+    let sinkName = "partner"
+    var events: [HMPlaybackEvent.Kind] = []
+    func handle(_ event: HMPlaybackEvent, item: HMMediaItem) { events.append(event.kind) }
 }

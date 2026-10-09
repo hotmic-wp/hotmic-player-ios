@@ -21,6 +21,11 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private var data = Data()
     private var response: HTTPURLResponse?
     private var received = 0
+    private var beganAt = 0.0
+    private var receiveAt = 0.0
+    private var sampleBytes = 0
+    private var sampleSeconds = 0.0
+    private let measurement: (@Sendable (Int, Double, Double?) -> Void)?
     private let limit: Int
     private let priority: Float
     private var cancelled = false
@@ -31,9 +36,10 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private let headers: (@Sendable (HTTPURLResponse) async throws -> Void)?
     private let bytes: (@Sendable (Data) async throws -> Void)?
     init(limit: Int, priority: Float = URLSessionTask.highPriority,
+         measurement: (@Sendable (Int, Double, Double?) -> Void)? = nil,
          headers: (@Sendable (HTTPURLResponse) async throws -> Void)? = nil,
          bytes: (@Sendable (Data) async throws -> Void)? = nil) {
-        self.limit = limit; self.priority = priority; self.headers = headers; self.bytes = bytes
+        self.limit = limit; self.priority = priority; self.measurement = measurement; self.headers = headers; self.bytes = bytes
     }
     func load(_ request: URLRequest) async throws -> Result {
         try await withTaskCancellationHandler {
@@ -48,6 +54,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
                 if bytes != nil { request.timeoutInterval = 24 * 60 * 60 }
                 let session = priority == URLSessionTask.lowPriority ? Self.prefetchSession : Self.playbackSession
                 let t = session.dataTask(with: request); t.delegate = self; t.priority = priority; task = t
+                beganAt = ProcessInfo.processInfo.systemUptime; receiveAt = beganAt
                 armWatchdogLocked(); t.resume(); lock.unlock()
             }
         } onCancel: { self.cancel() }
@@ -72,11 +79,14 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private func resumeStream(_ dataTask: URLSessionDataTask) {
         lock.lock(); defer { lock.unlock() }
         guard !cancelled, task === dataTask else { return }
+        receiveAt = ProcessInfo.processInfo.systemUptime
         armWatchdogLocked(); dataTask.resume()
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { completionHandler(.cancel); return }
         lock.lock(); self.response = http
+        let now = ProcessInfo.processInfo.systemUptime
+        measurement?(0, 0, max(0, now - beganAt)); receiveAt = now
         if let headers {
             suspendWatchdogLocked()
             pending = Task {
@@ -86,10 +96,13 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
             lock.unlock()
         } else { lock.unlock(); completionHandler(.allow) }
     }
-    private func headersCompleted() { lock.lock(); armWatchdogLocked(); lock.unlock() }
+    private func headersCompleted() { lock.lock(); receiveAt = ProcessInfo.processInfo.systemUptime; armWatchdogLocked(); lock.unlock() }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
         lock.lock(); defer { lock.unlock() }
         received += chunk.count
+        let now = ProcessInfo.processInfo.systemUptime
+        sampleBytes += chunk.count; sampleSeconds += max(0, now - receiveAt); receiveAt = now
+        if sampleSeconds >= 0.25 { flushMeasurementLocked() }
         if let bytes {
             dataTask.suspend(); suspendWatchdogLocked()
             let previous = pending
@@ -108,8 +121,15 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         lock.lock(); let previous = pending; suspendWatchdogLocked(); lock.unlock()
         Task { await previous?.value; self.complete(error) }
     }
+    private func flushMeasurementLocked() {
+        // Tiny manifests and a final delegate burst are latency observations,
+        // not capacity samples. Avoid an arbitrarily high bytes/delta estimate.
+        if sampleBytes >= 32 * 1024, sampleSeconds >= 0.01 { measurement?(sampleBytes, sampleSeconds, nil) }
+        sampleBytes = 0; sampleSeconds = 0
+    }
     private func complete(_ error: Error?) {
         lock.lock()
+        flushMeasurementLocked()
         let c = continuation; continuation = nil
         let wasCancelled = cancelled, streamError = streamingError, response = response, data = data, received = received
         task = nil; pending = nil; suspendWatchdogLocked(); lock.unlock()

@@ -441,3 +441,37 @@ Cache identity includes every query parameter by default. SDK hosts can configur
 this never removes unrelated query variants. Playlists use a three-second memory
 TTL only; they are not retained across relaunch. Benchmark cache resets use the
 shared cache actor between runs instead of deleting files behind live controllers.
+
+
+## Adaptive performance grid and stdlib throttle
+
+Adaptive mode defaults to on. Set a cell's `knobs.adaptive` to 0 for the fixed
+control. [Adaptive prefetch](ADAPTIVE_PREFETCH.md) lists every policy threshold
+knob, the public provider interface and measurement/analysis semantics. All
+existing grid knobs remain supported.
+
+An optional origin throttle provides shared capacity across simultaneous requests:
+
+```bash
+python3 bench/origin.py --root bench/generated/adaptive --port 18413 \
+  --bandwidth-bytes-per-second 4000000 --latency-ms 10 \
+  --log bench/results/origin-fast.jsonl
+python3 bench/origin.py --root bench/generated/adaptive --port 18414 \
+  --bandwidth-bytes-per-second 300000 --latency-ms 150 \
+  --log bench/results/origin-slow.jsonl
+```
+
+Both options default to zero (unlimited bandwidth / no added latency). Range and
+HEAD semantics are retained. Rates are bytes/sec; latency is per response, before
+headers. Logs record both knobs. The rate is shared across requests, so adding
+prefetch workers does not multiply the configured capacity.
+
+`python3 bench/prepare_adaptive_smoke.py` prepares eight distinct media paths,
+a two-rendition HLS ladder, MP4 faststart fixtures, and a 16-cell `grid.json`.
+It uses the existing ffmpeg; no installation is performed. Start a receiver on
+18415 and the two origins above. Build/install on a dedicated HotMic simulator,
+then launch the app with `--hm-grid-url http://127.0.0.1:18413/grid.json`.
+The app drives settled page transitions and posts complete JSONLs. The smoke has
+two moves per cell, one-second binge dwell and five-second normal dwell, with
+`require_frame=true`. Pass `--normal-dwell 9 --swipes 3` to exercise the default
+long-dwell rule. This is functional smoke, not a physical-device benchmark.

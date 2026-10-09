@@ -41,6 +41,10 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         case preloadReady
         /// A pooled `AVPlayer` was recycled onto a different item.
         case playerRecycled
+        /// Changed applied plan and measured inputs, delivered only to benchmark sinks.
+        @_spi(Benchmark) case prefetchDecision
+        /// Active upstream receive timing, separate from delivered payload accounting.
+        @_spi(Benchmark) case transferSample
         /// One response's network or cache byte totals.
         @_spi(Benchmark) case transfer
         /// Speculative download exhausted its retries.
@@ -72,6 +76,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
             case .preloadStart: return "preloadStart"
             case .preloadReady: return "preloadReady"
             case .playerRecycled: return "playerRecycled"
+            case .prefetchDecision: return "prefetchDecision"
+            case .transferSample: return "transferSample"
             case .transfer: return "transfer"
             case .prefetchError: return "prefetchError"
             case .transportError: return "transportError"
@@ -99,6 +105,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
             case "preloadStart": self = .preloadStart
             case "preloadReady": self = .preloadReady
             case "playerRecycled": self = .playerRecycled
+            case "prefetchDecision": self = .prefetchDecision
+            case "transferSample": self = .transferSample
             case "transfer": self = .transfer
             case "prefetchError": self = .prefetchError
             case "transportError": self = .transportError

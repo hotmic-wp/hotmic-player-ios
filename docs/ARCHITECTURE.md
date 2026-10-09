@@ -1,4 +1,4 @@
-# HotMicPlayer architecture (0.2.0)
+# HotMicPlayer architecture (0.3.0)
 
 The dependency-free player package defines `HMPlayer`, its VOD engine, `HMVerticalFeedView`, analytics and three partner adapter protocols. A later, separate `HotMicPlayerCore` package will depend on this package and HotMicCore to implement those adapters. There is no Core code here.
 

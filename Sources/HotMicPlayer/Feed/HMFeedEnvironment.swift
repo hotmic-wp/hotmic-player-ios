@@ -12,6 +12,8 @@ public extension EnvironmentValues {
     /// which zeroes out the insets everything inside it would normally read.
     /// The feed measures them before it expands and republishes them here, so
     /// overlays can still keep their chrome clear of the notch and home bar.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     var hmFeedSafeArea: EdgeInsets {
         get { self[HMFeedSafeAreaKey.self] }
         set { self[HMFeedSafeAreaKey.self] = newValue }

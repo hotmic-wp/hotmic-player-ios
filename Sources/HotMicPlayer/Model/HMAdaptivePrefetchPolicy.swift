@@ -49,28 +49,52 @@ import Foundation
 }
 
 /// Smoothed telemetry and explicit hysteresis state; nil means no observation yet.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMPrefetchInputs: Sendable, Equatable {
     /// EWMA upstream payload rate per connection, a conservative estimate; cache reads are excluded.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var throughputBytesPerSecond: Double?
     /// EWMA request time to response headers.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var latencySeconds: Double?
     /// EWMA fraction of forward arrivals with a ready player or disk start.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var readyHitRate: Double?
     /// EWMA wall time between forward activations.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var dwellSeconds: Double?
     /// Current playable buffer ahead of the playhead.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var bufferedAheadSeconds: Double
     /// Known VOD remainder; nil while duration is unknown.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var remainingSeconds: Double?
     /// Whether current playback is rebuffering.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var isStalling: Bool
     /// Previous safety pause, supplied explicitly for hysteresis.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var wasPaused: Bool
     /// Wall time since current activation.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var elapsedOnItemSeconds: Double
     /// Previous applied plan, supplying explicit speed-tier hysteresis state.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var previousPlan: HMPrefetchPlan?
     /// Creates measured inputs, with unknown metrics represented by nil.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(throughputBytesPerSecond: Double? = nil, latencySeconds: Double? = nil,
                 readyHitRate: Double? = nil, dwellSeconds: Double? = nil,
                 bufferedAheadSeconds: Double = 0, remainingSeconds: Double? = nil,
@@ -86,31 +110,55 @@ public struct HMPrefetchInputs: Sendable, Equatable {
 
 /// Tier 1 is a prerolled next player; tier 2 is a nearest-first disk prefix;
 /// tier 3 resolves URL/poster only. Delay is measured from current activation.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMPrefetchPlan: Sendable, Equatable {
     // Default-policy state is not a partner wire contract.
     var speedTier: HMPrefetchSpeedTier = .medium
     var highLatency = false
     /// Number of following entries to cache, nearest first.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var itemsAhead: Int
     /// Number of previous entries to cache, nearest first.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var itemsBehind: Int
     /// Maximum prefix payload bytes per entry.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var bytesPerItem: Int
     /// Optional media-time prefix budget, always bounded by bytes.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var secondsPerItem: Double?
     /// Whether to prepare a neighbour after the start delay.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var keepReadyPlayer: Bool
     /// Starting HLS ceiling in bits/sec; zero means unrestricted.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var startingBitRate: Double
     /// Maximum simultaneous explicit prefix transfers; zero admits none.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var concurrency: Int
     /// Safety pause for speculative media downloads; URL/poster resolution continues.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var paused: Bool
     /// Earliest elapsed activation time for ready-player and disk work.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var startAfterSeconds: Double
     /// Human-readable decision reason, exported verbatim to telemetry.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public var reason: String
     /// Creates a candidate plan; the engine always enforces app limits.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(itemsAhead: Int, itemsBehind: Int = 0, bytesPerItem: Int, secondsPerItem: Double? = nil,
                 keepReadyPlayer: Bool = true, startingBitRate: Double = 0, concurrency: Int = 1,
                 paused: Bool = false, startAfterSeconds: Double = 0, reason: String) {
@@ -120,6 +168,8 @@ public struct HMPrefetchPlan: Sendable, Equatable {
         self.startAfterSeconds = startAfterSeconds; self.reason = reason
     }
     /// Enforced by the engine for every provider, including custom partner policies.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public func clamped(to c: HMPlayerConfiguration) -> Self {
         var p = self
         p.itemsAhead = max(0, min(8, c.prefetch.ahead, p.itemsAhead))
@@ -153,16 +203,26 @@ public struct HMPrefetchPlan: Sendable, Equatable {
 }
 
 /// Replaceable pure policy. The engine supplies EWMA measurements and clamps its result.
+///
+/// May be called from any task; synchronize implementation state.
 public protocol HMPrefetchPolicyProviding: Sendable {
     /// Returns a candidate plan for the measured state and app limits.
+    ///
+    /// May be called from any task; synchronize implementation state.
     func decide(_ inputs: HMPrefetchInputs, configuration: HMPlayerConfiguration) -> HMPrefetchPlan
 }
 
 /// Stateless default policy; previousPlan and wasPaused make hysteresis reproducible.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMAdaptivePrefetchPolicy: HMPrefetchPolicyProviding {
     /// Creates the stateless default provider.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init() {}
     /// Applies configured thresholds, readiness/dwell prioritisation and buffer hysteresis.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public func decide(_ i: HMPrefetchInputs, configuration c: HMPlayerConfiguration) -> HMPrefetchPlan {
         let t = c.adaptiveThresholds
         var p = HMPrefetchPlan(itemsAhead: c.prefetch.ahead, itemsBehind: c.prefetch.behind,

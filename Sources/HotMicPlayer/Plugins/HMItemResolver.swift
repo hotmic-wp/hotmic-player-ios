@@ -2,26 +2,44 @@ import Foundation
 import Observation
 
 /// Playable VOD metadata returned by a partner resolver.
+///
+/// Use from any task; mutate only an exclusively owned value.
 public struct HMResolvedItem: Sendable, Equatable {
     /// File or HTTP(S) media URL.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let url: URL
     /// Container type, or automatic detection.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let format: HMMediaItem.Format
     /// Optional poster fallback.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let poster: URL?
     /// Optional title fallback.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let title: String?
     /// Optional duration in seconds.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public let duration: TimeInterval?
     /// Creates a playable result. Explicit playlist metadata takes precedence over these hints.
+    ///
+    /// Use from any task; mutate only an exclusively owned value.
     public init(url: URL, format: HMMediaItem.Format = .auto, poster: URL? = nil, title: String? = nil, duration: TimeInterval? = nil) {
         self.url = url; self.format = format; self.poster = poster; self.title = title; self.duration = duration
     }
 }
 
 /// Resolves opaque references during prefetch. Implementations must cooperate with task cancellation.
+///
+/// May be called from any task; synchronize implementation state.
 public protocol HMItemResolver: Sendable {
     /// Obtains VOD media. Concurrent calls for the same entry are coalesced by the player.
+    ///
+    /// May be called from any task; synchronize implementation state.
     func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem
 }
 

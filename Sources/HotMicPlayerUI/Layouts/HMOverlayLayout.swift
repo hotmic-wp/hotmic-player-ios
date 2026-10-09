@@ -19,37 +19,67 @@ import HotMicPlayer
 ///
 /// Configure it with `.hmOverlayOptions(_:)` and restyle it with `.hmTheme(_:)`,
 /// or build it directly in your own overlay closure with explicit options.
+///
+/// Access on the main actor.
 public struct HMOverlayLayout: HMEngagementLayout {
 
     /// What the layout shows. Hidden parts aren't built at all.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public struct Options {
         /// Chat rail.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var showsChat = true
         /// Poll card.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var showsPolls = true
         /// Floating reactions on the current item.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var showsFloatingReactions = true
         /// Engagement scrubber.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var showsScrubber = true
         /// Item author and title.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var showsMetadata = true
         /// Tap to play/pause, the play/pause glyph and the buffering spinner.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var handlesPlayback = true
         /// Action rail buttons. Share also needs `onShare`.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var actions: Set<HMActionRail.Action> = Set(HMActionRail.Action.allCases)
         /// Share placeholder handler; Share is hidden without one.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var onShare: ((HMMediaItem) -> Void)?
         /// Seconds of chat history behind the playhead.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var chatLookback: TimeInterval = 20
         /// Most chat messages on screen.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var chatLimit = 5
         /// Extra space beyond the safe area, for example to clear host chrome at the top.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var contentInsets = EdgeInsets(top: 56, leading: 16, bottom: 6, trailing: 8)
 
         /// Everything on, Share hidden until `onShare` is set.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public init() {}
 
         /// The default options.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public static var `default`: Options { Options() }
     }
 
@@ -66,18 +96,24 @@ public struct HMOverlayLayout: HMEngagementLayout {
     @State private var keyboardOverlap: CGFloat = 0
 
     /// Creates the layout with options from the environment.
+    ///
+    /// Access on the main actor.
     public init(context: HMEngagementContext) {
         self.context = context
         self.explicitOptions = nil
     }
 
     /// Creates the layout with explicit options.
+    ///
+    /// Access on the main actor.
     public init(context: HMEngagementContext, options: Options) {
         self.context = context
         self.explicitOptions = options
     }
 
     /// Creates the layout inside your own overlay closure.
+    ///
+    /// Access on the main actor.
     public init(player: HMPlayer, item: HMMediaItem, snapshot: HMPlaybackSnapshot, options: Options? = nil) {
         self.context = HMEngagementContext(player: player, item: item, snapshot: snapshot)
         self.explicitOptions = options
@@ -87,6 +123,8 @@ public struct HMOverlayLayout: HMEngagementLayout {
     private var engagement: HMEngagement { context.engagement }
     private var mediaTime: TimeInterval { context.mediaTime }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         let isCurrent = context.isCurrent
         GeometryReader { proxy in
@@ -285,6 +323,8 @@ private struct HMOverlayOptionsKey: EnvironmentKey {
 
 public extension EnvironmentValues {
     /// Options read by `HMOverlayLayout` when none are passed explicitly.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     var hmOverlayOptions: HMOverlayLayout.Options {
         get { self[HMOverlayOptionsKey.self] }
         set { self[HMOverlayOptionsKey.self] = newValue }
@@ -293,6 +333,8 @@ public extension EnvironmentValues {
 
 public extension View {
     /// Configures every `HMOverlayLayout` inside this view.
+    ///
+    /// Access on the main actor.
     func hmOverlayOptions(_ options: HMOverlayLayout.Options) -> some View { environment(\.hmOverlayOptions, options) }
 }
 #endif

@@ -8,6 +8,8 @@ import SwiftUI
 /// so the whole thing stays a few hundred lines. Cells are lazy, and video is
 /// only ever rendered by a pooled node — a cell with no node assigned shows its
 /// poster, which is exactly what you want for items outside the warm window.
+///
+/// Access on the main actor.
 public struct HMVerticalFeedView<Overlay: View>: View {
 
     private let controller: HMPlayer
@@ -21,6 +23,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     @State private var scrolledID: HMMediaItem.ID?
 
     /// Creates a vertical VOD feed with a partner overlay for each entry and snapshot.
+    ///
+    /// Access on the main actor.
     public init(
         player: HMPlayer,
         transition: HMPageTransition = .none,
@@ -34,6 +38,10 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     }
 
     /// Renders the vertical feed and its overlays.
+    ///
+    /// Access on the main actor.
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         // Outer reader still sits inside the safe area, so it can measure the
         // insets; the inner one is expanded to full bleed. Overlays read the
@@ -164,6 +172,8 @@ private struct PageTransitionEffect: ViewModifier {
 
 public extension HMVerticalFeedView where Overlay == EmptyView {
     /// Creates a vertical feed without an overlay.
+    ///
+    /// Access on the main actor.
     init(
         player: HMPlayer,
         transition: HMPageTransition = .none,

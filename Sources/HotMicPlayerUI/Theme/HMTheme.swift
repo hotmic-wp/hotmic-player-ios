@@ -14,29 +14,51 @@ import SwiftUI
 /// theme.icons.share = "paperplane"
 /// HMVerticalFeedView(player: player, layout: HMOverlayLayout.self).hmTheme(theme)
 /// ```
+///
+/// Configure this SwiftUI value on the main actor.
 public struct HMTheme {
 
     /// Palette. Content drawn directly on video uses the `onVideo` colors; cards
     /// (poll, composer) use system materials and adapt to light and dark mode.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public struct Colors {
         /// Brand accent: the watched waveform, the viewer's vote, send button.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var accent: Color
         /// Second gradient stop for the waveform and reaction highlights.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var accentSecondary: Color
         /// Author names in chat. Lighter than `accent` so it reads on dark video.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var author: Color
         /// Primary text and icons over video.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var onVideo: Color
         /// Secondary text over video.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var onVideoSecondary: Color
         /// Gradient scrim color behind content over video.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var scrim: Color
         /// Tint layered over the card material.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var cardTint: Color
         /// Unwatched waveform bars.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var track: Color
 
         /// Creates a palette.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public init(accent: Color, accentSecondary: Color, author: Color, onVideo: Color, onVideoSecondary: Color,
                     scrim: Color, cardTint: Color, track: Color) {
             self.accent = accent
@@ -51,19 +73,33 @@ public struct HMTheme {
     }
 
     /// Type ramp. Each is a Dynamic Type text style.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public struct Fonts {
         /// Chat text and poll options.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var body: Font
         /// Author names and the item's author.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var emphasis: Font
         /// Counts, labels and metadata.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var caption: Font
         /// Poll question.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var headline: Font
         /// Timecodes and anything that ticks; should use monospaced digits.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var metric: Font
 
         /// Creates a type ramp.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public init(body: Font, emphasis: Font, caption: Font, headline: Font, metric: Font) {
             self.body = body
             self.emphasis = emphasis
@@ -74,25 +110,45 @@ public struct HMTheme {
     }
 
     /// SF Symbol names for every control.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public struct Icons {
         /// Stream reaction button.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var react: String
         /// Opens the composer.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var comment: String
         /// Share placeholder.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var share: String
         /// Sends a chat message.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var send: String
         /// Shown while muted.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var muted: String
         /// Shown while sound is on.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var unmuted: String
         /// Poll header.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var poll: String
         /// The viewer's poll choice.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public var selected: String
 
         /// Creates an icon set.
+        ///
+        /// Configure this SwiftUI value on the main actor.
         public init(react: String, comment: String, share: String, send: String, muted: String, unmuted: String,
                     poll: String, selected: String) {
             self.react = react
@@ -107,19 +163,33 @@ public struct HMTheme {
     }
 
     /// Palette.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var colors: Colors
     /// Type ramp.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var fonts: Fonts
     /// Icons.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var icons: Icons
     /// Corner radius for cards and the composer field.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var cornerRadius: CGFloat
     /// Emoji offered by a long press on the react button. The first is what a tap sends.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var reactionPalette: [String]
     /// Emoji a double-tap on a chat message sends.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var messageReaction: String
 
     /// Creates a theme.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public init(colors: Colors, fonts: Fonts, icons: Icons, cornerRadius: CGFloat, reactionPalette: [String],
                 messageReaction: String) {
         self.colors = colors
@@ -131,9 +201,13 @@ public struct HMTheme {
     }
 
     /// Emoji a tap on the react button sends.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public var primaryReaction: String { reactionPalette.first ?? "🔥" }
 
     /// HotMic's look: near-black stage, violet-to-pink accent, rounded type.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     public static let `default` = HMTheme(
         colors: Colors(
             accent: Color(red: 0.72, green: 0.38, blue: 1.0),
@@ -174,6 +248,8 @@ private struct HMThemeKey: EnvironmentKey {
 
 public extension EnvironmentValues {
     /// Theme read by every HotMicPlayerUI component.
+    ///
+    /// Configure this SwiftUI value on the main actor.
     var hmTheme: HMTheme {
         get { self[HMThemeKey.self] }
         set { self[HMThemeKey.self] = newValue }
@@ -182,6 +258,8 @@ public extension EnvironmentValues {
 
 public extension View {
     /// Applies a theme to every HotMicPlayerUI component inside this view.
+    ///
+    /// Access on the main actor.
     func hmTheme(_ theme: HMTheme) -> some View { environment(\.hmTheme, theme) }
 }
 

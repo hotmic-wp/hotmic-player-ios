@@ -9,12 +9,18 @@ import AVFoundation
 /// and a recycled `AVPlayer` must call `videoChange` rather than being torn down
 /// and re-monitored. This sink tracks pooled players by key and does exactly
 /// that, which is the part teams usually get wrong when they build a feed.
+///
+/// Access on the main actor.
 @MainActor
 public final class HMMuxAnalyticsSink: HMAnalyticsSink {
 
     /// Stable sink identifier used by the hub for deduplication.
+    ///
+    /// Access on the main actor.
     public let sinkName = "mux"
     /// Mux configuration used for new attachments.
+    ///
+    /// Access on the main actor.
     public var environment: HMMuxEnvironment
     private let bridge: HMMuxBridge
 
@@ -24,6 +30,8 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     private var knownDurations: [String: TimeInterval] = [:]
 
     /// Creates a Mux analytics sink using a host-provided bridge.
+    ///
+    /// Access on the main actor.
     public init(environment: HMMuxEnvironment, bridge: HMMuxBridge) {
         self.environment = environment
         self.bridge = bridge
@@ -45,6 +53,8 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
 
     #if canImport(AVFoundation)
     /// Attaches an analytics backend to a pooled player layer.
+    ///
+    /// Access on the main actor.
     public func attach(playerLayer: AVPlayerLayer, playerKey: String, item: HMMediaItem) {
         guard monitoredItems[playerKey] == nil else {
             // Already monitored: this is a recycle, not a fresh player.
@@ -61,6 +71,8 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     }
 
     /// Updates analytics metadata when a player is recycled.
+    ///
+    /// Access on the main actor.
     public func videoChange(playerKey: String, item: HMMediaItem) {
         // A speculative node can recycle before it was ever attached.
         guard monitoredItems[playerKey] != nil else { return }
@@ -70,6 +82,8 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     }
 
     /// Ends analytics monitoring for a pooled player.
+    ///
+    /// Access on the main actor.
     public func detach(playerKey: String) {
         guard monitoredItems.removeValue(forKey: playerKey) != nil else { return }
         bridge.destroy(playerName: playerKey)
@@ -77,6 +91,8 @@ public final class HMMuxAnalyticsSink: HMAnalyticsSink {
     #endif
 
     /// Consumes one telemetry event on the main actor.
+    ///
+    /// Access on the main actor.
     public func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
         if let duration = event.metrics["duration_s"], duration > 0 {
             knownDurations[item.id] = duration

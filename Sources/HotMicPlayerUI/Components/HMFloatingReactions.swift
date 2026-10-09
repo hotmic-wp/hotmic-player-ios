@@ -12,6 +12,8 @@ import HotMicPlayer
 ///
 /// Place it full-bleed over the video; it never takes touches. With Reduce Motion
 /// on, emoji fade in place instead of rising, and ambient crowd reactions are off.
+///
+/// Access on the main actor.
 public struct HMFloatingReactions: View {
 
     private let engagement: HMEngagement
@@ -40,6 +42,11 @@ public struct HMFloatingReactions: View {
     ///   - quietFloor: Waveform height (0...1) below which ambient reactions don't fly.
     ///   - trailingInset: Distance of the launch column from the trailing edge.
     ///   - launchHeight: Launch point as a fraction of the height, from the top.
+    ///
+    /// - Parameter engagement: Engagement state to display and send viewer actions through.
+    /// - Parameter mediaTime: Current item time in seconds, used to query the engagement timeline.
+    ///
+    /// Access on the main actor.
     public init(engagement: HMEngagement, mediaTime: TimeInterval, isPlaying: Bool, quietFloor: Double = 0.45,
                 trailingInset: CGFloat = 34, launchHeight: Double = 0.6) {
         self.engagement = engagement
@@ -50,6 +57,8 @@ public struct HMFloatingReactions: View {
         self.launchHeight = launchHeight
     }
 
+    /// Renders the component from current state when SwiftUI evaluates the view.
+    /// Access on the main actor.
     public var body: some View {
         GeometryReader { proxy in
             ZStack {

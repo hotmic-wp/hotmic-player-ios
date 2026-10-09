@@ -340,9 +340,19 @@ struct EngagementTests {
                 let old = HMEngagement(item: item, timeline: history, source: nil, retainsSource: false,
                                        polls: [poll()], moderation: records)
                 old.removeMessage(id: "removed"); old.removeReaction(id: "stream"); old.removePoll(id: "p")
+                old.updateReactions(["🔥": 7], forMessage: "survivor")
+                old.removeReaction("🔥", forMessage: "survivor")
+                #expect(old.messages(near: 6).first?.reactions == ["🔥": 6])
                 let rebuilt = HMEngagement(item: item, timeline: history, source: nil, retainsSource: false,
                                            polls: [poll()], moderation: records)
                 #expect(rebuilt.messages(near: 6).map(\.id) == ["survivor"])
+                // Authoritative totals are durable; a deletion delta is instance-local.
+                #expect(rebuilt.messages(near: 6).first?.reactions == ["🔥": 7])
+                old.updateReactions(["🔥": 4], forMessage: "survivor")
+                #expect(rebuilt.messages(near: 6).first?.reactions == ["🔥": 4])
+                let beforeQueries = rebuilt.revision
+                _ = rebuilt.polls; _ = rebuilt.reactionTotals; _ = rebuilt.density; _ = rebuilt.markers
+                #expect(rebuilt.revision == beforeQueries)
                 #expect(rebuilt.reactionTotals.isEmpty && rebuilt.reactions(in: 0...30).isEmpty && rebuilt.polls.isEmpty)
                 rebuilt.upsertPoll(poll())
                 #expect(rebuilt.polls.isEmpty)

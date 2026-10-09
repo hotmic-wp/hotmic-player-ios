@@ -46,7 +46,8 @@ public struct HMChatRail: View {
         let canReact = engagement.supports(.reactToMessage)
 
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(messages) { message in
+            // Row identity survives the swap from a sending message's local ID to its server ID.
+            ForEach(messages, id: \.rowID) { message in
                 HMChatRow(message: message, canReact: canReact) {
                     react(to: message)
                 }
@@ -63,7 +64,7 @@ public struct HMChatRail: View {
             LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.3)],
                            startPoint: .top, endPoint: .bottom)
         }
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.28), value: messages.map(\.id))
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.28), value: messages.map(\.rowID))
         .animation(.snappy(duration: 0.2), value: messages.map(\.reactions))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Chat")

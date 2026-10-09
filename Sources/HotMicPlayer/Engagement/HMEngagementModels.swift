@@ -56,11 +56,14 @@ public struct HMChatMessage: Identifiable, Sendable, Equatable {
     public let isOwn: Bool
     /// Delivery state; always `.sent` for other viewers' messages.
     public var delivery: Delivery
+    /// For the viewer's own messages, the local ID it was shown under while sending. It stays the
+    /// same when the confirmed server message replaces it, so use `rowID` for view identity.
+    public let clientID: String?
 
     /// Creates a chat message.
     public init(id: String, author: String, avatarURL: URL? = nil, text: String, offset: TimeInterval,
                 wallTime: Date? = nil, reactions: [String: Int] = [:], ownReactions: Set<String> = [],
-                isOwn: Bool = false, delivery: Delivery = .sent) {
+                isOwn: Bool = false, delivery: Delivery = .sent, clientID: String? = nil) {
         self.id = id
         self.author = author
         self.avatarURL = avatarURL
@@ -71,7 +74,12 @@ public struct HMChatMessage: Identifiable, Sendable, Equatable {
         self.ownReactions = ownReactions
         self.isOwn = isOwn
         self.delivery = delivery
+        self.clientID = clientID
     }
+
+    /// Stable identity for a list row: the client ID while one exists, so a sent message
+    /// doesn't re-animate when its server ID arrives.
+    public var rowID: String { clientID ?? id }
 
     /// Total reactions across every emoji.
     public var reactionCount: Int { reactions.values.reduce(0, +) }

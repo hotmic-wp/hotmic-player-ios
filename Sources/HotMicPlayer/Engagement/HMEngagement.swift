@@ -53,12 +53,17 @@ import Observation
     private var messageReactions: [String: [String: Int]] = [:]
     private var ownMessageReactions: [String: Set<String>] = [:]
     private var ownMessageIDs: Set<String> = []
+    /// Server ID → the local ID the message was shown under while sending, for stable row identity.
+    private var clientIDs: [String: String] = [:]
     private var pendingMessages: [HMChatMessage] = []
     /// The viewer's confirmed chat and stream reactions, by offset. Kept here as well as appended
     /// to the timeline, because a timeline is free to ignore `append` (the protocol default does);
     /// queries merge this list in and de-duplicate by ID, so a source echo can't double them.
     private var ownEvents: [HMTimelineEvent] = []
     private var ownEventIDs: Set<String> = []
+    /// IDs folded into the aggregates from `receive(_:)`. The timeline may not keep them, and an
+    /// echo can arrive before the action that caused it is confirmed.
+    @ObservationIgnored private var foldedIDs: Set<String> = []
     private var votesInFlight: Set<String> = []
     private var votedPolls: Set<String> = []
     @ObservationIgnored private var nextLocalNumber = 0
@@ -163,10 +168,11 @@ import Observation
 
     /// Sends a chat message at the current media time (or `mediaTime`).
     ///
-    /// The message shows at once as `.sending`, then joins the timeline when the
-    /// source accepts it, so it survives a scrub-back like any other message. On
-    /// failure it is withdrawn and the error rethrown. Sources must not echo the
-    /// viewer's own message back through `receive(_:)`.
+    /// The message shows at once as `.sending` under a local ID. When the source accepts it,
+    /// the confirmed event the source returns replaces it (server ID, author, wall time,
+    /// counts; the offset stays where it was sent), so later `updateReactions(_:forMessage:)`
+    /// calls and echoes by the server ID find it. A source that returns nil keeps the local
+    /// ID. On failure the message is withdrawn and the error rethrown.
     public func sendChat(_ text: String, at mediaTime: TimeInterval? = nil) async throws {
         try require(.sendChat)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -177,33 +183,48 @@ import Observation
         let message = HMChatMessage(id: id, author: "You", text: trimmed, offset: offset, wallTime: Date(),
                                     isOwn: true, delivery: .sending)
         pendingMessages.append(message); ownMessageIDs.insert(id); changed()
+        var confirmed: HMTimelineEvent?
         do {
-            try await perform { try await $0.sendChat(message, for: self.item) }
+            confirmed = try await performReturning { try await $0.sendChat(message, for: self.item) }
         } catch {
             pendingMessages.removeAll { $0.id == id }; ownMessageIDs.remove(id); changed()
             throw fail(error)
         }
         pendingMessages.removeAll { $0.id == id }
-        keepOwn(HMTimelineEvent(id: id, offset: offset, kind: .chat, author: message.author,
-                                text: trimmed, wallTime: message.wallTime))
+        let event = HMTimelineEvent(id: confirmed?.id ?? id, offset: offset, kind: .chat,
+                                    author: confirmed?.author ?? message.author, text: confirmed?.text ?? trimmed,
+                                    avatarURL: confirmed?.avatarURL, wallTime: confirmed?.wallTime ?? message.wallTime,
+                                    reactions: confirmed?.reactions ?? [:])
+        if event.id != id {
+            ownMessageIDs.remove(id); ownMessageIDs.insert(event.id)
+            clientIDs[event.id] = id
+        }
+        keepOwn(event)
         succeeded()
     }
 
     /// Reacts to the stream at the current media time (or `mediaTime`).
     ///
     /// The echo is published immediately; the reaction joins the timeline and the
-    /// waveform once the source accepts it.
+    /// waveform once the source accepts it, under the ID of the event the source
+    /// returns (or a local ID for nil), so an echo by that ID isn't counted twice.
     public func react(_ emoji: String, at mediaTime: TimeInterval? = nil) async throws {
         try require(.reactToStream)
         let offset = timelineOffset(forMediaTime: mediaTime ?? currentMediaTime)
         echoNumber += 1
         lastReactionEcho = HMReactionEcho(id: echoNumber, emoji: emoji)
+        let local = HMTimelineEvent(id: localID("reaction"), offset: offset, kind: .reaction, emoji: emoji,
+                                    magnitude: Self.viewerReactionWeight, wallTime: Date())
+        var confirmed: HMTimelineEvent?
         do {
-            try await perform { try await $0.react(emoji, for: self.item) }
+            confirmed = try await performReturning { try await $0.react(local, for: self.item) }
         } catch { throw fail(error) }
-        let event = HMTimelineEvent(id: localID("reaction"), offset: offset, kind: .reaction, emoji: emoji,
-                                    magnitude: Self.viewerReactionWeight)
-        keepOwn(event); fold(event)
+        // The viewer's weight and offset stay local; the source contributes identity and wall time.
+        let event = HMTimelineEvent(id: confirmed?.id ?? local.id, offset: offset, kind: .reaction, emoji: emoji,
+                                    magnitude: Self.viewerReactionWeight, wallTime: confirmed?.wallTime ?? local.wallTime)
+        let echoedFirst = knows(event.id)
+        keepOwn(event)
+        if !echoedFirst { fold(event) }
         succeeded()
     }
 
@@ -261,7 +282,7 @@ import Observation
     /// An echo of the viewer's own event (same ID) is not counted twice.
     public func receive(_ event: HMTimelineEvent) {
         timeline.append(event)
-        if !ownEventIDs.contains(event.id) { fold(event) }
+        if !ownEventIDs.contains(event.id), foldedIDs.insert(event.id).inserted { fold(event) }
         changed()
     }
 
@@ -299,7 +320,7 @@ import Observation
         return HMChatMessage(id: event.id, author: event.author ?? "Viewer", avatarURL: event.avatarURL,
                              text: event.text ?? "", offset: event.offset, wallTime: event.wallTime,
                              reactions: reactions, ownReactions: ownMessageReactions[event.id] ?? [],
-                             isOwn: isOwn)
+                             isOwn: isOwn, clientID: clientIDs[event.id] ?? (isOwn ? event.id : nil))
     }
 
     private func timelineEvent(_ id: String) -> HMTimelineEvent? {
@@ -312,18 +333,28 @@ import Observation
         ownEvents.isEmpty ? [] : ownEvents.filter { range.contains($0.offset) }
     }
 
-    /// Source events first, then own events the source doesn't already have, by ID.
+    /// Source events first, then own events the source doesn't already have; one event per ID.
     private func merged(_ source: [HMTimelineEvent], _ own: [HMTimelineEvent]) -> [HMTimelineEvent] {
         guard !own.isEmpty else { return source }
-        let seen = Set(source.map(\.id))
-        let extra = own.filter { !seen.contains($0.id) }
-        return extra.isEmpty ? source : (source + extra).sorted { $0.offset < $1.offset }
+        var seen = Set<String>()
+        // An echo that raced the confirmation can sit on an appendable timeline twice.
+        let unique = (source + own).filter { seen.insert($0.id).inserted }
+        return unique.count == source.count ? source : unique.sorted { $0.offset < $1.offset }
+    }
+
+    /// Whether an event with this ID is already known, for example because its echo arrived
+    /// before the source confirmed it. Scans the timeline, so only called on an action.
+    private func knows(_ id: String) -> Bool {
+        ownEventIDs.contains(id) || foldedIDs.contains(id)
+            || timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude).contains { $0.id == id }
     }
 
     private func keepOwn(_ event: HMTimelineEvent) {
+        guard !ownEventIDs.contains(event.id) else { return }
+        let appended = !knows(event.id)
         let index = ownEvents.firstIndex { $0.offset > event.offset } ?? ownEvents.endIndex
         ownEvents.insert(event, at: index); ownEventIDs.insert(event.id)
-        timeline.append(event)
+        if appended { timeline.append(event) }
     }
 
     // MARK: - Player support
@@ -366,6 +397,11 @@ import Observation
     private func perform(_ action: @MainActor (HMInteractionSource) async throws -> Void) async throws {
         guard let source else { throw HMInteractionError.unsupportedAction }
         try await action(source)
+    }
+
+    private func performReturning<T>(_ action: @MainActor (HMInteractionSource) async throws -> T) async throws -> T {
+        guard let source else { throw HMInteractionError.unsupportedAction }
+        return try await action(source)
     }
 
     private func localID(_ kind: String) -> String {

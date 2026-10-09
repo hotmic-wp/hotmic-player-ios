@@ -44,9 +44,10 @@ struct HMAdaptivePrefetchPolicy
 ## HMChatMessage
 
 ```swift
-init(id: String, author: String, avatarURL: URL? = nil, text: String, offset: TimeInterval, wallTime: Date? = nil, reactions: [String : Int] = [:], ownReactions: Set<String> = [], isOwn: Bool = false, delivery: HMChatMessage.Delivery = .sent)
+init(id: String, author: String, avatarURL: URL? = nil, text: String, offset: TimeInterval, wallTime: Date? = nil, reactions: [String : Int] = [:], ownReactions: Set<String> = [], isOwn: Bool = false, delivery: HMChatMessage.Delivery = .sent, clientID: String? = nil)
 let author: String
 let avatarURL: URL?
+let clientID: String?
 let id: String
 let isOwn: Bool
 let offset: TimeInterval
@@ -57,6 +58,7 @@ var delivery: HMChatMessage.Delivery
 var ownReactions: Set<String>
 var reactionCount: Int { get }
 var reactions: [String : Int]
+var rowID: String { get }
 ```
 
 ## HMChatMessage.Delivery
@@ -190,7 +192,8 @@ var errorDescription: String? { get }
 @MainActor func polls(for item: HMMediaItem) -> [HMPoll]
 @MainActor func react(_ emoji: String, for item: HMMediaItem) async throws
 @MainActor func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws
-@MainActor func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws
+@MainActor func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent?
+@MainActor func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent?
 @MainActor func sendChat(_ text: String, for item: HMMediaItem) async throws
 @MainActor func timeline(for item: HMMediaItem) -> any HMStreamTimeline
 @MainActor func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws

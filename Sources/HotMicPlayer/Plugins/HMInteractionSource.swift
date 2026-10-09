@@ -12,12 +12,16 @@ import Foundation
     func didLeave(_ item: HMMediaItem)
     /// Optional action; unsupported implementations throw `HMInteractionError.unsupportedAction`.
     func sendChat(_ text: String, for item: HMMediaItem) async throws
-    /// Sends the viewer's message with its client ID. Implement this instead of `sendChat(_:for:)`
-    /// to echo the message back through `HMEngagement.receive(_:)` with the same ID, which the
-    /// engagement de-duplicates. Defaults to `sendChat(message.text, for:)`.
-    func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws
+    /// Sends the viewer's message and returns the confirmed server event (ID, author, wall time,
+    /// counts), which replaces the local message; nil keeps the local ID (`message.id`).
+    /// Defaults to calling `sendChat(message.text, for:)` and returning nil.
+    func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent?
     /// Optional reaction action.
     func react(_ emoji: String, for item: HMMediaItem) async throws
+    /// Sends the viewer's stream reaction and returns the confirmed server event, whose ID replaces
+    /// the local one (`reaction.id`) so an echo by that ID isn't counted twice; nil keeps the local ID.
+    /// Defaults to calling `react(reaction.emoji, for:)` and returning nil.
+    func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent?
     /// Optional poll action.
     func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws
     /// Actions this source supports for an item; the UI hides controls for the rest. Defaults to read-only.
@@ -47,8 +51,14 @@ public extension HMInteractionSource {
     func didLeave(_ item: HMMediaItem) {}
     /// Default action reports unsupported.
     func sendChat(_ text: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
-    /// Forwards to the text-only `sendChat(_:for:)`.
-    func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws { try await sendChat(message.text, for: item) }
+    /// Forwards to the text-only `sendChat(_:for:)`; the local ID is kept.
+    func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+        try await sendChat(message.text, for: item); return nil
+    }
+    /// Forwards to the emoji-only `react(_:for:)`; the local ID is kept.
+    func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+        try await react(reaction.emoji ?? "", for: item); return nil
+    }
     /// Default action reports unsupported.
     func react(_ emoji: String, for item: HMMediaItem) async throws { throw HMInteractionError.unsupportedAction }
     /// Default action reports unsupported.
@@ -98,8 +108,20 @@ public extension HMInteractionSource {
     public func polls(for item: HMMediaItem) -> [HMPoll] { HMMockTimeline.polls(itemID: item.id, duration: item.durationHint ?? 20) }
     /// Accepts after the simulated latency.
     public func sendChat(_ text: String, for item: HMMediaItem) async throws { try await roundTrip(.sendChat) }
+    /// Accepts after the simulated latency and returns a server-style confirmed message.
+    public func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+        try await roundTrip(.sendChat)
+        return HMTimelineEvent(id: "srv-msg-\(UUID().uuidString.prefix(12))", offset: message.offset, kind: .chat,
+                               author: "You", text: message.text, wallTime: Date())
+    }
     /// Accepts after the simulated latency.
     public func react(_ emoji: String, for item: HMMediaItem) async throws { try await roundTrip(.reactToStream) }
+    /// Accepts after the simulated latency and returns a server-style confirmed reaction.
+    public func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+        try await roundTrip(.reactToStream)
+        return HMTimelineEvent(id: "srv-rx-\(UUID().uuidString.prefix(12))", offset: reaction.offset, kind: .reaction,
+                               emoji: reaction.emoji, wallTime: Date())
+    }
     /// Accepts after the simulated latency.
     public func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws { try await roundTrip(.reactToMessage) }
     /// Accepts after the simulated latency.

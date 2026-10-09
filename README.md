@@ -1,4 +1,4 @@
-# HotMicPlayer 0.4.0
+# HotMicPlayer 0.4.1
 
 A zero-dependency partner SDK for iOS 17+ apps embedding a vertical VOD playlist. MP4 and HLS can share one playlist. `HMPlayer` owns playlist edits, playback and events; `HMVerticalFeedView` renders video with your overlay.
 
@@ -72,6 +72,12 @@ The default engine uses two native players and a bounded disk media cache. Partn
 
 ## Changelog
 
+### 0.4.1
+
+- Moderation source updates on `HMEngagement`: `removeMessage(id:)`, `upsertPoll(_:)`, `removePoll(id:)`, message-reaction count removal and stream-reaction removal by ID. `update(_:)` remains an alias for poll upsert.
+- Deletions remove incoming, confirmed-own and pending messages from the rail and waveform, close removed poll cards, and prevent late echoes or action completions from restoring moderated content. Immutable timelines are supported through filtered engagement queries and cached waveform aggregates.
+- Sample-only mock moderation controls: launch a Debug build with `--hm-moderation 1` to delete the newest incoming chat, the viewer's last message, the active poll or a peak's stream reactions.
+
 ### 0.4.0
 
 - **Engagement data layer** in `HotMicPlayer`: `HMEngagement` (via `player.engagement(for:)`), `HMChatMessage`, `HMPoll`, `HMReactionEcho`, `HMEngagementCapabilities`, `HMEngagementError`. Actions are optimistic, roll back on failure, and land at the item's current media time.
@@ -115,6 +121,7 @@ For the delayed-reference repro, launch the Sample with `--hm-reference-lab 1` a
 
 ## Documentation and validation
 
+- [Moderation validation](docs/MODERATION_0.4.1_VALIDATION.md): 0.4.1 simulator evidence and build/test timings.
 - [Engagement UI validation](docs/ENGAGEMENT_UI_VALIDATION.md): 0.4.0 simulator walkthrough, screenshots, build/test timings.
 - [0.3.1 review-fix validation](docs/PLAYER_0.3.1_REVIEW_FIXES.md): current simulator evidence, commit-based TTFF and final build/test results.
 - [0.3.1 initial validation](docs/PLAYER_0.3.1_VALIDATION.md): historical before/after activation repro for the first review.

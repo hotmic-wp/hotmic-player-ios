@@ -64,10 +64,21 @@ import Observation
     /// IDs folded into the aggregates from `receive(_:)`. The timeline may not keep them, and an
     /// echo can arrive before the action that caused it is confirmed.
     @ObservationIgnored private var foldedIDs: Set<String> = []
-    private var votesInFlight: Set<String> = []
+    // Tombstones belong to this engagement, so immutable timelines and late echoes cannot
+    // bring moderated content back. Payloads are dropped from our retained lists on removal.
+    private var removedEventIDs: Set<String> = []
+    @ObservationIgnored private var receivedEvents: [String: HMTimelineEvent] = [:]
+    @ObservationIgnored private var foldedReactions: [String: HMTimelineEvent] = [:]
+    private var moderatedDensity: [HMDensityBucket]?
+    private var moderatedMarkers: [HMTimelineMarker]?
+    private var messageReactionVersions: [String: [String: Int]] = [:]
+    private var pollVersions: [String: Int] = [:]
+    private var inheritedPollVotes: Set<String> = []
+    private var votesInFlight: [String: UUID] = [:]
     private var votedPolls: Set<String> = []
     @ObservationIgnored private var nextLocalNumber = 0
     @ObservationIgnored private var echoNumber = 0
+    @ObservationIgnored private var lastReactionEventID: String?
 
     /// Creates engagement state over a timeline. `HMPlayer.engagement(for:)` does this for you;
     /// call it directly to drive components without a player, for example in previews.
@@ -90,7 +101,9 @@ import Observation
         self.mediaClock = mediaClock
         for poll in polls ?? source?.polls(for: item) ?? [] { insert(poll) }
         // One full scan at creation; afterwards totals and moments are maintained incrementally.
-        for event in timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude) { fold(event) }
+        for event in timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude) {
+            if foldedIDs.insert(event.id).inserted { fold(event) }
+        }
     }
 
     // MARK: - Clock
@@ -117,9 +130,9 @@ import Observation
     // MARK: - Queries
 
     /// Precomputed waveform for the scrubber.
-    public var density: [HMDensityBucket] { _ = revision; return timeline.density }
+    public var density: [HMDensityBucket] { _ = revision; return moderatedDensity ?? timeline.density }
     /// Clustered engagement peaks for the scrubber, each a seek target.
-    public var markers: [HMTimelineMarker] { _ = revision; return timeline.markers }
+    public var markers: [HMTimelineMarker] { _ = revision; return moderatedMarkers ?? timeline.markers }
     /// Authored moments (`.marker` events) in media-time order.
     public var authoredMoments: [HMTimelineEvent] { _ = revision; return moments }
     /// Every poll, ordered by opening time.
@@ -191,6 +204,14 @@ import Observation
             throw fail(error)
         }
         pendingMessages.removeAll { $0.id == id }
+        // A moderator can delete the local pending ID or the server ID while the send awaits.
+        if removedEventIDs.contains(id) || confirmed.map({ removedEventIDs.contains($0.id) }) == true {
+            removedEventIDs.insert(id)
+            removedEventIDs.insert(confirmed?.id ?? id)
+            ownMessageIDs.remove(id)
+            succeeded()
+            return
+        }
         let event = HMTimelineEvent(id: confirmed?.id ?? id, offset: offset, kind: .chat,
                                     author: confirmed?.author ?? message.author, text: confirmed?.text ?? trimmed,
                                     avatarURL: confirmed?.avatarURL, wallTime: confirmed?.wallTime ?? message.wallTime,
@@ -222,6 +243,8 @@ import Observation
         // The viewer's weight and offset stay local; the source contributes identity and wall time.
         let event = HMTimelineEvent(id: confirmed?.id ?? local.id, offset: offset, kind: .reaction, emoji: emoji,
                                     magnitude: Self.viewerReactionWeight, wallTime: confirmed?.wallTime ?? local.wallTime)
+        guard !removedEventIDs.contains(event.id) else { lastReactionEcho = nil; succeeded(); return }
+        lastReactionEventID = event.id
         let echoedFirst = knows(event.id)
         keepOwn(event)
         if !echoedFirst { fold(event) }
@@ -236,13 +259,16 @@ import Observation
         guard ownMessageReactions[messageID]?.contains(emoji) != true else { return }
         ownMessageReactions[messageID, default: []].insert(emoji)
         messageReactions[messageID, default: [:]][emoji, default: 0] += 1
+        let version = messageReactionVersions[messageID]?[emoji] ?? 0
         changed()
         do {
             try await perform { try await $0.react(emoji, toMessage: messageID, for: self.item) }
         } catch {
-            ownMessageReactions[messageID]?.remove(emoji)
-            messageReactions[messageID]?[emoji, default: 1] -= 1
-            changed()
+            if !removedEventIDs.contains(messageID), (messageReactionVersions[messageID]?[emoji] ?? 0) == version {
+                ownMessageReactions[messageID]?.remove(emoji)
+                messageReactions[messageID]?[emoji, default: 1] -= 1
+                changed()
+            }
             throw fail(error)
         }
         succeeded()
@@ -254,24 +280,35 @@ import Observation
         guard var poll = pollsByID[pollID], let index = poll.options.firstIndex(where: { $0.id == optionID }) else {
             throw fail(HMEngagementError.unknownPoll)
         }
-        guard poll.viewerVote == nil, !votesInFlight.contains(pollID) else { throw fail(HMEngagementError.alreadyVoted) }
+        guard poll.viewerVote == nil, votesInFlight[pollID] == nil else { throw fail(HMEngagementError.alreadyVoted) }
         guard poll.isOpen(at: timelineOffset(forMediaTime: currentMediaTime)) else { throw fail(HMEngagementError.pollClosed) }
         poll.viewerVote = optionID
         poll.options[index].votes += 1
-        pollsByID[pollID] = poll; votesInFlight.insert(pollID); changed()
+        let token = UUID()
+        let version = pollVersions[pollID, default: 0]
+        inheritedPollVotes.remove(pollID)
+        pollsByID[pollID] = poll; votesInFlight[pollID] = token; changed()
         do {
             try await perform { try await $0.vote(pollID: pollID, optionID: optionID, for: self.item) }
         } catch {
-            votesInFlight.remove(pollID)
-            if var current = pollsByID[pollID], current.viewerVote == optionID {
+            let stillCurrent = votesInFlight[pollID] == token
+            if stillCurrent { votesInFlight[pollID] = nil }
+            if stillCurrent, pollVersions[pollID, default: 0] == version || inheritedPollVotes.contains(pollID),
+               var current = pollsByID[pollID], current.viewerVote == optionID {
                 current.viewerVote = nil
-                if let i = current.options.firstIndex(where: { $0.id == optionID }) { current.options[i].votes -= 1 }
+                if pollVersions[pollID, default: 0] == version,
+                   let i = current.options.firstIndex(where: { $0.id == optionID }) { current.options[i].votes -= 1 }
                 pollsByID[pollID] = current
             }
+            if stillCurrent { inheritedPollVotes.remove(pollID) }
             changed()
             throw fail(error)
         }
-        votesInFlight.remove(pollID); votedPolls.insert(pollID)
+        if votesInFlight[pollID] == token {
+            votesInFlight[pollID] = nil
+            inheritedPollVotes.remove(pollID)
+            if pollsByID[pollID] != nil { votedPolls.insert(pollID) }
+        }
         succeeded()
     }
 
@@ -281,25 +318,91 @@ import Observation
     /// It lands on the timeline at its own offset and folds into every aggregate.
     /// An echo of the viewer's own event (same ID) is not counted twice.
     public func receive(_ event: HMTimelineEvent) {
+        guard !removedEventIDs.contains(event.id), !foldedIDs.contains(event.id), !ownEventIDs.contains(event.id) else { return }
         timeline.append(event)
+        // Only retain incoming payloads if the timeline ignored append.
+        if !timeline.events(in: event.offset...event.offset).contains(where: { $0.id == event.id }) {
+            receivedEvents[event.id] = event
+        }
         if !ownEventIDs.contains(event.id), foldedIDs.insert(event.id).inserted { fold(event) }
         changed()
     }
 
-    /// Inserts or replaces a poll with the source's authoritative state (counts, closure).
-    /// A vote the viewer has in flight is kept until the source confirms or rejects it.
-    public func update(_ poll: HMPoll) {
+    /// Inserts or replaces a poll by ID, including its options, counts, window and known viewer vote.
+    /// If the source omits the viewer vote, a vote still in flight is kept when its option still exists.
+    public func upsertPoll(_ poll: HMPoll) {
         var poll = poll
-        if votesInFlight.contains(poll.id), let local = pollsByID[poll.id]?.viewerVote, poll.viewerVote == nil {
+        inheritedPollVotes.remove(poll.id)
+        if votesInFlight[poll.id] != nil, let local = pollsByID[poll.id]?.viewerVote, poll.viewerVote == nil,
+           poll.options.contains(where: { $0.id == local }) {
             poll.viewerVote = local
+            inheritedPollVotes.insert(poll.id)
         }
+        pollVersions[poll.id, default: 0] += 1
         insert(poll); changed()
+    }
+
+    /// Compatibility spelling of `upsertPoll(_:)`.
+    public func update(_ poll: HMPoll) { upsertPoll(poll) }
+
+    /// Removes a poll and its local vote state. Repeated removal is a no-op.
+    /// An in-flight vote cannot restore it; a later explicit upsert can recreate it.
+    public func removePoll(id: String) {
+        guard pollsByID.removeValue(forKey: id) != nil else { return }
+        pollOrder.removeAll { $0 == id }
+        votesInFlight[id] = nil
+        votedPolls.remove(id)
+        inheritedPollVotes.remove(id)
+        pollVersions[id, default: 0] += 1
+        changed()
+    }
+
+    /// Removes incoming, confirmed-own or pending chat by server ID or local row ID.
+    /// Idempotent. Late echoes and send confirmations cannot restore a deleted message.
+    /// Chat queries and waveform aggregates exclude it even when the timeline is immutable.
+    public func removeMessage(id: String) {
+        let serverID = clientIDs.first(where: { $0.value == id })?.key ?? id
+        let localID = clientIDs[serverID]
+        removeEvent(id: serverID)
+        if let localID { removeEvent(id: localID) }
+        for key in Set([id, serverID] + (localID.map { [$0] } ?? [])) {
+            pendingMessages.removeAll { $0.id == key }
+            ownMessageIDs.remove(key)
+            clientIDs[key] = nil
+            messageReactions[key] = nil
+            ownMessageReactions[key] = nil
+            messageReactionVersions[key] = nil
+        }
+    }
+
+    /// Subtracts message-reaction counts, clamped at zero. Pass `isOwn` when the deleted
+    /// reaction belongs to the viewer, to clear its selection. Deliver each deletion once:
+    /// this count-only model has no individual message-reaction IDs to de-duplicate.
+    public func removeReaction(_ emoji: String, forMessage messageID: String, count: Int = 1, isOwn: Bool = false) {
+        guard count > 0, let event = timelineEvent(messageID), event.kind == .chat else { return }
+        let remaining = max(0, (message(from: event).reactions[emoji] ?? 0) - count)
+        let delta = remaining - (event.reactions[emoji] ?? 0)
+        messageReactions[messageID, default: [:]][emoji] = delta == 0 ? nil : delta
+        messageReactionVersions[messageID, default: [:]][emoji, default: 0] += 1
+        if isOwn || remaining == 0 { ownMessageReactions[messageID]?.remove(emoji) }
+        changed()
+    }
+
+    /// Removes a stream-reaction event by ID, including its total and waveform contribution.
+    /// Idempotent; late echoes and confirmations with this ID are ignored.
+    public func removeReaction(id: String) {
+        removeEvent(id: id)
+        if lastReactionEventID == id { lastReactionEcho = nil; lastReactionEventID = nil }
     }
 
     /// Replaces a message's reaction counts with the source's authoritative totals.
     /// The viewer's own reactions are assumed to be included.
     public func updateReactions(_ counts: [String: Int], forMessage messageID: String) {
+        guard !removedEventIDs.contains(messageID) else { return }
         let base = timelineEvent(messageID)?.reactions ?? [:]
+        for emoji in Set(base.keys).union(counts.keys).union(messageReactions[messageID]?.keys.map { $0 } ?? []) {
+            messageReactionVersions[messageID, default: [:]][emoji, default: 0] += 1
+        }
         var delta: [String: Int] = [:]
         for emoji in Set(base.keys).union(counts.keys) {
             let difference = (counts[emoji] ?? 0) - (base[emoji] ?? 0)
@@ -324,22 +427,23 @@ import Observation
     }
 
     private func timelineEvent(_ id: String) -> HMTimelineEvent? {
+        guard !removedEventIDs.contains(id) else { return nil }
         if ownEventIDs.contains(id) { return ownEvents.first { $0.id == id } }
         // Message ids carry no offset, so this is a scan; it only runs on an action or a source update.
         return timeline.events(in: -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude).first { $0.id == id }
+            ?? receivedEvents[id]
     }
 
     private func own(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
-        ownEvents.isEmpty ? [] : ownEvents.filter { range.contains($0.offset) }
+        (ownEvents + receivedEvents.values).filter { range.contains($0.offset) }
     }
 
     /// Source events first, then own events the source doesn't already have; one event per ID.
     private func merged(_ source: [HMTimelineEvent], _ own: [HMTimelineEvent]) -> [HMTimelineEvent] {
-        guard !own.isEmpty else { return source }
         var seen = Set<String>()
         // An echo that raced the confirmation can sit on an appendable timeline twice.
-        let unique = (source + own).filter { seen.insert($0.id).inserted }
-        return unique.count == source.count ? source : unique.sorted { $0.offset < $1.offset }
+        let unique = (source + own).filter { !removedEventIDs.contains($0.id) && seen.insert($0.id).inserted }
+        return unique.sorted { $0.offset < $1.offset }
     }
 
     /// Whether an event with this ID is already known, for example because its echo arrived
@@ -350,7 +454,7 @@ import Observation
     }
 
     private func keepOwn(_ event: HMTimelineEvent) {
-        guard !ownEventIDs.contains(event.id) else { return }
+        guard !removedEventIDs.contains(event.id), !ownEventIDs.contains(event.id) else { return }
         let appended = !knows(event.id)
         let index = ownEvents.firstIndex { $0.offset > event.offset } ?? ownEvents.endIndex
         ownEvents.insert(event, at: index); ownEventIDs.insert(event.id)
@@ -382,7 +486,10 @@ import Observation
     private func fold(_ event: HMTimelineEvent) {
         switch event.kind {
         case .reaction:
-            if let emoji = event.emoji { reactionTotals[emoji, default: 0] += event.magnitude }
+            if let emoji = event.emoji {
+                foldedReactions[event.id] = event
+                reactionTotals[emoji, default: 0] += event.magnitude
+            }
         case .marker:
             let index = moments.firstIndex { $0.offset > event.offset } ?? moments.endIndex
             moments.insert(event, at: index)
@@ -409,7 +516,31 @@ import Observation
         return "\(item.id)-own-\(kind)-\(nextLocalNumber)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func changed() { revision += 1 }
+    private func removeEvent(id: String) {
+        guard removedEventIDs.insert(id).inserted else { return }
+        ownEvents.removeAll { $0.id == id }
+        ownEventIDs.remove(id)
+        receivedEvents[id] = nil
+        foldedIDs.remove(id)
+        moments.removeAll { $0.id == id }
+        if let event = foldedReactions.removeValue(forKey: id), let emoji = event.emoji {
+            let remaining = max(0, (reactionTotals[emoji] ?? 0) - event.magnitude)
+            reactionTotals[emoji] = remaining > 0 ? remaining : nil
+        }
+        changed()
+    }
+
+    private func changed() {
+        // Source timelines may keep deleted events forever. Cache a filtered waveform on
+        // mutations after the first deletion; playback queries still only read arrays.
+        if !removedEventIDs.isEmpty {
+            let all = -Double.greatestFiniteMagnitude...Double.greatestFiniteMagnitude
+            let events = merged(timeline.events(in: all), own(in: all)).map { foldedReactions[$0.id] ?? $0 }
+            (moderatedDensity, moderatedMarkers) = HMTimelineAggregation.build(
+                events: events, duration: duration, bucketCount: timeline.density.isEmpty ? 60 : timeline.density.count)
+        }
+        revision += 1
+    }
     private func succeeded() { lastActionError = nil; changed() }
     private func fail(_ error: Error) -> Error {
         lastActionError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)

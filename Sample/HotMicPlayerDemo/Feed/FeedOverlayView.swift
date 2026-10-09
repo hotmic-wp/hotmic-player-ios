@@ -35,6 +35,17 @@ struct FeedOverlayView: View {
         ZStack {
             HMOverlayLayout(player: controller, item: item, snapshot: snapshot, options: options)
 
+            #if DEBUG
+            if isActive && BenchmarkOptions().values["moderation"] == "1" {
+                VStack {
+                    ModerationDebugView(engagement: controller.engagement(for: item), mediaTime: snapshot.currentTime)
+                    Spacer()
+                }
+                .padding(.top, safeArea.top + 48)
+                .padding(.horizontal, 12)
+            }
+            #endif
+
             if settings.showsHUD && isActive {
                 VStack(spacing: 0) {
                     HStack {

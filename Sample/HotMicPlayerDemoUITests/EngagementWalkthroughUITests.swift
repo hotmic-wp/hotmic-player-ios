@@ -29,6 +29,7 @@ final class EngagementWalkthroughUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0"]
         if let origin = env["HM_FEED_HLS_ORIGIN"] { app.launchArguments += ["--hm-feed-hls-origin", origin] }
+        if mode == "moderation" { app.launchArguments += ["--hm-moderation", "1"] }
         if mode == "light" { app.launchArguments += ["--hm-appearance", "light"] }
         if mode == "xl" { app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXL"] }
         app.launch()
@@ -43,8 +44,14 @@ final class EngagementWalkthroughUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1.2)
         togglePlayback()
         Thread.sleep(forTimeInterval: 0.6)
+        if mode == "moderation" {
+            XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 3), "moderation walkthrough must stay paused")
+        }
 
         switch mode {
+        case "moderation":
+            try moderationWalkthrough()
+            return
         case "light":
             shot("light-poll")
             return
@@ -107,6 +114,44 @@ final class EngagementWalkthroughUITests: XCTestCase {
         app.swipeUp(velocity: .fast)
         Thread.sleep(forTimeInterval: 3.5)
         shot("third-item")
+    }
+
+    private func moderationWalkthrough() throws {
+        shot("moderation-before")
+        app.buttons["moderation-poll"].tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertFalse(app.otherElements["Poll"].firstMatch.exists, "deleted poll stayed on screen")
+        shot("moderation-poll-removed")
+
+        app.buttons["moderation-newest"].tap()
+        let status = app.staticTexts["moderation-status"]
+        XCTAssertTrue(status.label.hasPrefix("Deleted newest:"), status.label)
+        let deletedText = String(status.label.dropFirst("Deleted newest: ".count))
+        XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", deletedText)).firstMatch.exists,
+                       "deleted incoming message stayed on screen")
+        shot("moderation-newest-removed")
+
+        app.buttons["Comment"].firstMatch.tap()
+        let field = app.textFields["Comment"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.typeText("Moderate my confirmed message")
+        app.buttons["Send"].firstMatch.tap()
+        let own = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'You: Moderate my confirmed message'")).firstMatch
+        XCTAssertTrue(own.waitForExistence(timeout: 3))
+        shot("moderation-own-confirmed")
+        app.buttons["moderation-own"].tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertFalse(own.exists, "confirmed own message survived moderation")
+        XCTAssertTrue(status.label.hasPrefix("Deleted mine:"), status.label)
+        shot("moderation-own-removed")
+
+        let peaks = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Moment at'"))
+        let before = peaks.allElementsBoundByIndex.map(\.label)
+        app.buttons["moderation-peak"].tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(status.label, "Deleted peak reactions")
+        XCTAssertNotEqual(peaks.allElementsBoundByIndex.map(\.label), before, "waveform peaks did not update")
+        shot("moderation-peak-removed")
     }
 
     /// Scrub cancellation: a drag on the scrubber that turns into a page swipe, a drag that returns
@@ -183,7 +228,7 @@ final class EngagementWalkthroughUITests: XCTestCase {
 
     /// Taps empty video above the overlay content, which toggles playback.
     private func togglePlayback() {
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.22)).tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.32)).tap()
     }
 
     private func shot(_ name: String) {

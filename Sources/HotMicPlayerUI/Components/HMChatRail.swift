@@ -53,7 +53,7 @@ public struct HMChatRail: View {
                 }
                 .transition(reduceMotion ? .opacity : .asymmetric(
                     insertion: .move(edge: .bottom).combined(with: .opacity),
-                    removal: .opacity))
+                    removal: .identity))
             }
         }
         .fixedSize(horizontal: false, vertical: true)

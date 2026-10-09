@@ -112,6 +112,10 @@ public struct HMVerticalFeedView<Overlay: View>: View {
         let node = controller.node(for: item)
         let snapshot = controller.snapshot(for: item)
         let displayItem = controller.displayItem(item)
+        let observesWarmFrame = [-1, 1].contains { offset in
+            let index = controller.activeIndex + offset
+            return controller.items.indices.contains(index) && controller.items[index].id == item.id
+        }
 
         ZStack {
             Color.black
@@ -122,7 +126,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                 HMPosterView(url: posterURL)
             }
 
-            HMVideoSurface(node: node, gravity: gravity)
+            HMVideoSurface(node: node, gravity: gravity, observesWarmFrame: observesWarmFrame)
 
 
             overlay(displayItem, snapshot)

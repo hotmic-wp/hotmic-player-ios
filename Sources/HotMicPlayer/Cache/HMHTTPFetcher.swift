@@ -3,7 +3,7 @@ import Foundation
 
 /// Locked per-response state, separate speculative connection pool and bounded streaming backpressure.
 final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    struct Result { let data: Data; let response: HTTPURLResponse; let received: Int }
+    struct Result { let data: Data; let response: HTTPURLResponse; let received: Int; let delivered: Int }
     struct Failure: Error { let underlying: Error; let received: Int }
     private static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
@@ -21,6 +21,8 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private var data = Data()
     private var response: HTTPURLResponse?
     private var received = 0
+    private var delivered = 0
+    private var reachedStreamLimit = false
     private var beganAt = 0.0
     private var receiveAt = 0.0
     private var sampleBytes = 0
@@ -76,9 +78,10 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     }
     private func suspendWatchdogLocked() { watchdog?.cancel(); watchdogID = UUID() }
     private func streamFailed(_ error: Error) { lock.lock(); streamingError = error; task?.cancel(); lock.unlock() }
-    private func resumeStream(_ dataTask: URLSessionDataTask) {
+    private func resumeStream(_ dataTask: URLSessionDataTask, atLimit: Bool) {
         lock.lock(); defer { lock.unlock() }
         guard !cancelled, task === dataTask else { return }
+        if atLimit { dataTask.cancel(); return }
         receiveAt = ProcessInfo.processInfo.systemUptime
         armWatchdogLocked(); dataTask.resume()
     }
@@ -105,10 +108,18 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         if sampleSeconds >= 0.25 { flushMeasurementLocked() }
         if let bytes {
             dataTask.suspend(); suspendWatchdogLocked()
+            let accepted = Data(chunk.prefix(max(0, limit - delivered)))
+            delivered += accepted.count
+            let atLimit = delivered >= limit
+            reachedStreamLimit = atLimit
             let previous = pending
             pending = Task {
                 await previous?.value
-                do { try Task.checkCancellation(); try await bytes(chunk); self.resumeStream(dataTask) }
+                do {
+                    try Task.checkCancellation()
+                    if !accepted.isEmpty { try await bytes(accepted) }
+                    self.resumeStream(dataTask, atLimit: atLimit)
+                }
                 catch { self.streamFailed(error) }
             }
         } else {
@@ -132,10 +143,11 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         flushMeasurementLocked()
         let c = continuation; continuation = nil
         let wasCancelled = cancelled, streamError = streamingError, response = response, data = data, received = received
+        let delivered = delivered, limitCancellation = reachedStreamLimit && (error as NSError?)?.code == NSURLErrorCancelled
         task = nil; pending = nil; suspendWatchdogLocked(); lock.unlock()
         if let response, !wasCancelled, streamError == nil,
-           (bytes != nil ? error == nil : (!data.isEmpty && (data.count >= limit || (error == nil && data.count >= max(0, Int(response.expectedContentLength)))))) {
-            c?.resume(returning: Result(data: data, response: response, received: received))
+           (bytes != nil ? (error == nil || limitCancellation) : (!data.isEmpty && (data.count >= limit || (error == nil && data.count >= max(0, Int(response.expectedContentLength)))))) {
+            c?.resume(returning: Result(data: data, response: response, received: received, delivered: bytes != nil ? delivered : data.count))
         } else { c?.resume(throwing: Failure(underlying: wasCancelled ? CancellationError() : streamError ?? error ?? URLError(.badServerResponse), received: received)) }
     }
 }

@@ -425,8 +425,7 @@ python3 bench/analyze.py bench/results/received --output bench/results/summary
 
 The directory must contain SDK run JSONLs only, not origin logs. CSV/Markdown
 report per (strategy, format, network, script, configuration fingerprint)
-p50/p90/p99 TTFF, fraction of **all activations** at or below 100ms, first-video
-and swipe medians (CSV), censored activations, first-10s stalls,
+p50/p90/p99 TTFF, fraction of **all activations** at or below 100ms, separate first-video and swipe p50/p90/p99 and fractions at or below 100/150ms, censored activations, first-10s stalls,
 network/cache/wasted bytes, errors, max live players and sampled memory.
 Quantiles include displayed frames only; censored views are always shown.
 Analysis rejects malformed/truncated JSONL, missing/duplicate runEnd, unmatched
@@ -496,3 +495,27 @@ The app drives settled page transitions and posts complete JSONLs. The smoke has
 two moves per cell, one-second binge dwell and five-second normal dwell, with
 `require_frame=true`. Pass `--normal-dwell 9 --swipes 3` to exercise the default
 long-dwell rule. This is functional smoke, not a physical-device benchmark.
+
+## Ready-layer display continuity
+
+The surface observes display boundaries while a warm incoming page is visible
+during the swipe animation. If the same item's layer remains attached, opaque,
+ready and visible across the preceding and current boundaries, it can report
+that frame on the first boundary after page commit. Previously the detector
+started observing only after activation propagated through SwiftUI, then waited
+for two more boundaries. Offscreen, detached, recycled, hidden and unready layers
+clear continuity. Inactive observation is limited to the immediate ±1 pages;
+other attached cells do not run display links. The hosted layer must exactly
+match the surface bounds. Resume seeks hide the old frame, invalidate continuity
+at both seek start and completion, and require fresh display boundaries after
+completion. No pre-seek frame or preroll timestamp is reported as TTFF: the request clock is
+still the settled page callback, and firstFrame uses the current post-commit
+display boundary. HMPlayerNode still validates activation identity, native item
+status and layer readiness. Cold frames retain the two-boundary requirement.
+
+The analyzer retains aggregate TTFF fields in CSV for compatibility. Its printed
+table uses separate first-video and swipe fields, with runs, censor counts,
+stalls, bytes and sampled memory. Each threshold percentage divides by all
+activations of that kind, including views that never displayed a frame. The
+first-video population is one play activation per grid repeat; three repeats
+therefore provide only three first-video observations per cell.

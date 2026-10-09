@@ -584,6 +584,7 @@ import Observation
         guard isFeedVisible, !ended, let original = currentItem, !terminalFailures.contains(original),
               networkFailures[original].map({ $0.nextAttempt.isFinite }) != true, let item = resolutions.cached(original), let url = item.url else { return }
         guard ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        if currentNode?.isActive != true { proxy?.prioritizePlayback(item, urgent: configuration.strategy != .S2) }
         let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
         node.setMuted(isMuted)
@@ -599,7 +600,10 @@ import Observation
         guard isFeedVisible, !ended, let node = currentNode, node.isActive, let item = currentItem else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let t = configuration.adaptiveThresholds
-        let dangerous = node.snapshot.state == .buffering || !node.snapshot.bufferedAhead.isFinite ||
+        let playbackUrgent = configuration.strategy != .S2 && HMPlaybackPriority.isUrgent(displayed: node.snapshot.timeToFirstFrame != nil,
+                                                        stalling: node.snapshot.state == .buffering)
+        proxy?.prioritizePlayback(resolutions.cached(item) ?? item, urgent: playbackUrgent)
+        let dangerous = playbackUrgent || !node.snapshot.bufferedAhead.isFinite ||
             node.snapshot.bufferedAhead < max(nonnegative(t.safetyBufferSeconds), nonnegative(configuration.prefetch.startThreshold) * 0.5)
         // Evaluate on the existing 100ms buffer ticks at most four times/sec;
         // safety transitions bypass the cadence and are applied immediately.
@@ -623,6 +627,10 @@ import Observation
                 threshold: nonnegative(configuration.prefetch.startThreshold), wasSafe: prefetchSafe)
             plan.paused = plan.paused || inputs.isStalling
         }
+        if configuration.strategy == .S2 {
+            plan.paused = false; plan.keepReadyPlayer = true
+            plan.concurrency = configuration.maxPrefetchConcurrency; plan.startAfterSeconds = 0
+        } else if playbackUrgent { plan.paused = true; plan.reason += "+active-playback" }
         if plan.paused && !plan.reason.contains("buffer-safety") && !plan.reason.contains("stall") {
             plan.reason += inputs.isStalling ? "+stall" : "+buffer-safety"
         }
@@ -640,11 +648,38 @@ import Observation
             if bitrateChanged { for node in pool.nodes { node.applyStartingBitRate(plan.startingBitRate) } }
         }
         let deferred = inputs.elapsedOnItemSeconds < plan.startAfterSeconds
-        let warmOffsets = plan.keepReadyPlayer && !deferred ? configuration.warmOffsets : []
+        // The next decoder needs only a small head. Do not make it wait for the
+        // three-second bulk-prefix recovery threshold after a displayed frame.
+        // On a measured slow link, active playback keeps the entire bandwidth.
+        let next = items.indices.contains(activeIndex + 1) ? resolutions.cached(items[activeIndex + 1]) : nil
+        let nextNode = next.flatMap { pool.existingNode(for: $0) }
+        let earlyNext = configuration.strategy == .S3 && (prefetchPolicy is HMAdaptivePrefetchPolicy || !configuration.adaptive) && !playbackUrgent && !deferred &&
+            HMNextWarmSafety.isSafe(ahead: node.snapshot.bufferedAhead, remaining: inputs.remainingSeconds,
+                stalling: inputs.isStalling, slow: measurements.throughput.map { $0 < nonnegative(t.slowBytesPerSecond) } ?? false,
+                wasWarm: nextNode != nil)
+        let warmOffsets = (plan.keepReadyPlayer || earlyNext) && !deferred ? configuration.warmOffsets : []
         let warmItems = warmOffsets.compactMap { offset -> HMMediaItem? in
-            let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
+            let i = activeIndex + offset
+            guard items.indices.contains(i), !terminalFailures.contains(items[i]) else { return nil }
+            return resolutions.cached(items[i])
         }
-        pool.trim(keeping: Set([resolutions.cached(item)].compactMap { $0 } + warmItems))
+        // Startup urgency holds existing neighbours; it only blocks NEW loads.
+        // In particular, a back-swipe must retain the page we just left. S2 is
+        // the unchanged warm-player control, exempt from the urgency gate.
+        let retainedWarm = playbackUrgent ? configuration.warmOffsets.compactMap { offset -> HMMediaItem? in
+            let i = activeIndex + offset
+            return items.indices.contains(i) ? resolutions.cached(items[i]).flatMap { pool.existingNode(for: $0)?.item } : nil
+        } : []
+        let previous = configuration.strategy == .S3 && configuration.poolSize >= 3 && activeIndex > 0 ?
+            resolutions.cached(items[activeIndex - 1]).flatMap { pool.existingNode(for: $0)?.item } : nil
+        pool.trim(keeping: Set([resolutions.cached(item), previous].compactMap { $0 } + warmItems + retainedWarm))
+        for item in warmItems where !playbackUrgent && pool.existingNode(for: item) == nil {
+            // Do not start a fresh previous decoder alongside N+1's preroll.
+            if configuration.strategy == .S3, item != next,
+               next.flatMap({ pool.existingNode(for: $0) })?.isWaitingForWarmFrame(at: now) == true { continue }
+            let warm = pool.node(for: item, protecting: Set([currentItem?.id, next?.id].compactMap { $0 }), playbackURL: proxy?.url(for: item))
+            warm.onBufferChanged = { [weak self] in self?.updatePrefetch() }; warm.setMuted(isMuted)
+        }
         if plan.paused || deferred {
             if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
             if recovered && !plan.paused { refreshWindowAfterTransport() }
@@ -652,14 +687,16 @@ import Observation
         }
         let data = plan.windowOffsets.compactMap { offset -> HMMediaItem? in
             let i = activeIndex + offset; return items.indices.contains(i) ? resolutions.cached(items[i]) : nil
+        }.filter { !warmItems.contains($0) }
+        // Native preroll owns N+1's head; never download it a second time via
+        // explicit prefetch or let N+2 steal capacity before N+1 is ready.
+        if let next, warmItems.contains(next), pool.existingNode(for: next)?.isWaitingForWarmFrame(at: now) == true {
+            if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
+            return
         }
         let identity = plan.workIdentity + "|" + item.id + "|" + data.map { $0.id + ($0.url?.absoluteString ?? "") }.joined(separator: "|")
         guard identity != prefetchIdentity else { if recovered { refreshWindowAfterTransport() }; return }
         prefetchIdentity = identity
-        for item in warmItems where pool.existingNode(for: item) == nil {
-            let warm = pool.node(for: item, protecting: Set([currentItem?.id].compactMap { $0 }), playbackURL: proxy?.url(for: item))
-            warm.onBufferChanged = { [weak self] in self?.updatePrefetch() }; warm.setMuted(isMuted)
-        }
         proxy?.prefetch(data, keeping: windowItems.compactMap { resolutions.cached($0) }, plan: plan)
         if recovered { refreshWindowAfterTransport() }
     }
@@ -821,7 +858,9 @@ import Observation
         case .preloadReady:
             networkFailures[entry] = nil
             emit(.itemReady(entry))
-        case .firstFrame: emit(.firstFrame(entry, ttff: (event.metrics["ttff_ms"] ?? 0) / 1000, readiness: currentNode?.snapshot.readinessTier ?? .cold))
+        case .firstFrame:
+            emit(.firstFrame(entry, ttff: (event.metrics["ttff_ms"] ?? 0) / 1000, readiness: currentNode?.snapshot.readinessTier ?? .cold))
+            updatePrefetch(force: true)
         case .rebufferStart: emit(.stallStarted(entry)); updatePrefetch(force: true)
         case .rebufferEnd: emit(.stallEnded(entry)); updatePrefetch(force: true)
         case .error, .transportError:

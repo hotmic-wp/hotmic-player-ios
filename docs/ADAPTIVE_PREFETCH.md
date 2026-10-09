@@ -37,8 +37,9 @@ distance. Binge misses suppress behind work and focus on +1/+2. The default
 hybrid uses two players; explicit benchmark strategies retain their player knobs.
 A long dwell delays ready-player and disk work from activation, then uses a deeper
 budget. URL/poster resolution continues regardless of buffer safety or media pauses.
-Stalls/unsafe buffers cancel prefix tasks and release warm players, preserving pending
-neighbour resolution and resolved posters; recovery needs the higher buffer threshold. A fully
+Stalls/unsafe buffers cancel prefix tasks, preserving pending neighbour resolution and
+resolved posters. Startup urgency retains existing warm players without creating new ones;
+bulk recovery needs the higher buffer threshold. A fully
 buffered finite tail can recover below that threshold, but never during a stall.
 
 Throughput and request time to response headers come from the existing upstream
@@ -90,7 +91,7 @@ numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 | `longDwellBudgetMultiplier` | 1.5 | `adaptive-long-dwell-budget-multiplier` |
 | `longDwellDelayFraction` | 0.5 | `adaptive-long-dwell-delay-fraction` |
 | `maximumDelaySeconds` | 6 | `adaptive-maximum-delay-seconds` |
-| `slowAhead` | 2 | `adaptive-slow-ahead` |
+| `slowAhead` | 1 | `adaptive-slow-ahead` |
 | `mediumAhead` | 3 | `adaptive-medium-ahead` |
 | `slowBitRate` | 600_000 | `adaptive-slow-bit-rate` |
 | `mediumBitRate` | 1_000_000 | `adaptive-medium-bit-rate` |
@@ -106,7 +107,7 @@ and exits at or below **0.32s**. With no previous plan it uses **0.4s**. The fir
 valid TTFB sample remains excluded. A slow throughput tier does not by itself
 latch the latency override.
 
-Slow throughput or high latency uses 25% of the app budget, two ahead, no behind,
+Slow throughput or high latency uses at most 128 KiB (and 25% of the app budget), one ahead, no behind,
 and a 600 kbps starting rendition. Unknown/medium uses 50%, three ahead and
 1 Mbps; fast uses the full app window/budget and a desired 3 Mbps ceiling, still
 capped by the app (default 1.6 Mbps). Slow concurrency is at most one; faster
@@ -127,3 +128,36 @@ Validate threshold changes against a physical-device benchmark grid.
 
 See [benchmark setup](BENCHMARKING.md) for reproducible simulator checks and
 physical-device measurement workflows.
+
+## Device performance round 1: playback priority
+
+Until the active item displays its first frame, and during a stall, explicit
+prefix transfers are cancelled and other native requests are held before origin
+work and at streaming boundaries. This also gates requests arriving after the
+urgency transition, without closing their proxy connections or forcing a direct
+fallback. Holds, resumptions, connection closes (with reason) and node fallbacks
+are logged for device verification. The active request
+never waits for a speculative prefix. A known resource size (including a two-byte
+AVPlayer probe) no longer changes a missing range into a fully buffered 512 KiB
+response: cached bytes are sent first, then the missing suffix streams as it
+arrives. Short 206 replies continue with the remaining range; the stream's byte
+limit prevents a range-ignoring origin from overrunning the downstream response.
+This applies to MP4, HLS init resources and HLS segments alike.
+
+Slow-link speculation is limited to +1 and a 128 KiB head, including binge misses.
+The starting bitrate is applied before the native item is attached, so the first
+HLS selection uses the same cap as the warm path; the master remains intact for
+later ABR. A ceiling is advisory to AVPlayer, not a bandwidth guarantee.
+
+The nearest warm decoder can start as soon as the current frame has displayed
+and one second is buffered on an unmeasured/healthy link, before bulk-prefix
+recovery. Its native buffer target is one second, bounded by the app warm-buffer
+limit. A prepared next decoder is retained down to 0.25 s of active buffer rather
+than oscillating at the one-second start threshold; stalls and slow links disable
+this early warming. S2 is exempt from startup urgency. Explicit prefetch excludes
+warm-player items and waits only for N+1's frame, for at most two seconds; failed
+items do not hold the gate. A fresh previous decoder also waits behind N+1, so it
+cannot compete with next-item preroll. A prerolled
+activation keeps that target until the startup window ends, avoiding an immediate
+1-to-10-second target jump. viewStart records warm-start time and preroll completion.
+With three S3 players the window is next/current/previous; four also prepares +2.

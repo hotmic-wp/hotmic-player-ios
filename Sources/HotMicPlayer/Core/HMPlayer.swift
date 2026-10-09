@@ -433,13 +433,14 @@ import Observation
         resolutionRetryTask?.cancel(); resolutionRetryTask = nil
         let mediaIDs = Set(playlist.window(offsets: [0] + (prefetchPlan?.windowOffsets ?? configuration.prefetch.windowOffsets) +
             configuration.warmOffsets).map(\.id))
+        let retryTargets = networkRetryTargets
         for item in windowItems {
             let metadataOnly = item != currentItem && (!prefetchSafe || !mediaIDs.contains(item.id))
             let urgent = item == currentItem || item == items.dropFirst(activeIndex + 1).first
             if urgent { resolutions.promote(item) }
             guard !terminalFailures.contains(item), resolutions.cached(item, requireFormat: !metadataOnly) == nil, resolutionTasks[item] == nil,
                   resolutionFailures[item]?.canRetry(at: ProcessInfo.processInfo.systemUptime) != false,
-                  networkFailures[item].map({ !$0.nextAttempt.isFinite || $0.nextAttempt <= ProcessInfo.processInfo.systemUptime }) != false else { continue }
+                  networkFailures[item].map({ retryTargets.contains(item) && (!$0.nextAttempt.isFinite || $0.nextAttempt <= ProcessInfo.processInfo.systemUptime) }) != false else { continue }
             resolutionTasks[item] = Task(priority: urgent ? .userInitiated : .utility) { [weak self] in
                 guard let self else { return }
                 do {
@@ -690,6 +691,13 @@ import Observation
         default: break
         }
     }
+    /// While an error is transient, only current and next retry. Farther window entries keep their
+    /// failure record and retry once navigation brings them into this pair, so a recovering server
+    /// sees at most two requests per client rather than the whole prefetch window at once.
+    private var networkRetryTargets: Set<HMMediaItem> {
+        guard !failureIdle, let currentItem else { return [] }
+        return Set([currentItem] + (items.indices.contains(activeIndex + 1) ? [items[activeIndex + 1]] : []))
+    }
     private func markNetworkFailure(_ item: HMMediaItem) {
         terminalFailures.remove(item)
         var retry = networkFailures[item] ?? HMNetworkRetry()
@@ -700,8 +708,8 @@ import Observation
     private func scheduleNetworkRetry() {
         networkRetryTask?.cancel(); networkRetryTask = nil
         guard !ended, isFeedVisible else { return }
-        let window = Set(windowItems)
-        guard let deadline = networkFailures.filter({ window.contains($0.key) }).values.map(\.nextAttempt).filter(\.isFinite).min() else { return }
+        let targets = networkRetryTargets
+        guard let deadline = networkFailures.filter({ targets.contains($0.key) }).values.map(\.nextAttempt).filter(\.isFinite).min() else { return }
         networkRetryTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(max(0.01, deadline - ProcessInfo.processInfo.systemUptime))) } catch { return }
             self?.retryNetworkFailures()
@@ -709,8 +717,8 @@ import Observation
     }
     private func retryNetworkFailures() {
         guard !ended, isFeedVisible else { return }
-        let now = ProcessInfo.processInfo.systemUptime, window = Set(windowItems)
-        for item in Array(networkFailures.keys) where window.contains(item) && networkFailures[item]!.nextAttempt <= now {
+        let now = ProcessInfo.processInfo.systemUptime, targets = networkRetryTargets
+        for item in Array(networkFailures.keys) where targets.contains(item) && networkFailures[item]!.nextAttempt <= now {
             networkFailures[item]?.nextAttempt = .infinity
             if let node = node(for: item), node.snapshot.state == .failed {
                 node.release()
@@ -760,7 +768,9 @@ import Observation
         let index = playlist.index
         let forward = Array(items.indices.dropFirst(index + 1))
         // A late page may contain the next playable entry; do not retreat while it is outstanding.
-        if !forward.contains(where: { !terminalFailures.contains(items[$0]) }), isLoadingPage || hasMoreContent {
+        // Once the paging retry budget is exhausted no page is coming without navigation or an
+        // explicit loadNextPage(), so fall back to the previous entry instead of waiting forever.
+        if !forward.contains(where: { !terminalFailures.contains(items[$0]) }), isLoadingPage || (hasMoreContent && !pagingRetry.exhausted) {
             checkEnd()
             return
         }

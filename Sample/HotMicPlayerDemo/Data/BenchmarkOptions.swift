@@ -71,7 +71,7 @@ struct BenchmarkOptions {
         return c
     }
     func dataSource() async throws -> HMPlaylistSource {
-        guard let raw = values["manifest-url"] else { return DemoContent.dataSource }
+        guard let raw = values["manifest-url"] else { return try await DemoContent.dataSource() }
         guard let url = URL(string: raw), ["http", "https"].contains(url.scheme) else { throw Invalid("manifest-url") }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Invalid("manifest HTTP status") }

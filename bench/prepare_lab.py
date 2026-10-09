@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Build a short HLS VOD fixture from bundled content using an existing ffmpeg."""
+"""Build short HLS VOD from your own source clip using an existing ffmpeg."""
+import argparse
 import pathlib
 import subprocess
 
 root = pathlib.Path(__file__).resolve().parent.parent
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--source', type=pathlib.Path, required=True, help='Your own source clip, with permission for the intended use')
+args = parser.parse_args()
 output = root / "bench/generated/lab-hls"
 output.mkdir(parents=True, exist_ok=True)
 subprocess.run([
     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i",
-    str(root / "Sample/HotMicPlayerDemo/Resources/coach-mic.mp4"),
+    str(args.source),
     "-t", "12", "-vf", "scale=360:-2", "-c:v", "libx264", "-preset", "ultrafast",
     "-g", "60", "-sc_threshold", "0", "-c:a", "aac", "-f", "hls", "-hls_time", "2",
     "-hls_playlist_type", "vod", "-hls_segment_filename", str(output / "segment-%03d.ts"),

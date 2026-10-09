@@ -7,6 +7,7 @@ import argparse, json, pathlib, shutil, subprocess
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument('--source', type=pathlib.Path, required=True, help='Your own source clip, with permission for the intended use')
     p.add_argument('--root', default='bench/generated/adaptive')
     p.add_argument('--fast-port', type=int, default=18413)
     p.add_argument('--slow-port', type=int, default=18414)
@@ -15,8 +16,7 @@ def main():
     p.add_argument('--normal-dwell', type=float, default=5, help='Use 9 to exercise the default long-dwell rule')
     a = p.parse_args()
     root = pathlib.Path(a.root).resolve(); root.mkdir(parents=True, exist_ok=True)
-    repo = pathlib.Path(__file__).resolve().parent.parent
-    source = repo / 'Sample/HotMicPlayerDemo/Resources/coach-mic.mp4'
+    source = a.source
     fixture = root / 'fixture'; fixture.mkdir(exist_ok=True)
     common = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(source),
               '-t', '12', '-vf', 'scale=360:-2', '-c:v', 'libx264', '-preset', 'ultrafast',

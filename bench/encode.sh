@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: encode.sh [source-directory] [output-directory] [origin-base-url] [keyframe-seconds]
-source_dir=${1:-Sample/HotMicPlayerDemo/Resources}
+# Supply your own clips with permission for your intended use. None are bundled.
+source_dir=${1:-Sample/LocalMedia}
 out=${2:-bench/generated}
 base=${3:-http://127.0.0.1:8088}
 key=${4:-2}

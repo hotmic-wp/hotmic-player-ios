@@ -94,7 +94,7 @@ Resolution covers current plus the configured data/warm window, independently of
 
 ## Terminal item failures
 
-`HMPlayerConfiguration.failedItemPolicy` is `.skip` by default. After resolution exhausts its three attempts, or a native player reports a terminal media failure, the player emits `.error(item:kind:)` and advances to the first nonfailed entry after current. If none follows, it waits while `isLoadingPage` or `hasMoreContent` is true so the source can supply a successor; after the source ends, it tries preceding entries in reverse order; if none remains, `currentItem` becomes nil and the snapshot becomes `.idle`. Entries remain in `items`. Automatic traversal remembers failed immutable entries and never resets their retry budgets, so all-failing playlists terminate. An untried candidate may itself fail; the same bounded traversal continues. Paging errors and recoverable cache-transport errors do not skip items. `currentIndex` is nil when empty or idle after failures; `activeIndex` remains zero for compatibility and does not prove `items[0]` is current.
+`HMPlayerConfiguration.failedItemPolicy` is `.skip` by default. After resolution exhausts its three attempts, or a native player reports a terminal media failure, the player emits `.error(item:kind:)` and advances to the first nonfailed entry after current. If none follows, it waits while a page is loading, or while `hasMoreContent` is true and the paging retry budget remains, so the source can supply a successor; after the source ends or its automatic retries are exhausted, it tries preceding entries in reverse order; if none remains, `currentItem` becomes nil and the snapshot becomes `.idle`. Entries remain in `items`. Automatic traversal remembers failed immutable entries and never resets their retry budgets, so all-failing playlists terminate. An untried candidate may itself fail; the same bounded traversal continues. Paging errors and recoverable cache-transport errors do not skip items. `currentIndex` is nil when empty or idle after failures; `activeIndex` remains zero for compatibility and does not prove `items[0]` is current.
 
 ```swift
 let player = HMPlayer(configuration: HMPlayerConfiguration(failedItemPolicy: .stay))
@@ -106,11 +106,46 @@ player.configuration.failedItemPolicy = .skip
 
 With `HMVerticalFeedView`, automatic skips use the animated page request and commit only after scrolling settles. The feed internally tracks touches (including overlay scrubbing), dragging, deceleration and page animations; `isInteracting` is read-only. For controls outside the feed, call `beginInteraction()` on begin and `endInteraction()` on release/cancellation. Repeated begin calls renew a 30-second timeout, so a missing end cannot strand a failed item forever. A pending automatic page request/commit also waits for an interaction that starts after the request. A player with no feed surface commits the same navigation directly after interaction ends.
 
-The following `NSURLErrorDomain` failures are retryable, including when nested in an AVFoundation error: `notConnectedToInternet`, `networkConnectionLost`, `timedOut`, `cannotFindHost`, `cannotConnectToHost`, `dnsLookupFailed`, `internationalRoamingOff`, and `dataNotAllowed`. They emit errors, retain the current item, and retry after 1, 2, 4, 8, 16, then at most 30 seconds between attempts; they never become terminal just because the viewer stays offline. Resolution and native media failures use this classification. Retries pause when the feed is hidden. The player owns an `NWPathMonitor`, cancels it on teardown, and clears terminal/retry budgets on an unsatisfied-to-satisfied transition so entries can recover. No interface/network settings are changed. `HMFailedItemPolicy` is not Codable; benchmark serialization uses a private SPI mirror.
+The following `NSURLErrorDomain` failures are retryable, including when nested in an AVFoundation error: `notConnectedToInternet`, `networkConnectionLost`, `timedOut`, `cannotFindHost`, `cannotConnectToHost`, `dnsLookupFailed`, `internationalRoamingOff`, and `dataNotAllowed`. They emit errors, retain the current item, and retry after 1, 2, 4, 8, 16, then at most 30 seconds between attempts, each wait jittered by ±25% so clients don't retry in lockstep; they never become terminal just because the viewer stays offline. While the error persists only the current and next entries retry; farther window entries keep their failure and retry once navigation makes them current or next. Resolution and native media failures use this classification. Retries pause when the feed is hidden. The player owns an `NWPathMonitor`, cancels it on teardown, and clears terminal/retry budgets on an unsatisfied-to-satisfied transition so entries can recover. No interface/network settings are changed. `HMFailedItemPolicy` is not Codable; benchmark serialization uses a private SPI mirror.
 
-## Optional engagement
+## Engagement
 
-Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)` returns an `HMStreamTimeline` without opening a session. Lifecycle hooks manage only current and next: `willBecomeNext`, `didBecomeCurrent`, `didLeave`. Promotion keeps the next session open; entries that leave both roles, disappear or tear down receive `didLeave`. Optional async `sendChat`, `react`, and `vote` default to throwing `.unsupportedAction`. The host retains its adapter and invokes these actions from its overlay. The default implementation supplies deterministic demo timelines without network sessions.
+Engagement is three layers. Use the ones you need.
+
+**1. Data and actions (`HotMicPlayer`).** `player.engagement(for: item)` returns the item's `@MainActor @Observable HMEngagement`, created once per playlist entry and released when the entry leaves the playlist. Every query takes a media time, so seeking rewinds engagement with the video:
+
+- `messages(near:lookback:limit:)`: chat from the last `lookback` seconds up to the playhead, oldest first, including the viewer's messages still sending.
+- `polls(at:resultsLinger:)`: polls whose `opensAt..<closesAt` window contains the playhead, plus closed ones for `resultsLinger` seconds. `HMPoll.isOpen(at:)` decides whether voting is possible; `isClosed` lets a source end a poll early.
+- `reactionTotals`, `density`, `markers` (waveform peaks, each a seek target), `authoredMoments`, `intensity(at:)`.
+- Actions: `sendChat(_:at:)`, `react(_:at:)`, `react(_:toMessage:)`, `vote(pollID:optionID:)`. With no time given they use the item's current playback time. Chat shows at once as `.sending` and joins the timeline when the source accepts it; message reactions and votes update optimistically and roll back if the source throws. Unsupported actions throw `HMInteractionError.unsupportedAction` without touching state; validation failures throw `HMEngagementError`. `lastActionError` describes the latest failure. `lastReactionEcho` publishes the viewer's own stream reaction for an immediate animation.
+
+**2. Your source (`HMInteractionSource`).** Implement `@MainActor HMInteractionSource` and pass it to `HMPlayer(interactions:)`; the player retains it. `timeline(for:)` returns an `HMStreamTimeline` without opening a session. Lifecycle hooks manage only current and next: `willBecomeNext`, `didBecomeCurrent`, `didLeave`. Promotion keeps the next session open; entries that leave both roles, disappear or tear down receive `didLeave`. Everything else is optional:
+
+| Requirement | Default | Purpose |
+| --- | --- | --- |
+| `capabilities(for:)` | `.readOnly` | Which actions exist: `.sendChat`, `.reactToStream`, `.reactToMessage`, `.vote`. Components hide controls for the rest. |
+| `polls(for:)` | `[]` | Polls on the item's media clock, read once when its engagement is created. |
+| `sendChat`, `react`, `react(_:toMessage:for:)`, `vote` | throw `.unsupportedAction` | Perform the action against your backend. Return to confirm; throw to roll back. |
+| `engagementDidLoad(_:)` | nothing | Keep the `HMEngagement` **weakly** and push live state: `receive(_:)` for events from a socket, `update(_:)` for poll counts or closure, `updateReactions(_:forMessage:)` for message totals. Don't echo the viewer's own chat back; the engagement adds it on success. |
+
+Timeline events carry optional `avatarURL`, `wallTime` and per-message `reactions`. Without a source, the player shows deterministic demo data read-only, so no control can send anything. The Sample passes Benchmark SPI `HMMockInteractionSource()` explicitly, which accepts every action after a simulated round trip and adds one poll per item.
+
+**3. UI (`HotMicPlayerUI`, optional).** The components each take an `HMEngagement` and a media time (or a snapshot) and read `HMTheme` from the environment:
+
+| Component | Shows |
+| --- | --- |
+| `HMChatRail` | Recent messages near the playhead; new ones push old ones out through a fade. Double-tap (or the VoiceOver action) reacts to a message. |
+| `HMPollCard` | The visible poll: vote while open, then results with the viewer's choice. Read-only without `.vote`. |
+| `HMFloatingReactions` | Reactions rising as the playhead crosses them, gated by the waveform under the playhead; the viewer's own reaction always animates. |
+| `HMActionRail` | React (tap; long-press for the palette), Comment, Share (only with a handler), Mute (only with a binding). |
+| `HMComposer` | One-line chat field; keeps text and shows an inline error on failure. |
+| `HMEngagementScrubber` | Engagement waveform scrubber with tappable peaks; VoiceOver adjusts in 5% steps. |
+
+`HMOverlayLayout` arranges them over full-screen vertical video. Add it with `HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)`, or call `HMOverlayLayout(player:item:snapshot:options:)` inside your own overlay closure to add your own views around it. `HMOverlayLayout.Options` hides any part (chat, polls, floating reactions, scrubber, metadata, playback taps, individual rail buttons), wires Share (`onShare`) and sets chat lookback/limit and extra insets; apply them with `.hmOverlayOptions(_:)` or pass them directly. Scrubbing calls `beginInteraction()`/`endInteraction()` for you.
+
+`HMTheme` holds colors, Dynamic Type fonts, corner radius, SF Symbol names and the reaction palette; `HMTheme.default` is HotMic's look. Apply it once with `.hmTheme(_:)`. Text over video is always light on a scrim; cards use system materials and follow light and dark mode. All controls have VoiceOver labels; Reduce Motion replaces travel with fades and turns off ambient floating reactions; at accessibility text sizes the chat rail shows fewer, larger lines.
+
+To write another layout, conform a view to `HMEngagementLayout` (`init(context: HMEngagementContext)`) and compose the components. The planned stacked and side-panel layouts need the video itself to move, so they will add a defaulted `videoPlacement` requirement that the feed reads; existing layouts keep compiling.
 
 ## Events and analytics
 

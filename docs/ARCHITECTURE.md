@@ -34,7 +34,15 @@ The window retains current routes while upcoming routes are pruned. Removed play
 
 An overlay is a pure rendering function of `(media clock, timeline)`. Chat queries a time window; reactions replay at their authored offsets; density and clustered markers are precomputed. Seeking changes the media clock and therefore rewinds all overlay layers consistently. A tick changes progress and the density mask, without rebuilding the density path or scanning every event.
 
-`HMInteractionSource.timeline(for:)` supplies this clock-indexed data without opening a session. Synchronous lifecycle hooks own current and next only. `willBecomeNext` prepares next, `didBecomeCurrent` promotes current, and `didLeave` closes entries outside both roles. Promotion keeps an already-open next session. Hiding or tearing down closes both. Optional send-chat/reaction/vote actions belong to the host adapter; default implementations throw unsupported. `HMMockInteractionSource` wraps deterministic `HMMockTimeline` for the demo.
+`HMInteractionSource.timeline(for:)` supplies this clock-indexed data without opening a session. Synchronous lifecycle hooks own current and next only. `willBecomeNext` prepares next, `didBecomeCurrent` promotes current, and `didLeave` closes entries outside both roles. Promotion keeps an already-open next session. Hiding or tearing down closes both. Optional actions belong to the host adapter; default implementations throw unsupported, and `capabilities(for:)` (default read-only) tells the UI which exist. `HMMockInteractionSource` wraps deterministic `HMMockTimeline` for the demo.
+
+### Engagement layers
+
+`HMEngagement` sits between the timeline and any UI. It is created once per playlist entry by `HMPlayer.engagement(for:)`, folds the timeline once (reaction totals, authored moments) and then maintains those aggregates incrementally. Queries are windowed by media time and backed by the timeline's binary search, so a body that calls one on each playback tick costs O(log n + k). Each query reads an observable `revision`, which every mutation bumps; that is how SwiftUI invalidates on a vote, a sent message or a source push without the timeline itself being observable.
+
+Viewer actions are optimistic and keep their local state beside the timeline: pending messages (merged into chat queries until the source accepts them, then appended to the timeline at the offset captured when sent), message-reaction deltas, and in-flight votes. A source failure removes the local state and rethrows. Capabilities are checked before anything changes. The engagement holds its source strongly; sources hold engagements weakly.
+
+`HotMicPlayerUI` is a separate target that depends only on `HotMicPlayer`. Components are plain views over `HMEngagement` plus a media time; none reaches into the player. Layouts (`HMEngagementLayout`) are the only place that touches `HMPlayer` (seek, play/pause, mute, interaction deferral). The scrubber keeps the 0.2 performance property: its bars are a `Shape` over the density array, revealed by masks whose width is the only per-tick change. Floating reactions sample the timeline slice crossed since the last tick and emit only where the waveform under the playhead clears a floor, so what flies always matches what the scrubber shows.
 
 ## Events, Observation and measurement
 

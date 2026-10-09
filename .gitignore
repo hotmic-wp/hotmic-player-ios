@@ -11,3 +11,4 @@ bench/generated/
 bench/results/
 __pycache__/
 *.pyc
+Sample/LocalMedia/

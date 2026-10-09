@@ -142,6 +142,13 @@ final class HMPlayerNode: Identifiable {
         if !isActive, let item = player.currentItem, item.preferredPeakBitRate != cap { item.preferredPeakBitRate = cap }
     }
 
+    /// Only N+1's initial preroll may delay bulk work. Failed, audio-only and
+    /// non-decoding assets must not block the rest of the window indefinitely.
+    func isWaitingForWarmFrame(at now: TimeInterval) -> Bool {
+        snapshot.state != .failed && !snapshot.isFrameReady &&
+            warmStartedAt.map { now - $0 < 2 } == true
+    }
+
     /// Promote this node to the on-screen item and begin playback.
     func activate(startingAt position: TimeInterval? = nil, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, reason: String = "play", cachedBytes: Int = 0) {
         guard let item else { return }

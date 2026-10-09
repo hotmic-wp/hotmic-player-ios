@@ -37,8 +37,9 @@ distance. Binge misses suppress behind work and focus on +1/+2. The default
 hybrid uses two players; explicit benchmark strategies retain their player knobs.
 A long dwell delays ready-player and disk work from activation, then uses a deeper
 budget. URL/poster resolution continues regardless of buffer safety or media pauses.
-Stalls/unsafe buffers cancel prefix tasks and release warm players, preserving pending
-neighbour resolution and resolved posters; recovery needs the higher buffer threshold. A fully
+Stalls/unsafe buffers cancel prefix tasks, preserving pending neighbour resolution and
+resolved posters. Startup urgency retains existing warm players without creating new ones;
+bulk recovery needs the higher buffer threshold. A fully
 buffered finite tail can recover below that threshold, but never during a stall.
 
 Throughput and request time to response headers come from the existing upstream
@@ -145,8 +146,12 @@ later ABR. A ceiling is advisory to AVPlayer, not a bandwidth guarantee.
 The nearest warm decoder can start as soon as the current frame has displayed
 and one second is buffered on an unmeasured/healthy link, before bulk-prefix
 recovery. Its native buffer target is one second, bounded by the app warm-buffer
-limit. Explicit prefetch excludes warm-player items and waits for their frames;
-it cannot duplicate the next head or compete with its preroll. A prerolled
+limit. A prepared next decoder is retained down to 0.25 s of active buffer rather
+than oscillating at the one-second start threshold; stalls and slow links disable
+this early warming. S2 is exempt from startup urgency. Explicit prefetch excludes
+warm-player items and waits only for N+1's frame, for at most two seconds; failed
+items do not hold the gate. A fresh previous decoder also waits behind N+1, so it
+cannot compete with next-item preroll. A prerolled
 activation keeps that target until the startup window ends, avoiding an immediate
 1-to-10-second target jump. viewStart records warm-start time and preroll completion.
 With three S3 players the window is next/current/previous; four also prepares +2.

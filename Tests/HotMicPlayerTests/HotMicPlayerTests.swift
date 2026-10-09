@@ -372,6 +372,13 @@ struct CacheTransportTests {
         #expect(HMPlaybackPriority.isUrgent(displayed: false, stalling: true))
         #expect(HMPlaybackPriority.isUrgent(displayed: true, stalling: true))
         #expect(!HMPlaybackPriority.isUrgent(displayed: true, stalling: false))
+        #expect(!HMNextWarmSafety.isSafe(ahead: 0.9, remaining: nil, stalling: false, slow: false, wasWarm: false))
+        for ahead in [1.01, 0.99, 0.9, 0.26, 0.25] {
+            #expect(HMNextWarmSafety.isSafe(ahead: ahead, remaining: nil, stalling: false, slow: false, wasWarm: true))
+        }
+        #expect(!HMNextWarmSafety.isSafe(ahead: 0.24, remaining: nil, stalling: false, slow: false, wasWarm: true))
+        #expect(!HMNextWarmSafety.isSafe(ahead: 3, remaining: nil, stalling: true, slow: false, wasWarm: true))
+        #expect(!HMNextWarmSafety.isSafe(ahead: 3, remaining: nil, stalling: false, slow: true, wasWarm: true))
         var epoch = HMPrefetchEpoch()
         let first = epoch.begin("window/config-A")
         for _ in 0..<100 { #expect(epoch.begin("window/config-A") == nil) }

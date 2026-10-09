@@ -33,6 +33,8 @@ jobs:
           printf '%s\n' "$version"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check partner docs and API; build products and run the unit suite once
+        env:
+          PARTNER_DOCS_DENYLIST: ${{ secrets.PARTNER_DOCS_DENYLIST }}
         run: bash .github/scripts/validate-release.sh
       - name: Upload validation evidence on failure
         if: failure()

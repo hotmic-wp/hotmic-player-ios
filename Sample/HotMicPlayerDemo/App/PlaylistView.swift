@@ -6,7 +6,7 @@ import HotMicPlayer
 /// and warm-window behaviour rather than just "scrolling works".
 struct PlaylistView: View {
 
-    let controller: HMFeedController
+    let controller: HMPlayer
     @Bindable var settings: DemoSettings
     let onPlay: (Int) -> Void
     let console: HMConsoleSink
@@ -122,7 +122,7 @@ struct PlaylistView: View {
                             index: index,
                             item: item,
                             isCurrent: controller.activeIndex == index,
-                            isWarm: controller.node(for: item) != nil
+                            isWarm: controller.snapshot(for: item).state != .idle
                         )
                     }
                     .buttonStyle(.plain)
@@ -158,13 +158,7 @@ private struct PlaylistRow: View {
                     .foregroundStyle(.white.opacity(0.55))
 
                 HStack(spacing: 6) {
-                    if item.streamKind == .live {
-                        Text("LIVE")
-                            .font(DemoTheme.label(9, weight: .black))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(DemoTheme.live, in: .capsule)
-                    } else if let duration = item.durationHint {
+                    if let duration = item.durationHint {
                         Text(EmojiScrubberView.timecode(duration))
                             .font(DemoTheme.metric(11, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.7))

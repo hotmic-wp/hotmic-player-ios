@@ -45,7 +45,7 @@ struct BenchmarkOptions {
         if enabled { c.startsMuted = true; c.restoresPlaybackPosition = false }
         return c
     }
-    func dataSource() async throws -> HMFeedDataSource {
+    func dataSource() async throws -> HMPlaylistSource {
         guard let raw = values["manifest-url"] else { return DemoContent.dataSource }
         guard let url = URL(string: raw), ["http", "https"].contains(url.scheme) else { throw Invalid("manifest-url") }
         let (data, response) = try await URLSession.shared.data(from: url)
@@ -57,7 +57,7 @@ struct BenchmarkOptions {
             guard let media = URL(string: e.url, relativeTo: url)?.absoluteURL, ["https", "http"].contains(media.scheme) else { throw Invalid("media URL") }
             return HMMediaItem(id: e.id, url: media, posterURL: e.poster.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }, title: e.id, durationHint: e.duration, metadata: ["format": e.format])
         }
-        return HMStaticFeedDataSource(items: items, pageSize: items.count, loopsForever: false, simulatedLatency: .zero)
+        return HMStaticPlaylistSource(items: items, pageSize: items.count, loopsForever: false, simulatedLatency: .zero)
     }
     struct Invalid: LocalizedError { let key: String; init(_ key: String) { self.key = key }; var errorDescription: String? { "Invalid benchmark option: \(key)" } }
 }

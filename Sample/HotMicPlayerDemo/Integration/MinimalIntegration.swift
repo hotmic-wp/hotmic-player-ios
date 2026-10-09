@@ -9,10 +9,10 @@ enum MinimalIntegration {
 
     // MARK: - Step 1 — point the SDK at your feed API (9 lines)
 
-    struct ClipFeed: HMFeedDataSource {
-        func loadPage(cursor: String?) async throws -> HMFeedPage {
+    struct ClipFeed: HMPlaylistSource {
+        func loadPage(cursor: String?) async throws -> HMPlaylistPage {
             let page = try await ClipsAPI.clips(after: cursor)
-            return HMFeedPage(
+            return HMPlaylistPage(
                 items: page.clips.map {
                     HMMediaItem(id: $0.id, url: $0.hlsURL, posterURL: $0.posterURL, title: $0.headline)
                 },
@@ -24,12 +24,13 @@ enum MinimalIntegration {
     // MARK: - Step 2 — render it, with your own overlay (7 lines)
 
     struct FeedScreen: View {
-        @State private var controller = HMFeedController(dataSource: ClipFeed())
+        @State private var controller = HMPlayer()
 
         var body: some View {
-            HMVerticalFeedView(controller: controller) { item, snapshot in
+            HMVerticalFeedView(player: controller) { item, snapshot in
                 HouseOverlay(item: item, snapshot: snapshot)
             }
+            .task { controller.playlistSource = ClipFeed(); await controller.start() }
         }
     }
 

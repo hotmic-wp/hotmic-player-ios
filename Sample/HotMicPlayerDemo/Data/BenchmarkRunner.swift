@@ -6,7 +6,7 @@ import HotMicPlayer
 /// All device paths run this autopilot. XCTest only starts it and waits.
 @MainActor @Observable
 final class BenchmarkRunner {
-    private(set) var controller: HMFeedController?
+    private(set) var controller: HMPlayer?
     private(set) var isRunning = false
     private(set) var complete = false
     private(set) var progress = "Ready"
@@ -125,7 +125,8 @@ final class BenchmarkRunner {
             }
             if event.kind == .error { playbackError = event.properties["error_message"] ?? "Decoder error" }
         })
-        let created = HMFeedController(dataSource: source, configuration: configuration, analytics: hub)
+        let created = HMPlayer(configuration: configuration, analytics: hub)
+        created.playlistSource = source
         created.isFeedVisible = false
         await created.start()
         guard created.loadError == nil else { throw BenchmarkOptions.Invalid(created.loadError!) }
@@ -140,7 +141,7 @@ final class BenchmarkRunner {
         for swipe in 0..<swipes {
             try Task.checkCancellation()
             if cell.requireFrame ?? false { try await awaitFrame(created) }
-            let seconds = cell.script == "watchThrough" ? (created.currentItem?.durationHint ?? created.currentNode?.snapshot.duration ?? 12) + 0.2 : dwell
+            let seconds = cell.script == "watchThrough" ? (created.currentItem?.durationHint ?? created.snapshot.duration) + 0.2 : dwell
             try await Task.sleep(for: .seconds(seconds))
             try await awaitForeground()
             if let playbackError { throw BenchmarkOptions.Invalid(playbackError) }
@@ -162,7 +163,7 @@ final class BenchmarkRunner {
     private func awaitForeground() async throws {
         while UIApplication.shared.applicationState != .active { try await Task.sleep(for: .milliseconds(100)) }
     }
-    private func awaitPage(_ controller: HMFeedController, index: Int) async throws {
+    private func awaitPage(_ controller: HMPlayer, index: Int) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + 10
         while controller.activeIndex != index {
             try Task.checkCancellation()
@@ -170,9 +171,9 @@ final class BenchmarkRunner {
             try await Task.sleep(for: .milliseconds(20))
         }
     }
-    private func awaitFrame(_ controller: HMFeedController) async throws {
+    private func awaitFrame(_ controller: HMPlayer) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + 20
-        while controller.currentNode?.snapshot.timeToFirstFrame == nil {
+        while controller.snapshot.timeToFirstFrame == nil {
             try Task.checkCancellation()
             if let playbackError { throw BenchmarkOptions.Invalid(playbackError) }
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw BenchmarkOptions.Invalid("missing displayed frame at \(controller.activeIndex)") }

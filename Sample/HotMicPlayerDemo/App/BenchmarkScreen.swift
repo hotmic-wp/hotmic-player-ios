@@ -12,7 +12,7 @@ struct BenchmarkScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let controller = runner.controller {
-                HMVerticalFeedView(controller: controller)
+                HMVerticalFeedView(player: controller)
                     .id(ObjectIdentifier(controller))
             }
             VStack(spacing: 12) {
@@ -32,7 +32,7 @@ struct BenchmarkScreen: View {
                 }
                 Text(runner.progress).font(.caption).accessibilityIdentifier("benchmark-grid-progress")
                 if let controller = runner.controller {
-                    Text("\(controller.activeIndex)|\(controller.currentItem?.id ?? "")|\(controller.currentNode?.snapshot.timeToFirstFrame != nil ? "displayed" : "loading")")
+                    Text("\(controller.activeIndex)|\(controller.currentItem?.id ?? "")|\(controller.snapshot.timeToFirstFrame != nil ? "displayed" : "loading")")
                         .font(.caption2).accessibilityIdentifier("benchmark-status")
                 }
                 Spacer()

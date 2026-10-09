@@ -7,7 +7,7 @@ import HotMicPlayer
 /// move, fade or rotate with the page transition.
 struct FeedScreen: View {
 
-    let controller: HMFeedController
+    let controller: HMPlayer
     @Bindable var settings: DemoSettings
     let console: HMConsoleSink
     let muxBridge: HMLoggingMuxBridge
@@ -24,7 +24,7 @@ struct FeedScreen: View {
             Color.black.ignoresSafeArea()
 
             HMVerticalFeedView(
-                controller: controller,
+                player: controller,
                 transition: settings.transition,
                 gravity: settings.gravity
             ) { item, snapshot in
@@ -34,7 +34,7 @@ struct FeedScreen: View {
                     timeline: controller.timeline(for: item),
                     isActive: controller.currentItem?.id == item.id,
                     settings: settings,
-                    poolBusy: controller.pool.busyCount,
+                    poolBusy: controller.preparedItemCount,
                     poolSize: controller.configuration.poolSize,
                     isMuted: controller.isMuted,
                     onTogglePlayPause: { controller.togglePlayPause() },
@@ -46,7 +46,7 @@ struct FeedScreen: View {
             chrome
             if isBenchmark {
                 VStack {
-                    Text("\(controller.activeIndex)|\(controller.currentItem?.id ?? "")|\(controller.currentNode?.snapshot.timeToFirstFrame != nil ? "displayed" : "loading")|\(controller.currentNode?.snapshot.duration ?? 0)")
+                    Text("\(controller.activeIndex)|\(controller.currentItem?.id ?? "")|\(controller.snapshot.timeToFirstFrame != nil ? "displayed" : "loading")|\(controller.snapshot.duration)")
                         .font(.system(size: 10)).accessibilityIdentifier("benchmark-status")
                     Spacer()
                     if let exportError { Text(exportError) }

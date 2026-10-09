@@ -1,178 +1,64 @@
-# HotMicPlayer
+# HotMicPlayer 0.2.0
 
-A vertical-feed video player SDK for iOS, and a sample app that demos it.
-
-> **Prototype.** Video playback is real AVFoundation over bundled clips. The
-> feed API, engagement events (chat / reactions / markers) and the Mux transport
-> are simulated behind protocols, so the whole thing runs with no backend and no
-> third-party dependencies. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
-## Run the demo
-
-```bash
-open Sample/HotMicPlayerDemo.xcodeproj
-# pick an iPhone simulator, ⌘R
-```
-
-Or from the command line:
-
-```bash
-xcodebuild -project Sample/HotMicPlayerDemo.xcodeproj \
-           -scheme HotMicPlayerDemo \
-           -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-           build
-```
-
-Requires Xcode 16+ / iOS 17+.
-
-## What to show, in order
-
-The app opens on a **playlist** of six vertical clips, and the feed is a
-full-screen push from it. That split is deliberate: it lets you leave the feed
-and jump back into it at an arbitrary index, which is what actually exercises
-deep-linking, position restore and the warm window.
-
-1. **The playlist.** Note the `⚡ warm` badges on the first few rows — those are
-   the items the pool has already buffered while you were browsing. Nothing is
-   playing yet.
-2. **Tap "Play the reel"** and swipe. Real vertical inventory at four different
-   source aspects (9:16, 4:5, 1:1, 3:4), all filled to the screen. Every swipe
-   lands in ~100–250 ms with `PRELOADED` in the HUD.
-3. **Panel → Player → Preloading → Off**, then swipe again and watch the HUD.
-   Set it back to `3 / 2` and it snaps back.
-4. **The panel button → Mux.** One `monitorAVPlayerLayer` per pool slot, then
-   `videoChangeForPlayer` on each recycle — not a teardown per cell. That
-   distinction is what most feed integrations get wrong.
-5. **The scrubber.** It's an engagement waveform, not a progress bar: bar height
-   is how loud chat was at that moment, and the emoji mark clustered reaction
-   peaks. Emoji only fly up where the rail is elevated, so the two read as one
-   thing. Drag it and a timecode bubble tracks your thumb showing what happened
-   there — and chat and reactions rewind with the playhead, because overlays
-   render from `(clock, timeline)` rather than from arrival order.
-6. **Tap the flame a few times.** Your reactions are written onto the timeline
-   at the playhead, so the waveform grows under you. Scrub back over that spot
-   and they replay — they're events on the timeline now, not an animation.
-7. **Panel → Fill screen.** Off shows the true source frame, which makes the
-   1:1 and 4:5 clips obvious. On crops them to vertical.
-8. **Panel → Transition.** Fade, scale, parallax, cube, cover.
-9. **Panel → preset.** Instant start vs High quality.
-
-One button in the toolbar opens everything: player tuning, the live event log
-and the Mux beacons. Tapping the HUD itself dismisses it when you want to show
-the feed clean.
-
-### Two paths the reel no longer covers
-
-The reel is all local files, which means neither of these is visible in the app
-as it stands:
-
-- **Cold start.** Local clips load fast enough that preloading barely moves the
-  number. The contrast is only dramatic over the network. Add a remote HLS item
-  to `DemoContent.clips` if you want to show it.
-- **Live / DVR.** `HMLiveWindowTracker` and the live-edge rendering are built and
-  tested, but nothing in the reel is a live stream, so that path is dormant. Any
-  HLS URL served without an `EXT-X-ENDLIST` will light it up.
-
-## Using the SDK
+A zero-dependency partner SDK for iOS 17+ apps embedding a vertical VOD playlist. MP4 and HLS can share one playlist. `HMPlayer` owns playlist edits, playback and events; `HMVerticalFeedView` renders video with your overlay.
 
 ```swift
 import HotMicPlayer
 
-let controller = HMFeedController(
-    dataSource: MyFeedAPI(),                 // your paginated content source
-    configuration: .instantStart,
-    analytics: hub
-)
+@MainActor
+func makePlayer() -> HMPlayer {
+    let player = HMPlayer(configuration: .default)
+    player.replaceAll([
+        HMMediaItem(id: "intro", source: .url(introURL, format: .mp4)),
+        HMMediaItem(id: "replay", source: .url(replayURL, format: .hls))
+    ])
+    return player
+}
 
-HMVerticalFeedView(controller: controller, transition: .fade) { item, snapshot in
+HMVerticalFeedView(player: player) { item, snapshot in
     MyOverlay(item: item, snapshot: snapshot)
 }
 ```
 
-`HMFeedController` owns the item list, the active index, the recycled player
-pool, the prefetch window and analytics fan-out. Views observe it; they never
-drive playback directly.
+URL items play directly. Opaque `.reference(namespace: "partner", id: "clip")` items require an `HMItemResolver`. `HMPlaylistSource` supplies pages, and `HMInteractionSource` supplies engagement timelines and optional actions. The default interaction source is a deterministic demo. The future `HotMicPlayerCore` adapter will live in a separate package; this package has no Core dependency.
 
-### Tuning
+| Playlist operation | Playback effect |
+| --- | --- |
+| `replaceAll(_:startAt:)` | Switches to the selected entry; empty becomes idle |
+| `replaceUpcoming(_:)` | Replaces entries after current; current keeps playing |
+| `insertNext(_:)` | Inserts after current; current keeps playing |
+| `append(_:)` | Appends at the end; current keeps playing |
+| `remove(ids:)` | Preserves current unless removed; then next survivor, then previous |
 
-```swift
-var configuration = HMPlayerConfiguration.default
-configuration.prefetch = HMPrefetchPolicy(ahead: 5, behind: 1, bytesPerItem: 800_000)
-configuration.poolSize = 2
-configuration.startupPeakBitRate = 1_600_000   // small first segment, then lift
-configuration.steadyBufferDuration = 10
-controller.configuration = configuration       // safe to change at runtime
-```
+Edits are atomic on the main actor, return a success Boolean and emit clear errors for duplicates or invalid inputs. A mid-swipe edit cancels the pending destination and anchors the view to the last settled current item. Completed resolutions are session-cached; pending resolutions and speculative downloads leave with their window. Removed entries release their cache ownership while shared known resources remain reusable.
 
-Default: two players plus bounded disk prefetch (S3). Presets: `.default`,
-`.instantStart`, `.highQuality`, and `.preset(.S0/.S1/.S2/.S3)` for comparisons.
-The data window does not allocate players. See [architecture](docs/ARCHITECTURE.md)
-for buffer gating, cache transport and timing limits, and
-[benchmarking](docs/BENCHMARKING.md) for remote playlists and headless device runs.
+Use `play()`, `pause()`, `seek(to:)`, `next()`, `previous()`, `jump(toID:)` and `isMuted`. SwiftUI observes player state and immutable playback snapshots. Each `events` access creates an independent `AsyncStream<HMPlayerEvent>` subscription. Analytics hub/sinks remain available, including console, JSONL and the optional host-provided Mux bridge.
 
-### Analytics
+The default S3 engine uses two native players and a bounded disk media cache. S0/S1/S2 presets remain for benchmarks. Engine nodes, pools, video surfaces and loopback transport are internal.
 
-```swift
-final class MySink: HMAnalyticsSink {
-    let sinkName = "warehouse"
-    func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
-        // viewStart, firstFrame (ttff_ms), rebufferStart, variantChanged, …
-    }
-}
-
-hub.add(MySink())
-hub.add(HMMuxAnalyticsSink(environment: env, bridge: MuxDataBridge()))
-```
-
-Wiring the real Mux SDK is two steps — see
-[`Integrations/Mux/README.md`](Integrations/Mux/README.md).
-
-## Swapping in real content
-
-`DemoContent.reel` is the only place content is defined. Bundled clips live in
-`Sample/HotMicPlayerDemo/Resources/` as `<id>.mp4` plus a matching `<id>.jpg`
-poster; the Xcode target uses a synchronized file group, so dropping files in
-that folder is all it takes for them to ship.
-
-Posters were generated with:
+## Sample and Playlist lab
 
 ```bash
-ffmpeg -ss 1 -i clip.mp4 -frames:v 1 -vf "scale=720:-2" -q:v 4 clip.jpg
+open Sample/HotMicPlayerDemo.xcodeproj
 ```
 
-## Docs
+Select an iPhone simulator and run. The sample imports only the public SDK. Browse the bundled reel, open the feed, or tap **Playlist lab** to edit a playing list. The lab shows every operation, duplicate rejection, removal of current, empty state, navigation and a delayed edit you can trigger during a swipe. It logs activation/position/frame continuity to `Documents/playlist-lab-operations.jsonl` and playback analytics to `Documents/BenchRuns/`.
 
-- [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — how a host app adopts this, what
-  it costs (measured: 250 KB, 0 dependencies), and the three integration shapes.
-- [`docs/POSITIONING.md`](docs/POSITIONING.md) — why a publisher would pick this
-  over rolling their own, argued honestly including where we don't differentiate.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how it works and what is
-  deliberately not built yet.
-
-## Layout
-
-```
-Package.swift                    SPM manifest
-Sources/HotMicPlayer/            the SDK
-  Model/                         HMMediaItem, configuration, snapshot
-  Core/                          player node, pool, feed controller, audio
-  Playback/                      AVPlayerLayer host
-  Feed/                          vertical feed view, data source, transitions
-  Timeline/                      engagement timeline + mock generator
-  Analytics/                     event model, hub, console sink, Mux adapter
-Sample/HotMicPlayerDemo.xcodeproj
-Sample/HotMicPlayerDemo/         the demo app (playlist + feed)
-Integrations/Mux/                drop-in real Mux bridge + notes
-Tests/HotMicPlayerTests/
-docs/ARCHITECTURE.md
-```
-
-## Tests
+For the lab's mixed MP4/HLS content, generate the HLS fixture from the bundled reel with an existing ffmpeg installation, then start the local bench origin:
 
 ```bash
-swift test
+python3 bench/prepare_lab.py
+python3 bench/origin.py --root bench/generated --port 8088
 ```
 
-Covers the pure logic: prefetch window ordering, seekable-window progress math
-(including DVR), mock timeline determinism and density normalisation, feed
-pagination, Mux payload mapping and page-transition clamping.
+The default origin field is `http://127.0.0.1:8088` for the simulator. On a physical device use the reachable address of your owned bench host. All media fixtures and results are ignored by Git.
+
+## Documentation and validation
+
+- [Integration](docs/INTEGRATION.md): minimal adoption, paging, references, engagement and events.
+- [Architecture](docs/ARCHITECTURE.md): playback, prefetch, cache ownership and overlay-by-clock model.
+- [Public API inventory](docs/PUBLIC_API.md): every exported type and function.
+- [Benchmarking](docs/BENCHMARKING.md): milestone 1's benchmark mode and device workflows.
+- [Milestone 2 validation](docs/MILESTONE_2_VALIDATION.md): simulator evidence, build/test timings and limits.
+
+`swift test` exercises platform-independent playlist, resolver, cache and timeline logic. The Sample app and simulator flow exercise the native iOS engine. Generic device builds can use `CODE_SIGNING_ALLOWED=NO`; no signing setup is required for compilation.

@@ -1,187 +1,111 @@
-# Integrating HotMicPlayer
+# Integrating HotMicPlayer 0.2.0
 
-Engineer-facing. What you write, what you get, and what it costs you.
+The SDK is a source Swift package with no third-party dependencies, for iOS 17+. Playback supports immutable VOD MP4 and HLS; hosts supply their catalogue, overlays and optional adapters.
 
-Every number on this page was measured against this repo. The commands are
-included so you can re-run them.
-
----
-
-## 1. What you actually write
-
-The smallest complete integration is **20 lines**, and it is a real file in this
-repo — [`Sample/HotMicPlayerDemo/Integration/MinimalIntegration.swift`](../Sample/HotMicPlayerDemo/Integration/MinimalIntegration.swift)
-— compiled by the sample app's target so it cannot rot into a snippet that no
-longer builds.
-
-### Step 1 — point the SDK at your feed API (9 lines)
+## Step 1 — create a player and supply entries
 
 ```swift
-struct ClipFeed: HMFeedDataSource {
-    func loadPage(cursor: String?) async throws -> HMFeedPage {
-        let page = try await ClipsAPI.clips(after: cursor)
-        return HMFeedPage(
-            items: page.clips.map {
-                HMMediaItem(id: $0.id, url: $0.hlsURL, posterURL: $0.posterURL, title: $0.headline)
-            },
-            nextCursor: page.nextCursor
-        )
-    }
-}
+@State private var player = HMPlayer(configuration: .default)
+
+// Run on the main actor (use await when calling from another actor).
+player.replaceAll([
+    HMMediaItem(id: "clip-a", source: .url(mp4URL, format: .mp4), title: "Intro"),
+    HMMediaItem(id: "clip-b", source: .url(hlsURL, format: .hls), title: "Replay")
+])
 ```
 
-There is no HotMic backend in this path. `HMFeedDataSource` is a protocol over
-*your* content API and `HMMediaItem` is a value type you construct. Adopting the
-player does not require moving your catalogue anywhere.
+IDs are app-chosen, nonempty and unique within the playlist. Duplicate edits are rejected as a whole and emit `.error(item:kind:)`. Items carry an explicit source, optional poster/title/author/duration hint and `[String: String]` metadata. `.auto` uses the extension, then HTTP content type for extensionless URLs; supplying `.mp4` or `.hls` avoids that detection request. Ergonomic `.url(url, poster: poster, id: "clip")` and `.reference("partner", id: "external", playlistID: "clip")` constructors are available. Without an explicit playlist ID the URL constructor uses its absolute URL and the reference constructor uses namespace plus reference ID.
 
-### Step 2 — render it, with your own overlay (7 lines)
+## Step 2 — render video with your overlay
 
 ```swift
 struct FeedScreen: View {
-    @State private var controller = HMFeedController(dataSource: ClipFeed())
+    @State private var player = HMPlayer()
 
     var body: some View {
-        HMVerticalFeedView(controller: controller) { item, snapshot in
+        HMVerticalFeedView(player: player) { item, snapshot in
             HouseOverlay(item: item, snapshot: snapshot)
+        }
+        .task {
+            player.playlistSource = ClipPlaylist()
+            await player.start()
         }
     }
 }
 ```
 
-The overlay closure is the whole extensibility story. You get the `HMMediaItem`
-and an `HMPlaybackSnapshot` — state, position, duration, buffered-ahead,
-bitrate, stall count, time-to-first-frame, live/DVR window. What you draw is
-yours. **The SDK ships no opinion about your brand.**
+[MinimalIntegration.swift](../Sample/HotMicPlayerDemo/Integration/MinimalIntegration.swift) compiles this shape in the Sample app with only `import HotMicPlayer`. The overlay gets the item (including resolved metadata fallbacks) and an observable snapshot with state, position, duration, buffer, bitrate, stalls, TTFF and readiness tier. Use `snapshot.currentTime` to query `player.timeline(for: item)`; overlays render from the media clock, so seeking rewinds engagement along with video.
 
-### Step 3 — wire analytics (4 lines)
+Use `player.isFeedVisible = false` when the host disappears or backgrounds. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. Hosts that manage their own audio session should set `configuration.managesAudioSession = false`.
+
+## Atomic editing and navigation
+
+All five operations are synchronous `@MainActor` methods returning `Bool` (discardable). They validate the entire resulting list before committing. An empty replacement is valid only with `startAt: 0`; an out-of-range start is rejected. Upcoming/insert/append on an empty playlist start it at the first incoming entry. Removal ignores unknown IDs. Removing current selects the first surviving entry after its old position, or the last surviving entry before it; removing everything becomes idle.
 
 ```swift
-@MainActor
-func makeAnalytics(muxEnvironmentKey: String, viewerID: String) -> HMAnalyticsHub {
-    let hub = HMAnalyticsHub()
-    hub.add(HMMuxAnalyticsSink(environmentKey: muxEnvironmentKey, viewerUserID: viewerID))
-    return hub
+player.replaceUpcoming(newTail)
+player.insertNext(promotions)
+player.append(page)
+player.remove(ids: ["expired"])
+player.replaceAll(newPlaylist, startAt: 2)
+```
+
+During a swipe, the current entry means the last settled page. An accepted edit cancels the pending scroll destination and snaps back to that current item's new position. If current was removed, it snaps to the selected survivor. Old scroll commits are invalidated by playlist revision. No surviving current item is reattached, activated, sought, or paused by an edit. New next media replaces a displaced warm assignment, subject to current-buffer gating.
+
+`next()` and `previous()` do nothing at the ends. `jump(toID:)` reports an error for unknown IDs. `seek(to:)` takes seconds, rejects negative/non-finite values, and clamps to the known duration. `isMuted` applies to current and prepared players. `play()` and `pause()` preserve position. `seek(toProgress:)`, toggle helpers, animated `requestPage(at:)` and async `requestPlay(at:requestedAt:)` support overlay and benchmark integrations.
+
+## Optional paging
+
+```swift
+struct ClipPlaylist: HMPlaylistSource {
+    func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+        let page = try await ClipsAPI.clips(after: cursor)
+        return HMPlaylistPage(items: page.clips.map {
+            HMMediaItem(id: $0.id, url: $0.hlsURL, posterURL: $0.posterURL, title: $0.headline)
+        }, nextCursor: page.nextCursor)
+    }
 }
 ```
 
-Mux is one sink. `HMAnalyticsSink` is a two-method protocol — a warehouse sink,
-a Conviva sink or an internal Kafka sink is the same shape. See
-[the Mux notes](../Integrations/Mux/README.md) for the production bridge.
+Assign `player.playlistSource`, then `await player.start()`. Pages append through the same duplicate-validation and prefetch path as `append`. `configuration.lowWaterMark` (default 3) triggers fetching when that many entries remain after current. A nil next cursor ends the source. Source replacement or `replaceAll` invalidates pending pages and resets the cursor. Tail edits invalidate pending pages while retaining the last committed cursor. Manual `loadNextPage()` can retry a paging failure. `HMStaticPlaylistSource` supports samples/tests, finite lists and looping lists with distinct IDs.
 
----
+## Optional reference resolution
 
-## 2. What it costs you
-
-| | Measured | How |
-|---|---|---|
-| Compiled ARM64 code (`__text`) | **250 KB** | `size -m HotMicPlayer.o` |
-| Total `__TEXT` segment | **409 KB** | same |
-| Linked object, stripped | **817 KB** | `strip -S -x` |
-| Third-party dependencies | **0** | `Package.swift` |
-| Non-Apple frameworks linked | **0** | AVFoundation, AVFAudio, SwiftUI, UIKit, Observation, QuartzCore, OSLog, Foundation |
-| Bundled resources / assets | **0** | no asset catalog, no nibs, no fonts |
-| SDK source | **2,419 lines** (1,765 excluding blanks and comments) | `wc -l` over `Sources` |
-| Public API surface | 17 structs, 9 classes, 9 enums, 4 protocols | `grep '^public'` |
-| Minimum iOS | **17.0** | `Package.swift` |
-
-Reproduce:
-
-```bash
-xcodebuild -scheme HotMicPlayer -configuration Release \
-           -destination 'generic/platform=iOS' -derivedDataPath /tmp/hmrel build
-size -m /tmp/hmrel/Build/Products/Release-iphoneos/HotMicPlayer.o
+```swift
+struct CatalogueResolver: HMItemResolver {
+    func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
+        let clip = try await Catalogue.lookup(namespace: ref.namespace, id: ref.id)
+        return HMResolvedItem(url: clip.url, format: .hls, title: clip.title)
+    }
+}
+let player = HMPlayer(resolver: CatalogueResolver())
+player.replaceAll([.reference("partner", id: "episode-7")])
 ```
 
-The 250 KB figure is the code segment *before* your linker dead-strips anything
-you don't call and before App Store thinning and compression. Treat it as a
-ceiling, not an estimate.
+Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window, hiding or teardown. Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Already-resolved entries activate synchronously. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The future Core adapter will use namespace `hotmic` in a separate package.
 
-**Source, not a binary.** Ships as a Swift package you can read, fork, step into
-in the debugger and patch locally without waiting on us. That is a deliberate
-reversal of how the previous HotMic player shipped.
+## Optional engagement
 
----
+Implement `@MainActor HMInteractionSource` and pass it to init. `timeline(for:)` returns an `HMStreamTimeline` without opening a session. Lifecycle hooks manage only current and next: `willBecomeNext`, `didBecomeCurrent`, `didLeave`. Promotion keeps the next session open; entries that leave both roles, disappear or tear down receive `didLeave`. Optional async `sendChat`, `react`, and `vote` default to throwing `.unsupportedAction`. The host retains its adapter and invokes these actions from its overlay. The default `HMMockInteractionSource` supplies deterministic demo timelines without network sessions.
 
-## 3. What you get for it
+## Events and analytics
 
-The pieces that are tedious to build correctly, with the line counts of what you
-would otherwise be writing yourself:
+```swift
+.task {
+    for await event in player.events {
+        // currentItemChanged, itemReady, firstFrame(ttff:readiness:),
+        // stallStarted, stallEnded, error, playlistChanged, nearingEnd
+        handle(event)
+    }
+}
+```
 
-| Component | Lines | What it does |
-|---|---|---|
-| `Core` | 970 | Recycled `AVPlayer` pool, prefetch window, feed controller, live-edge tracking, audio session |
-| `Analytics` | 437 | 17-event normalised telemetry model, sink fan-out, Mux adapter |
-| `Timeline` | 371 | Engagement timeline, density aggregation, peak clustering |
-| `Feed` | 361 | Paging feed view, data source protocol, page transitions |
-| `Model` | 209 | Media item, configuration presets, playback snapshot |
-| `Playback` | 65 | `AVPlayerLayer` host |
+Each access to `events` creates an independent ordered subscription, buffering the newest 256 events; slow consumers can lose older events. Cancelling the consuming task releases that subscription. Observation clients can read `items`, `activeIndex`, `currentItem`, `snapshot`, paging state, `loadError`, `lastEvent` and `preparedItemCount`. Subscribe before mutation when the first edit matters. TTFF is seconds in `HMPlayerEvent`; analytics `ttff_ms` remains milliseconds. Readiness (`cold`, `cachedBytes`, `warmPlayer`) is measured at activation, not retroactively after decoding.
 
-Three of those are where feed players usually go wrong.
+Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existing `HMAnalyticsSink`, `HMConsoleSink`, `HMJSONLFileSink`, and `HMMuxAnalyticsSink` contracts remain. The real Mux bridge belongs to the host; see [Mux integration](../Integrations/Mux/README.md). `finishRun()` drains transport metrics and emits runEnd for benchmark runs, after which the player is terminal.
 
-**A bounded player pool.** The number of live `AVPlayer` instances — and
-therefore decoder sessions — is exactly `configuration.poolSize` (default 4),
-**independent of feed length**. A 5-item feed and a 5,000-item feed cost the
-same. Eviction never touches an item inside the prefetch window, which is what
-makes swiping backwards instant instead of a re-buffer.
+## Transport settings and limits
 
-**A prefetch window with a startup bitrate cap.** Neighbours are warmed
-nearest-first with a small buffer target and a bitrate ceiling, so warming never
-competes for bandwidth with the item on screen. The ceiling lifts once playback
-is stable, so steady-state quality is not sacrificed for startup.
+Default S3 has two native players, a 128 MB disk cap and a fixed data window. Media prefetch waits for a safe current buffer. Resolution does not wait for that gate. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
 
-**Analytics that survive recycling.** Mux bills and reports per view, keyed to
-the monitored player. The naive integration calls `monitorAVPlayerLayer` on cell
-appear and `destroyPlayer` on disappear, which at feed scroll speed churns Mux's
-registry several times a second and reports a fresh player rather than a new
-video on the same one. `HMMuxAnalyticsSink` tracks pooled players by key and
-emits `videoChangeForPlayer` on a recycle. You can watch it happen live in the
-sample app's **Mux** tab.
-
----
-
-## 4. Measured performance, and what still needs proving
-
-Time-to-first-frame — "make this item visible" to first rendered frame — read
-off the sample app's HUD:
-
-| Source | Cold | Preloaded |
-|---|---|---|
-| Remote HLS (Mux ABR ladder) | **900–1,113 ms** | **150–370 ms** |
-| Bundled local MP4 | — | **94–270 ms** |
-
-**These are iOS 26.5 Simulator numbers on office wi-fi and are not a substitute
-for device measurement.** The Simulator does not model a real radio, thermal
-state or a shared cellular link. Quote them as the shape of the result, not the
-result.
-
-What a pilot should measure on real hardware against your catalogue:
-
-- p50 / p95 time-to-first-frame, cold and preloaded, on LTE and wi-fi
-- Rebuffer ratio and stall count per view
-- Memory high-water mark across a 200-item scroll, at each pool size
-- Scroll frame drops (the feed should hold 120 Hz on ProMotion)
-- Battery draw per 10 minutes of continuous playback
-
-The SDK already emits every one of those. `firstFrame` carries `ttff_ms`,
-`rebufferStart` / `rebufferEnd` carry stall duration, `variantChanged` carries
-indicated and observed bitrate. Instrumenting the pilot is not extra work — it
-is the same event stream the HUD reads.
-
----
-
-## 5. Three integration shapes
-
-**A. Drop-in feed.** `HMVerticalFeedView` plus your overlay closure, ~20 lines.
-This is what the sample app does.
-
-**B. Bring your own container.** Use `HMFeedController` and `HMVideoSurface`
-directly and keep your existing `UICollectionView` or paging logic. The
-controller exposes `setActiveIndex(_:reason:)`, `node(for:)` and
-`snapshot(for:)`; you own the scrolling.
-
-**C. Engine only.** Take `HMPlayerPool` and `HMPlayerNode` and leave the SwiftUI
-layer entirely. This is the path if you have a UIKit player surface you are not
-replacing.
-
-All three are the same package. There is no "SDK mode" to opt into, and B and C
-do not require forking.
+Use versioned VOD paths. Signing query parameters are stripped from cache identity only when explicitly named in `volatileSigningQueryParameters`. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, HLS byte-range/alternate-audio coverage and concurrent active players sharing the same disk directory remain outside the supported contract. Playback UI is iOS/tvOS; macOS package tests exercise platform-independent logic.

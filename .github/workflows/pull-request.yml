@@ -16,7 +16,21 @@ jobs:
   validate:
     runs-on: macos-26
     timeout-minutes: 8
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
+      - name: Require Xcode 26.6 for reproducible API exports
+        run: |
+          if [[ ! -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ]]; then
+            echo "::error::Xcode 26.6 is required but is missing at $DEVELOPER_DIR. Install it on the runner before running the API drift check."
+            exit 1
+          fi
+          version=$(xcodebuild -version)
+          if [[ "${version%%$'\n'*}" != 'Xcode 26.6' ]]; then
+            echo "::error::Expected Xcode 26.6 at $DEVELOPER_DIR; found $version. The API inventory must use the pinned toolchain."
+            exit 1
+          fi
+          printf '%s\n' "$version"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Check partner docs and API; build products and run the unit suite once
         run: bash .github/scripts/validate-release.sh

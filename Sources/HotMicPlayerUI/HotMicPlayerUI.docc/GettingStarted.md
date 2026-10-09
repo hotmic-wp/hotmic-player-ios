@@ -4,7 +4,7 @@ Present an engagement overlay using your own interaction source.
 
 ## Install and present
 
-Add the player repository in SwiftPM and link **both** HotMicPlayer and HotMicPlayerUI products to your iOS app. The UI product has no HotMicCore dependency.
+Add the player repository in Swift Package Manager and link **both** HotMicPlayer and HotMicPlayerUI products to your iOS app. The UI product has no HotMicCore dependency.
 
 ```swift
 import SwiftUI

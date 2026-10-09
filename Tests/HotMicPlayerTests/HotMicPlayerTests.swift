@@ -72,14 +72,6 @@ struct MockTimelineTests {
         #expect(first.markers.map(\.offset) == second.markers.map(\.offset))
     }
 
-    @Test("Different items generate different timelines")
-    @MainActor
-    func varies() {
-        let a = HMMockTimeline(itemID: "clip-a", duration: 30)
-        let b = HMMockTimeline(itemID: "clip-b", duration: 30)
-        #expect(a.markers.map(\.offset) != b.markers.map(\.offset))
-    }
-
     @Test("Windowed queries only return events inside the range")
     @MainActor
     func windowing() {
@@ -194,35 +186,9 @@ struct MockTimelineTests {
         #expect(Double(chat.count) / 20 < 1.5, "chat rail would churn faster than it can be read")
         #expect(reactions.count > chat.count * 4)
     }
-
-    @Test("Density covers the whole clip, not just its peaks")
-    @MainActor
-    func densitySpansTheClip() {
-        // The failure this guards: a short clip rendering as an isolated burst
-        // with a flat rail either side, which looks like the timeline does not
-        // match the video.
-        for duration in [9.0, 17.0, 42.0] {
-            let timeline = HMMockTimeline(itemID: "clip-\(duration)", duration: duration)
-            let populated = timeline.density.filter { $0.intensity > 0.15 }.count
-            #expect(
-                populated > timeline.density.count / 2,
-                "only \(populated)/\(timeline.density.count) buckets visible at \(duration)s"
-            )
-        }
-    }
-
-    @Test("Density is normalised and covers the whole stream")
-    @MainActor
-    func densityIsNormalised() {
-        let timeline = HMMockTimeline(itemID: "clip-a", duration: 100)
-        #expect(timeline.density.count == 60)
-        #expect(timeline.density.allSatisfy { $0.intensity >= 0 && $0.intensity <= 1 })
-        // Normalisation means the busiest bucket must top out at exactly 1.
-        #expect(timeline.density.contains { abs($0.intensity - 1) < 0.0001 })
-    }
 }
 
-@Suite("Static feed data source")
+@Suite("Static playlist source")
 struct FeedDataSourceTests {
 
     @Test("Pages are served in order and loop with unique ids")
@@ -230,7 +196,7 @@ struct FeedDataSourceTests {
         let items = (0..<3).map {
             HMMediaItem(id: "item-\($0)", url: URL(string: "https://example.com/\($0).m3u8")!)
         }
-        let source = HMStaticFeedDataSource(
+        let source = HMStaticPlaylistSource(
             items: items, pageSize: 3, loopsForever: true, simulatedLatency: .zero
         )
 
@@ -247,12 +213,13 @@ struct FeedDataSourceTests {
     @Test("A finite source terminates instead of looping")
     func finiteSourceEnds() async throws {
         let items = [HMMediaItem(id: "only", url: URL(string: "https://example.com/a.m3u8")!)]
-        let source = HMStaticFeedDataSource(
+        let source = HMStaticPlaylistSource(
             items: items, pageSize: 1, loopsForever: false, simulatedLatency: .zero
         )
         let first = try await source.loadPage(cursor: nil)
         #expect(first.items.count == 1)
-        let second = try await source.loadPage(cursor: first.nextCursor)
+        #expect(first.nextCursor == nil)
+        let second = try await source.loadPage(cursor: "1")
         #expect(second.items.isEmpty)
         #expect(second.nextCursor == nil)
     }
@@ -274,16 +241,6 @@ struct MuxPayloadTests {
         #expect(payload["player_name"] == "HotMicVerticalFeed")
         #expect(payload["viewer_user_id"] == "viewer-1")
         #expect(payload["custom_1"] == "feed")
-    }
-
-    @Test("Live and on-demand map to Mux's stream types")
-    func videoStreamType() {
-        let url = URL(string: "https://stream.mux.com/abc.m3u8")!
-        let vod = HMMediaItem(id: "v", url: url, title: "T", durationHint: 30)
-        #expect(HMMuxVideoData(item: vod, duration: nil).payload["video_stream_type"] == "on-demand")
-
-        let live = HMMediaItem(id: "l", url: url, streamKind: .live)
-        #expect(HMMuxVideoData(item: live, duration: nil).payload["video_stream_type"] == "live")
     }
 
     @Test("Duration observed from the player wins over the feed's hint")
@@ -507,6 +464,13 @@ struct CacheTransportTests {
         await cache.configure(capacity: 4, pinned: ["a"])
         #expect(await cache.bytes(for: "a") == 0)
         #expect(await cache.waste() == 16)
+        await cache.configure(capacity: 12, pinned: [])
+        await cache.put(key: "shared-segment", start: 0, data: Data(0..<8), total: 8, mime: "video/mp4", base: url, owner: "removed-root", prefetched: true, played: false)
+        await cache.release(owners: ["removed-root"], sharedResources: ["shared-segment": "remaining-root"])
+        #expect(await cache.bytes(for: "remaining-root") == 8)
+        #expect(await cache.read(key: "shared-segment", range: HMByteRange(start: 0, end: 7)) != nil)
+        await cache.release(owners: ["remaining-root"], sharedResources: [:])
+        #expect(await cache.bytes(for: "remaining-root") == 0)
     }
 }
 

@@ -60,7 +60,6 @@ struct HMPageCommitProbe: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var interaction: (Bool) -> Void
-        private var gestureStartedAt: TimeInterval?
         var commit: (String, TimeInterval) -> Void
         var reference: HMScrollViewReference?
         var offsetObservation: NSKeyValueObservation?
@@ -94,9 +93,8 @@ struct HMPageCommitProbe: UIViewRepresentable {
             guard let scroll, scroll.window != nil, !scroll.isDragging, !scroll.isDecelerating else { return }
             let quiet = ProcessInfo.processInfo.systemUptime - lastMotionAt
             guard quiet >= 0.2 else { scheduleFallback(after: 0.2 - quiet); return }
-            // Use the final movement's event clock, including fallback delay in
-            // TTFF. A normal native settle commits earlier and cancels this.
-            settled(scroll, time: lastMotionAt)
+            // TTFF begins when the page is committed, including for the quiet fallback.
+            settled(scroll, time: ProcessInfo.processInfo.systemUptime)
         }
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             motionChanged()
@@ -151,7 +149,6 @@ struct HMPageCommitProbe: UIViewRepresentable {
             self.commit = commit; self.reference = reference; self.interaction = interaction
         }
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-            gestureStartedAt = ProcessInfo.processInfo.systemUptime
             interaction(true)
             original?.scrollViewWillBeginDragging?(scrollView)
         }
@@ -173,10 +170,10 @@ struct HMPageCommitProbe: UIViewRepresentable {
         private func settled(_ scroll: UIScrollView, time: TimeInterval) {
             fallback?.cancel(); fallback = nil
             guard !suppressCommit, !needsReconcile, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
-            defer { gestureStartedAt = nil; interaction(false) }
+            defer { interaction(false) }
             let index = max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded()))
             guard itemIDs.indices.contains(index) else { return }
-            commit(itemIDs[index], gestureStartedAt ?? time)
+            commit(itemIDs[index], time)
         }
     }
 }

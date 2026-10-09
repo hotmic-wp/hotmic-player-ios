@@ -23,7 +23,6 @@ struct FeedOverlayView: View {
 
     @Environment(\.hmFeedSafeArea) private var safeArea
 
-    var onScrubStateChange: (Bool) -> Void = { _ in }
     @State private var isScrubbing = false
     @State private var showPlayGlyph = false
     @State private var echo: ReactionStreamView.Echo?
@@ -200,7 +199,7 @@ struct FeedOverlayView: View {
                 duration: duration,
                 isLive: isLive,
                 onScrub: onSeek,
-                onScrubStateChange: { isScrubbing = $0; onScrubStateChange($0) }
+                onScrubStateChange: { isScrubbing = $0 }
             )
         }
     }

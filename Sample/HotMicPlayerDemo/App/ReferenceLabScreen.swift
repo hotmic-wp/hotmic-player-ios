@@ -6,11 +6,11 @@ struct ReferenceLabScreen: View {
     @State private var player: HMPlayer
     @State private var serial = 0
     @State private var sink: HMJSONLFileSink?
-    private let resolver: ReferenceLabResolver
+    @State private var resolver: ReferenceLabResolver
 
     init() {
         let resolver = ReferenceLabResolver()
-        self.resolver = resolver
+        _resolver = State(initialValue: resolver)
         var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, startsMuted: true, managesAudioSession: false)
         c.resolveAhead = 0
         _player = State(initialValue: HMPlayer(configuration: c, resolver: resolver))
@@ -28,10 +28,35 @@ struct ReferenceLabScreen: View {
             }
             VStack(spacing: 8) {
                 HStack {
+                    Button("Page HLS") { run("Page", format: "hls") }
+                    Button("Page MP4") { run("Page", format: "mp4") }
+                    Button("Delayed page") { delayedPage(empty: false) }
+                    Button("Empty page") { delayedPage(empty: true) }
+                }
+                HStack {
+                    Button("Offline refs") {
+                        Task {
+                            await resolver.setOffline(true)
+                            serial += 1
+                            player.playlistSource = nil
+                            ReferenceLabEvidence.write(["phase": "action", "operation": "Offline refs"])
+                            player.replaceAll((0..<3).map { .reference("hotmic", id: "network-hls-\(serial)-\($0)") })
+                        }
+                    }
+                    Button("Go online") {
+                        Task { await resolver.setOffline(false); ReferenceLabEvidence.write(["phase": "action", "operation": "Go online"]) }
+                    }
+                    Button("Network media") {
+                        serial += 1; player.playlistSource = nil
+                        ReferenceLabEvidence.write(["phase": "action", "operation": "Network media"])
+                        player.replaceAll([HMMediaItem(id: "network-media-\(serial)", url: URL(string: "http://127.0.0.1:18089/coach-mic.mp4")!), seed("after-network-\(serial)")])
+                    }
+                }
+                HStack {
                     Button(player.configuration.failedItemPolicy == .skip ? "Policy: skip" : "Policy: stay") {
                         player.configuration.failedItemPolicy = player.configuration.failedItemPolicy == .skip ? .stay : .skip
                     }
-                    Button(player.isInteracting ? "Release scrub" : "Hold scrub") { player.isInteracting.toggle() }
+                    Button(player.isInteracting ? "Release scrub" : "Hold scrub") { if player.isInteracting { player.endInteraction() } else { player.beginInteraction() } }
                     Button("Fail end") {
                         serial += 1
                         ReferenceLabEvidence.write(["phase": "action", "operation": "Fail end"])
@@ -71,7 +96,9 @@ struct ReferenceLabScreen: View {
                 let s = player.snapshot
                 ReferenceLabEvidence.write(["phase": "sample", "current": player.currentItem?.id ?? "", "state": s.state.rawValue,
                     "time": s.currentTime, "frame": s.isFrameReady, "ttff": s.timeToFirstFrame ?? -1,
-                    "tier": s.readinessTier.rawValue, "node_active": player.preparedItemCount])
+                    "tier": s.readinessTier.rawValue, "node_active": player.preparedItemCount,
+                    "interacting": player.isInteracting, "current_index": player.currentIndex ?? -1,
+                    "loading_page": player.isLoadingPage, "has_more": player.hasMoreContent])
                 try? await sink?.flush()
             }
         }
@@ -82,6 +109,7 @@ struct ReferenceLabScreen: View {
     }
     private func run(_ operation: String, format: String) {
         serial += 1
+        player.playlistSource = nil
         let id = "\(operation.lowercased())-\(format)-\(serial)"
         let ref = HMMediaItem.reference("hotmic", id: id)
         ReferenceLabEvidence.write(["phase": "action", "operation": operation, "id": ref.id])
@@ -89,11 +117,27 @@ struct ReferenceLabScreen: View {
         case "Initial": player.replaceAll([seed("before-\(serial)"), ref], startAt: 1)
         case "Jump": player.replaceAll([seed("seed-\(serial)"), ref]); player.jump(toID: ref.id)
         case "Swipe": player.replaceAll([seed("seed-\(serial)"), ref])
+        case "Page":
+            player.replaceAll([seed("seed-\(serial)"), ref])
+            Task {
+                // Match autopilot: request a page after the seed has settled.
+                try? await Task.sleep(for: .milliseconds(700))
+                guard player.items.contains(ref) else { return }
+                ReferenceLabEvidence.write(["phase": "page-request", "id": ref.id])
+                player.requestPage(at: 1)
+            }
         default: player.replaceAll([seed("seed-\(serial)")]); player.insertNext([ref]); player.next()
         }
     }
+    private func delayedPage(empty: Bool) {
+        serial += 1; player.playlistSource = nil
+        ReferenceLabEvidence.write(["phase": "action", "operation": empty ? "Empty page" : "Delayed page"])
+        player.replaceAll([seed("previous-page-\(serial)"), .reference("hotmic", id: "fail-page-\(serial)")], startAt: 1)
+        player.playlistSource = ReferenceLabPage(items: empty ? [] : [seed("new-page-\(serial)")])
+        Task { await player.loadNextPage() }
+    }
     private func failures(all: Bool, media: Bool) {
-        serial += 1
+        serial += 1; player.playlistSource = nil
         let refs = (0..<3).map { HMMediaItem.reference("hotmic", id: "fail-\(serial)-\($0)") }
         let list = all ? refs : [seed("good-before-\(serial)"), media ? HMMediaItem(id: "bad-media-\(serial)", url: URL(string: "http://127.0.0.1:18088/missing.mp4")!) : refs[1], seed("good-after-\(serial)")]
         ReferenceLabEvidence.write(["phase": "action", "operation": all ? "All fail" : media ? "Bad media" : "Fail middle"])
@@ -102,14 +146,33 @@ struct ReferenceLabScreen: View {
 }
 
 private actor ReferenceLabResolver: HMItemResolver {
+    private var offline = false
+    private var attempts = 0
+    func setOffline(_ value: Bool) { offline = value }
     func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
         ReferenceLabEvidence.write(["phase": "resolve-start", "id": ref.id])
         try await Task.sleep(for: .milliseconds(300))
+        if ref.id.hasPrefix("network"), offline {
+            let codes: [URLError.Code] = [.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed]
+            let code = codes[attempts % codes.count]; attempts += 1
+            ReferenceLabEvidence.write(["phase": "network-error", "id": ref.id, "code": code.rawValue])
+            throw URLError(code)
+        }
         if ref.id.hasPrefix("fail") { throw HMPlayerError.resolution("Fixture failure") }
         let hls = ref.id.contains("hls")
         let url = hls ? URL(string: "http://127.0.0.1:18088/lab-hls/index.m3u8")! : Bundle.main.url(forResource: "coach-mic", withExtension: "mp4")!
         ReferenceLabEvidence.write(["phase": "resolve-end", "id": ref.id])
         return HMResolvedItem(url: url)
+    }
+}
+private actor ReferenceLabPage: HMPlaylistSource {
+    let items: [HMMediaItem]
+    init(items: [HMMediaItem]) { self.items = items }
+    func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+        ReferenceLabEvidence.write(["phase": "page-start"])
+        try await Task.sleep(for: .seconds(6))
+        ReferenceLabEvidence.write(["phase": "page-end", "count": items.count])
+        return HMPlaylistPage(items: items, nextCursor: nil)
     }
 }
 private enum ReferenceLabEvidence {

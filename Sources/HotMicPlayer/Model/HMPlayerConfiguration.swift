@@ -63,7 +63,7 @@ public struct HMPrefetchPolicy: Sendable, Equatable {
 }
 
 /// Behavior after URL resolution exhausts retries or native media playback fails.
-public enum HMFailedItemPolicy: String, Sendable, Codable {
+public enum HMFailedItemPolicy: String, Sendable {
     /// Advance to the next nonfailed entry, then search backwards; idle if none remain.
     case skip
     /// Keep the failed entry current until the app or viewer navigates or retries.
@@ -180,7 +180,7 @@ public struct HMPlayerConfiguration: Sendable {
 
     /// Complete experimental configuration serialization, excluded from partner imports.
     struct BenchmarkRecord: Codable, Sendable {
-        private let failedItemPolicy: HMFailedItemPolicy?
+        private let failedItemPolicy: FailedItemPolicyRecord?
         private let adaptive: Bool
         private let adaptiveThresholds: HMAdaptivePrefetchThresholds
         private let maxPrefetchConcurrency: Int
@@ -202,7 +202,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let managesAudioSession: Bool
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
-            failedItemPolicy = c.failedItemPolicy
+            failedItemPolicy = c.failedItemPolicy == .skip ? .skip : .stay
             adaptive = c.adaptive; adaptiveThresholds = c.adaptiveThresholds
             maxPrefetchConcurrency = c.maxPrefetchConcurrency; resolveAhead = c.resolveAhead; minimumCachedStartBytes = c.minimumCachedStartBytes
             lowWaterMark = c.lowWaterMark; playlistTTL = c.playlistTTL
@@ -221,12 +221,13 @@ public struct HMPlayerConfiguration: Sendable {
                 startupBitRateWindow: startupBitRateWindow, loops: loops, startsMuted: startsMuted,
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
-            c.failedItemPolicy = failedItemPolicy ?? .skip
+            c.failedItemPolicy = failedItemPolicy == .stay ? .stay : .skip
             c.adaptive = adaptive; c.adaptiveThresholds = adaptiveThresholds
             c.maxPrefetchConcurrency = maxPrefetchConcurrency; c.resolveAhead = resolveAhead; c.minimumCachedStartBytes = minimumCachedStartBytes
             c.volatileSigningQueryParameters = volatileSigningQueryParameters
             return c
         }
+        private enum FailedItemPolicyRecord: String, Codable { case skip, stay }
         private struct PolicyRecord: Codable, Sendable {
             let ahead: Int, behind: Int
             let warmBufferDuration: TimeInterval

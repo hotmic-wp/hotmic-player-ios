@@ -314,6 +314,8 @@ enum HMPlaybackState
 
 ```swift
 @MainActor final class HMPlayer
+@MainActor func beginInteraction()
+@MainActor func endInteraction()
 @MainActor func jump(toID id: String)
 @MainActor func loadNextPage() async
 @MainActor func next()
@@ -332,11 +334,12 @@ enum HMPlaybackState
 @MainActor let analytics: HMAnalyticsHub
 @MainActor var activeIndex: Int { get }
 @MainActor var configuration: HMPlayerConfiguration { get set }
+@MainActor var currentIndex: Int? { get }
 @MainActor var currentItem: HMMediaItem? { get }
 @MainActor var events: AsyncStream<HMPlayerEvent> { get }
 @MainActor var hasMoreContent: Bool { get set }
 @MainActor var isFeedVisible: Bool { get set }
-@MainActor var isInteracting: Bool { get set }
+@MainActor var isInteracting: Bool { get }
 @MainActor var isLoadingPage: Bool { get set }
 @MainActor var isMuted: Bool { get set }
 @MainActor var items: [HMMediaItem] { get }

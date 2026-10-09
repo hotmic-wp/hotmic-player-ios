@@ -36,31 +36,39 @@ struct Player031Tests {
     }
     @Test("Resolution invalidates the initially node-less cell and activates once with the action clock", arguments: [HMMediaItem.Format.hls, .mp4])
     func activationAfterResolution(format: HMMediaItem.Format) async throws {
-        let resolver = GatedResolver(), sink = Sink(), hub = HMAnalyticsHub(); hub.add(sink)
-        var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false, failedItemPolicy: .stay)
-        c.resolveAhead = 0
-        let player = HMPlayer(configuration: c, resolver: resolver, analytics: hub)
-        defer { player.teardown() }
-        let entry = HMMediaItem.reference("hotmic", id: "delayed")
-        let actionAt = ProcessInfo.processInfo.systemUptime
-        player.replaceAll([entry])
-        try await wait { await resolver.calls == 1 }
-        #expect(player.snapshot.state == .loading); #expect(player.snapshot.readinessTier == .resolving)
-        #expect(player.node(for: entry) == nil)
-        let flag = ChangeFlag()
-        withObservationTracking { _ = player.node(for: entry) } onChange: { flag.mark() }
-        // A duplicate settle while resolving must not restart TTFF or the retry budget.
-        player.commitPage(toID: entry.id, requestedAt: actionAt + 50)
-        await resolver.complete(format: format)
-        try await wait { player.node(for: entry)?.isActive == true }
-        #expect(flag.changed)
-        #expect(player.currentItem == entry)
-        #expect(player.node(for: entry)?.item?.format == format)
-        #expect(sink.starts.count == 1)
-        let request = try #require(sink.starts.first?.metrics["request_monotonic_s"])
-        #expect(abs(request - actionAt) < 0.1)
-        #expect(player.snapshot.readinessTier == .resolved)
-        #expect(await resolver.calls == 1)
+        for mode in ["selection", "swipe", "programmatic"] {
+            let resolver = GatedResolver(), sink = Sink(), hub = HMAnalyticsHub(); hub.add(sink)
+            var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false, failedItemPolicy: .stay)
+            c.resolveAhead = 0
+            let player = HMPlayer(configuration: c, resolver: resolver, analytics: hub)
+            defer { player.teardown() }
+            let entry = HMMediaItem.reference("hotmic", id: "delayed")
+            var clock = ProcessInfo.processInfo.systemUptime
+            if mode == "selection" {
+                player.replaceAll([entry])
+            } else {
+                player.isFeedVisible = false
+                player.replaceAll([HMMediaItem(id: "seed", url: URL(fileURLWithPath: "/tmp/hotmic-031-seed.mp4")), entry])
+                if mode == "programmatic" { player.requestPage(at: 1) }
+                try await Task.sleep(for: .milliseconds(150))
+                clock = ProcessInfo.processInfo.systemUptime
+                player.commitPage(toID: entry.id, requestedAt: clock)
+                player.isFeedVisible = true
+            }
+            try await wait { await resolver.calls == 1 }
+            #expect(player.snapshot.state == .loading); #expect(player.snapshot.readinessTier == .resolving)
+            #expect(player.node(for: entry) == nil)
+            let flag = ChangeFlag()
+            withObservationTracking { _ = player.node(for: entry) } onChange: { flag.mark() }
+            player.commitPage(toID: entry.id, requestedAt: clock + 50)
+            await resolver.complete(format: format)
+            try await wait { player.node(for: entry)?.isActive == true }
+            #expect(flag.changed); #expect(player.currentItem == entry)
+            #expect(player.node(for: entry)?.item?.format == format); #expect(sink.starts.count == 1)
+            let request = try #require(sink.starts.first?.metrics["request_monotonic_s"])
+            #expect(abs(request - clock) < 0.1)
+            #expect(player.snapshot.readinessTier == .resolved); #expect(await resolver.calls == 1)
+        }
     }
 
     actor FailingResolver: HMItemResolver {
@@ -84,12 +92,12 @@ struct Player031Tests {
         let events = player.events
         let consumer = Task { for await event in events { if case .error = event { errors += 1 } } }
         defer { player.teardown(); consumer.cancel() }
-        player.attachFeed(); player.isInteracting = true; player.setPageMoving(true)
+        player.attachFeed(); player.beginInteraction(); player.setPageMoving(true)
         player.replaceAll([a, bad, b], startAt: 1)
         try await wait(until: { await resolver.calls == 3 && player.snapshot.state == .failed && errors == 3 }, seconds: 5)
         #expect(errors == 3); #expect(player.currentItem == bad); #expect(player.requestedPageID == nil)
         player.isFeedVisible = false // No real media IO is needed for the page-commit assertions.
-        player.isInteracting = false
+        player.endInteraction()
         try await Task.sleep(for: .milliseconds(30))
         #expect(player.currentItem == bad); #expect(player.requestedPageID == nil)
         player.setPageMoving(false)
@@ -106,6 +114,7 @@ struct Player031Tests {
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
         try await wait { player.currentItem == nil }
         #expect(player.snapshot.state == .idle); #expect(player.items == [a, bad, b])
+        #expect(player.currentIndex == nil); #expect(player.activeIndex == 0)
         #expect(await resolver.calls == 3)
         // Headless traversal also terminates, with no failed entry retried by an automatic skip.
         player.detachFeed(); player.replaceAll([a, b])
@@ -113,6 +122,11 @@ struct Player031Tests {
         try await wait { player.currentItem == b }
         player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: b.id), b)
         try await wait { player.currentItem == nil }
+        // A restored NWPath clears remembered terminal entries, including idle traversal.
+        player.connectivityChanged(satisfied: false); player.connectivityChanged(satisfied: true)
+        #expect(player.currentItem == b); #expect(player.currentIndex == 1)
+        player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: b.id), b)
+        try await wait { player.currentItem == a }
         player.configuration.failedItemPolicy = .stay
         player.replaceAll([a, b])
         let priorErrors = errors
@@ -121,6 +135,94 @@ struct Player031Tests {
         #expect(player.currentItem == a); #expect(player.requestedPageID == nil)
         player.configuration.failedItemPolicy = .skip
         try await wait { player.currentItem == b }
+
+        // Every requested connectivity code, including nested AV errors, stays current.
+        let codes: [URLError.Code] = [.notConnectedToInternet, .networkConnectionLost, .timedOut,
+            .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .internationalRoamingOff, .dataNotAllowed]
+        player.replaceAll([a, b])
+        for code in codes {
+            let error = URLError(code) as NSError
+            #expect(HMNetworkFailure.isTransient(error))
+            #expect(HMNetworkFailure.isTransient(NSError(domain: "AVFoundationErrorDomain", code: -11800,
+                userInfo: [NSUnderlyingErrorKey: error])))
+            player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id,
+                properties: ["error_domain": NSURLErrorDomain, "error_code": String(code.rawValue)]), a)
+            try await Task.sleep(for: .milliseconds(10))
+            #expect(player.currentItem == a); #expect(player.requestedPageID == nil)
+        }
+        #expect(!HMNetworkFailure.isTransient(URLError(.badServerResponse)))
+        var backoff = HMNetworkRetry()
+        for delay in [1.0, 2, 4, 8, 16, 30, 30] {
+            backoff.failed(at: 100)
+            #expect(backoff.nextAttempt == 100 + delay)
+        }
+
+        // Repeated resolver connectivity failures do not consume the terminal budget.
+        let net = NetworkResolver()
+        let recovering = HMPlayer(configuration: c, resolver: net)
+        defer { recovering.teardown() }
+        let offline = HMMediaItem.reference("hotmic", id: "offline")
+        recovering.replaceAll([offline, bad])
+        try await wait(until: { await net.calls >= 4 }, seconds: 9)
+        #expect(recovering.currentItem == offline); #expect(recovering.snapshot.state == .loading)
+        recovering.configuration.failedItemPolicy = .stay
+        await net.goOnline()
+        recovering.connectivityChanged(satisfied: false); recovering.connectivityChanged(satisfied: true)
+        try await wait { recovering.node(for: offline)?.isActive == true }
+        #expect(recovering.currentItem == offline)
+
+        // A pending final page must win over a previous-item fallback (including an empty page).
+        for empty in [false, true] {
+            player.playlistSource = nil
+            player.replaceAll([a, b], startAt: 1)
+            let appended = HMMediaItem(id: "page", url: a.url!)
+            let source = GatedPage(items: empty ? [] : [appended])
+            player.playlistSource = source
+            let loading = Task { await player.loadNextPage() }
+            try await wait { await source.started }
+            player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: b.id), b)
+            try await Task.sleep(for: .milliseconds(30))
+            #expect(player.currentItem == b); #expect(player.isLoadingPage); #expect(player.hasMoreContent)
+            await source.complete(); await loading.value
+            try await wait { player.currentItem == (empty ? a : appended) }
+        }
+        player.playlistSource = nil
+        player.attachFeed(); player.replaceAll([a, b])
+        player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
+        try await wait { player.requestedPageID == b.id }
+        let oldRequest = player.pageRequestID
+        player.append([HMMediaItem(id: "tail", url: a.url!)])
+        try await wait { player.requestedPageID == b.id && player.pageRequestID != oldRequest }
+        // A partner interaction beginning after a request defers commit and expires by itself.
+        player.beginInteraction(timeout: .milliseconds(100))
+        #expect(player.isInteracting); #expect(player.requestedPageIndex == nil)
+        player.commitPage(toID: b.id, requestedAt: ProcessInfo.processInfo.systemUptime)
+        #expect(player.currentItem == a)
+        try await wait { !player.isInteracting && player.currentItem == b }
+        player.detachFeed()
+    }
+
+    actor NetworkResolver: HMItemResolver {
+        var calls = 0
+        var offline = true
+        func goOnline() { offline = false }
+        func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
+            calls += 1
+            if offline { throw URLError(.notConnectedToInternet) }
+            return HMResolvedItem(url: URL(fileURLWithPath: "/tmp/hotmic-031-recovered.mp4"))
+        }
+    }
+    actor GatedPage: HMPlaylistSource {
+        let items: [HMMediaItem]
+        var started = false
+        var gate: CheckedContinuation<Void, Never>?
+        init(items: [HMMediaItem]) { self.items = items }
+        func loadPage(cursor: String?) async throws -> HMPlaylistPage {
+            started = true
+            await withCheckedContinuation { gate = $0 }
+            return HMPlaylistPage(items: items, nextCursor: nil)
+        }
+        func complete() { gate?.resume(); gate = nil }
     }
 }
 #endif

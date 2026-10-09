@@ -32,13 +32,24 @@ URL items play directly. Opaque `.reference(namespace: "partner", id: "clip")` i
 
 Edits are atomic on the main actor, return a success Boolean and emit clear errors for duplicates or invalid inputs. Swipes commit by item ID. An edit cancels the move only when current or destination changes position; appends preserve it. Empty append/insert and unknown removals are silent no-ops. Completed resolutions are session-cached; pending resolutions and speculative downloads leave with their window. Removed entries release their cache ownership while shared known resources remain reusable.
 
-A current reference starts automatically when resolution completes, including its video surface. Its readiness is `resolving` until the URL/format arrives; TTFF includes resolution time from the original user action.
+A current reference starts automatically when resolution completes, including its video surface. Its readiness is `resolving` until the URL/format arrives; TTFF includes resolution time from the selection tap or page commit (settle). Swipe and programmatic-page timing begins at commit; duplicate commits cannot reset it.
 
-Terminal item failures emit an error and follow `HMPlayerConfiguration.failedItemPolicy`: `.skip` (default) tries the next nonfailed entry, then previous, then idle; `.stay` keeps the failed entry selected. Skips wait for a settled page and for custom dragging/scrubbing (`player.isInteracting`) to end. Failed entries remain in the playlist and are excluded from automatic traversal, so an all-failing list stops.
+Terminal item failures emit an error and follow `HMPlayerConfiguration.failedItemPolicy`: `.skip` (default) tries the next nonfailed entry, then previous, then idle; `.stay` keeps the failed entry selected. Skips wait for a settled page and for dragging/scrubbing (`player.isInteracting`, read-only) to end. Failed entries remain in the playlist and are excluded from automatic traversal, so an all-failing list stops.
 
 Use `play()`, `pause()`, `seek(to:)`, `next()`, `previous()`, `jump(toID:)` and `isMuted`. SwiftUI observes player state and immutable playback snapshots. Each `events` access creates an independent `AsyncStream<HMPlayerEvent>` subscription. Analytics hub/sinks remain available, including console and the optional host-provided Mux bridge.
 
 The default engine uses two native players and a bounded disk media cache. Partner presets are `default`, `instantStart` and `highQuality`. Experimental strategies, JSONL and benchmark controls require `@_spi(Benchmark) import HotMicPlayer`. Engine nodes, pools, video surfaces and loopback transport are internal.
+
+## Changelog
+
+### 0.3.1
+
+- Fixed delayed reference activation/rendering for HLS and MP4. Swipe and programmatic-page TTFF start at page commit, preserving comparison with 0.3.0.
+- Added `HMReadinessTier.resolving`. **Source compatibility:** exhaustive switches over readiness must handle this new case.
+- Added public `failedItemPolicy`: `.skip` by default or `.stay`. Terminal failures skip only after interaction ends; paging gets a chance to supply the next item before previous-item fallback.
+- Added read-only `isInteracting`, driven by feed touches and page motion. Host controls outside the feed can use `beginInteraction()` / `endInteraction()`; an unmatched begin expires after 30 seconds.
+- Connectivity/timeout errors stay selected and retry with bounded backoff. An owned `NWPathMonitor` clears remembered terminal failures when connectivity returns.
+- Added `currentIndex: Int?`, nil when idle. `activeIndex` keeps its compatibility value of zero while idle and must not be used alone to infer a current item.
 
 ## Sample and Playlist lab
 
@@ -61,7 +72,8 @@ For the delayed-reference repro, launch the Sample with `--hm-reference-lab 1` a
 
 ## Documentation and validation
 
-- [0.3.1 validation](docs/PLAYER_0.3.1_VALIDATION.md): before/after simulator flows and final build/test results.
+- [0.3.1 review-fix validation](docs/PLAYER_0.3.1_REVIEW_FIXES.md): current simulator evidence, commit-based TTFF and final build/test results.
+- [0.3.1 initial validation](docs/PLAYER_0.3.1_VALIDATION.md): historical before/after activation repro for the first review.
 - [Integration](docs/INTEGRATION.md): minimal adoption, paging, references, engagement and events.
 - [Architecture](docs/ARCHITECTURE.md): playback, prefetch, cache ownership and overlay-by-clock model.
 - [Public API inventory](docs/PUBLIC_API.md): every exported type and function.

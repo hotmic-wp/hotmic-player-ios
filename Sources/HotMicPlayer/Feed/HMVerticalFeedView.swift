@@ -15,6 +15,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     private let gravity: AVLayerVideoGravity
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
 
+    @GestureState private var isTouching = false
     @State private var scrollReference = HMScrollViewReference()
     @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
@@ -76,9 +77,11 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         if let scroll = scrollReference.scroll {
                             guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
                         }
-                        controller.commitPage(toID: id, requestedAt: scrollReference.lastMotionAt > 0 ? scrollReference.lastMotionAt : now)
+                        controller.commitPage(toID: id, requestedAt: now)
                     }
                 }
+                .simultaneousGesture(DragGesture(minimumDistance: 0).updating($isTouching) { _, touching, _ in touching = true })
+                .onChange(of: isTouching) { _, touching in controller.setFeedTouching(touching) }
                 .onAppear { controller.attachFeed() }
                 .onDisappear { fallbackCommit?.cancel(); controller.detachFeed() }
                 .onChange(of: controller.currentItem?.id) { _, id in

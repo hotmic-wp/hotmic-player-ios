@@ -566,7 +566,7 @@ final class HMPlayerNode: Identifiable {
     }
 
     private func handleFailure(_ error: NSError?) {
-        guard let item else { return }
+        guard let item, snapshot.state != .failed else { return }
         if let mediaURL = item.url, let asset = player.currentItem?.asset as? AVURLAsset, asset.url.host == "127.0.0.1", asset.url != item.url {
             // A dead listener or host ATS policy must not strand playback. The
             // direct retry keeps this activation and its original request clock.
@@ -589,6 +589,7 @@ final class HMPlayerNode: Identifiable {
         snapshot.state = .failed
         snapshot.errorDescription = error?.localizedDescription ?? "Playback failed"
         emit(.error, item: item, properties: [
+            "transient_network": String(HMNetworkFailure.isTransient(error)),
             "error_code": String(error?.code ?? -1),
             "error_domain": error?.domain ?? "unknown",
             "error_log": player.currentItem?.errorLog()?.events.last?.errorComment ?? "",

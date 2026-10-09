@@ -39,8 +39,7 @@ struct FeedScreen: View {
                     isMuted: controller.isMuted,
                     onTogglePlayPause: { controller.togglePlayPause() },
                     onToggleMute: { controller.toggleMute() },
-                    onSeek: { controller.seek(toProgress: $0) },
-                    onScrubStateChange: { controller.isInteracting = $0 }
+                    onSeek: { controller.seek(toProgress: $0) }
                 )
             }
 

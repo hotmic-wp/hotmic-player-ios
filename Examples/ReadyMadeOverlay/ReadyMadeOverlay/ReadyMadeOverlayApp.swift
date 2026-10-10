@@ -6,7 +6,7 @@ import HotMicPlayerUI
     var body: some Scene { WindowGroup { ReadyMadeScreen() } }
 }
 
-@MainActor private final class ReadyMadeOwner {
+@MainActor private final class ReadyMadeOwner: ObservableObject {
     let player = HMPlayer()
     private var models: [String: HMSocialModel] = [:]
     init() {
@@ -38,7 +38,7 @@ import HotMicPlayerUI
 }
 
 @MainActor struct ReadyMadeScreen: View {
-    @State private var owner = ReadyMadeOwner()
+    @StateObject private var owner = ReadyMadeOwner()
     @State private var shareItem: HMMediaItem?
     @State private var notice = ""
     private let options: HMSocialOptions = { var value = HMSocialOptions(); value.showsMute = true; return value }()

@@ -106,45 +106,86 @@ import HotMicPlayer
         var reads = 0
     }
 
-    func testReplayClockPublishesOnlyChangedRowsWithoutCommentPaging() async {
+    final class ReplayTimeline: HMStreamTimeline {
+        var queries = 0
+        let duration: TimeInterval = 12
+        var density: [HMDensityBucket] { [] }
+        var markers: [HMTimelineMarker] { [] }
+        func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] {
+            queries += 1
+            return [.init(id: "at-two", offset: 2, kind: .chat, author: "Fan", text: "Great play")]
+                .filter { range.contains($0.offset) }
+        }
+    }
+
+    func testReplayOwnersCursorAndSocketStopWithoutClockTiming() {
         let clock = Clock()
         let item = HMMediaItem(id: "replay", url: URL(string: "https://example.com/replay.mp4")!)
-        let timeline = EngagementTests.FixtureTimeline(duration: 12, events: [
-            .init(id: "at-two", offset: 2, kind: .chat, author: "Fan", text: "Great play")
-        ])
+        let timeline = ReplayTimeline()
         let engagement = HMEngagement(item: item, timeline: timeline, source: nil, mediaClock: { clock.reads += 1; return clock.time })
         let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: .init(title: "Replay"))
         XCTAssertEqual(clock.reads, 0)
         _ = adapter.content
         XCTAssertEqual(clock.reads, 0) // Lazy mapping never observes the player clock.
-        adapter.setReplayActive(true)
-        let changed = expectation(description: "rows change at timestamp")
+        let feed = UUID(), fullscreen = UUID()
+        adapter.setReplayActive(true, for: feed)
         withObservationTracking { _ = adapter.content } onChange: {
-            MainActor.assumeIsolated { clock.invalidations += 1; changed.fulfill() }
+            MainActor.assumeIsolated { clock.invalidations += 1 }
         }
+        let initialQueries = timeline.queries
         clock.time = 0.2
-        await settleAdapter()
+        adapter.refreshReplay()
         clock.time = 1.8
-        await settleAdapter()
+        adapter.refreshReplay()
         XCTAssertTrue(adapter.content.comments.isEmpty)
         XCTAssertEqual(clock.invalidations, 0)
-        // A clock-only publication would fulfill before the row boundary.
+        XCTAssertEqual(timeline.queries, initialQueries) // No full-timeline queries between boundaries.
+        // The fullscreen instance may disappear after the visible feed reactivates.
+        adapter.setReplayActive(true, for: fullscreen)
+        adapter.setReplayActive(true, for: feed) // The same owner's activation is idempotent.
+        adapter.setReplayActive(false, for: fullscreen)
+        adapter.setReplayActive(false, for: fullscreen) // Unknown/retired tokens cannot deactivate the feed.
         clock.time = 2.1
-        await fulfillment(of: [changed], timeout: 2)
+        XCTAssertTrue(adapter.refreshReplay())
+        XCTAssertEqual(clock.invalidations, 1)
         XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two"])
-        let unchanged = expectation(description: "steady replay rows do not invalidate chrome")
-        unchanged.isInverted = true
-        withObservationTracking { _ = adapter.content } onChange: { unchanged.fulfill() }
+        withObservationTracking { _ = adapter.content } onChange: {
+            MainActor.assumeIsolated { clock.invalidations += 1 }
+        }
+        let boundaryQueries = timeline.queries
         clock.time = 2.3
-        await settleAdapter()
+        adapter.refreshReplay()
         clock.time = 3
-        await fulfillment(of: [unchanged], timeout: 0.15)
-        adapter.setReplayActive(false)
+        adapter.refreshReplay()
+        XCTAssertEqual(clock.invalidations, 1)
+        XCTAssertEqual(timeline.queries, boundaryQueries)
+        clock.time = 12.5 // Looping and backwards seeks reset the cursor.
+        adapter.refreshReplay()
+        XCTAssertTrue(adapter.content.comments.isEmpty)
+        clock.time = 2.5
+        adapter.refreshReplay()
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two"])
+        engagement.receive(.init(id: "at-five", offset: 5, kind: .chat, author: "Fan", text: "Another play"))
+        adapter.refreshReplay() // A source revision rebuilds the schedule, including non-appendable timelines.
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two"])
+        clock.time = 5
+        adapter.refreshReplay()
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two", "at-five"])
+        adapter.setReplayActive(false, for: feed)
         let reads = clock.reads
         clock.time = 0
-        try? await Task.sleep(for: .milliseconds(150))
-        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two"])
+        XCTAssertFalse(adapter.refreshReplay())
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two", "at-five"])
         XCTAssertEqual(clock.reads, reads)
+        adapter.setReplayActive(true, for: feed)
+        engagement.upsertComment(.init(id: "socket", offset: 0, kind: .chat, author: "Fan", text: "Live comment"))
+        let beforeSocketStop = clock.reads
+        XCTAssertFalse(adapter.refreshReplay()) // Socket item comments stop replay before another clock read.
+        XCTAssertFalse(engagement.hasLoadedComments)
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["socket"])
+        adapter.setReplayActive(true, for: fullscreen)
+        XCTAssertFalse(adapter.refreshReplay())
+        XCTAssertEqual(clock.reads, beforeSocketStop)
     }
 
 }

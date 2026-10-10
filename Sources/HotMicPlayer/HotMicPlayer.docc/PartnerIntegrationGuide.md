@@ -13,10 +13,10 @@ Both paths share playback, caching, captions, fullscreen and engagement. You can
 
 ## Install
 
-Repository URL: `https://github.com/hotmic-wp/hotmic-player-ios`. **1.1.0 is a draft, not a release tag.** Until it is tagged, pin a reviewed commit containing the complete delivery (including the ready-made overlay) using SwiftPM's revision requirement. Replace `REVIEWED_COMMIT_SHA` with its full 40-character commit SHA and keep that pin in source control for reproducible CI builds:
+Repository URL: `https://github.com/hotmic-wp/hotmic-player-ios`. **1.1.0 is a draft, not a release tag.** Until it is tagged, pin the commit SHA HotMic provides (including the ready-made overlay) using SwiftPM's revision requirement. Replace `COMMIT_SHA` with that full 40-character SHA and keep that pin in source control for reproducible CI builds:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", revision: "REVIEWED_COMMIT_SHA")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", revision: "COMMIT_SHA")
 ```
 
 The published `1.1.0-alpha.1` tag contains the core layout, ads, captions and engagement APIs, but **does not contain the ready-made social overlay**. The older `1.0.0-rc.4` tag is the basic playback baseline. If evaluating only that published core API set, pin:
@@ -45,9 +45,16 @@ HotMic engagement is an optional separate package at `https://github.com/hotmic-
 import SwiftUI
 import HotMicPlayer
 
+@MainActor final class FeedOwner: ObservableObject {
+    let player = HMPlayer()
+    // Terminal cleanup when the screen owner is released, including source and event subscriptions.
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct QuickstartFeed: View {
     let mp4URL: URL, hlsURL: URL
-    @State private var player = HMPlayer()
+    @StateObject private var owner = FeedOwner()
+    private var player: HMPlayer { owner.player }
     var body: some View {
         HMVerticalFeedView(player: player)
             .task {
@@ -129,7 +136,7 @@ callbacks.sheetChanged = { item, opened in commentsChanged(item, opened) }
 let screen = HMSocialPlayerView(player: player, options: options, callbacks: callbacks) { item in socialData(item) }
 ```
 
-Retain an observable `HMSocialDataSource` per item. A cached `HMEngagementSocialAdapter` must also match the current engagement identity: the player can evict and rebuild engagements. Resolve `let engagement = player.engagement(for: item)` and reuse a cached adapter only when `adapter.engagement === engagement`; otherwise replace it. The kit activates timed replay only for the visible current adapter; custom consumers call `setReplayActive(true)` while visible and `false` when hidden. Use `HMSocialModel` for direct host data, or `HMEngagementSocialAdapter` for a source implementing `HMInteractionSource`. Share presentation and backend requests belong to the host. [Ready-made overlay details](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sources/HotMicPlayerUI/HotMicPlayerUI.docc/ReadyMadeSocialOverlay.md) cover theming, slots and UIKit embedding.
+Retain an observable `HMSocialDataSource` per item. A cached `HMEngagementSocialAdapter` must also match the current engagement identity: the player can evict and rebuild engagements. Resolve `let engagement = player.engagement(for: item)` and reuse a cached adapter only when `adapter.engagement === engagement`; otherwise replace it. The kit activates timed replay only for the visible current adapter; custom consumers keep a stable UUID per view instance and call `setReplayActive(true, for: token)` while visible and `setReplayActive(false, for: token)` when hidden. Use `HMSocialModel` for direct host data, or `HMEngagementSocialAdapter` for a source implementing `HMInteractionSource`. Share presentation and backend requests belong to the host. [Ready-made overlay details](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sources/HotMicPlayerUI/HotMicPlayerUI.docc/ReadyMadeSocialOverlay.md) cover theming, slots and UIKit embedding.
 
 For custom UI, use `snapshot.state`, `snapshot.videoFrame`, `hmVideoLayout`, `hmVideoGestures`, hit areas, `hmReservedRegions`, `HMOverlayRegions.isFree`, `squeezeTarget`, `adState`, captions and `HMCountFormatter`. The custom starter has its own SwiftUI rail, metadata and comment sheet and imports no kit components. Observe progress in a small leaf view; avoid rebuilding all chrome from every playhead tick. At accessibility text sizes, the kit condenses resting metadata and opens full details separately; its ephemeral preview is omitted to keep controls reachable without competing with vertical paging.
 

@@ -8,7 +8,7 @@ Use `HMSocialPlayerView` for a complete feed or inline player: metadata, ephemer
 
 For custom chrome, depend only on HotMicPlayer and use `hmVideoLayout`, `HMVideoLayout.squeezeTarget`, `hmVideoGestures`, `HMHitArea`, `hmReservedRegions` and `HMOverlayRegions.isFree`. The optional kit uses those same public APIs and has no private engine access. Existing `HMOverlayLayout`, `HMChatRail` and engagement components remain available with their original initializers. `HMActionRail` has an additional backend-independent social initializer, rather than a second rail implementation.
 
-Cached adapters must follow engagement identity, not only item ID. The player may rebuild an evicted engagement. Resolve `let engagement = player.engagement(for: item)`; return a cached adapter only if `adapter.engagement === engagement`, otherwise replace it. Mapping is lazy and source changes are visible synchronously. The kit calls `setReplayActive` only for the current visible adapter; a custom consumer must enable it while current and disable it when hidden. Inactive cached adapters do no clock work.
+Cached adapters must follow engagement identity, not only item ID. The player may rebuild an evicted engagement. Resolve `let engagement = player.engagement(for: item)`; return a cached adapter only if `adapter.engagement === engagement`, otherwise replace it. Mapping is lazy and source changes are visible synchronously. The kit calls `setReplayActive` only for the current visible adapter; a custom consumer must keep a stable UUID per view instance, enable it with `setReplayActive(true, for: token)` while current and disable the same token with `setReplayActive(false, for: token)` when hidden. Inactive cached adapters do no clock work.
 
 ## Data in, events out
 

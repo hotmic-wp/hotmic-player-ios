@@ -6,7 +6,8 @@ import HotMicPlayerUI
 
 /// Generic integration demo: fake host backend, mixed media, persistent host navigation.
 struct PartnerDemoScreen: View {
-    @State private var model = PartnerDemoModel()
+    @StateObject private var owner = PartnerDemoOwner()
+    private var model: PartnerDemoModel { owner.model }
     @State private var customUI = false
     @State private var useConnect = false
     @State private var selectedTab = 0
@@ -142,6 +143,10 @@ struct PartnerDemoScreen: View {
     }
 }
 
+@MainActor private final class PartnerDemoOwner: ObservableObject {
+    let model = PartnerDemoModel()
+}
+
 @MainActor @Observable private final class PartnerDemoModel {
     var player: HMPlayer
     private var connect = false
@@ -271,6 +276,7 @@ private struct PartnerCustomChrome: View {
     let data: any HMSocialDataSource
     @Binding var sheetHeight: CGFloat
     let keyboard: CGFloat
+    @State private var replayOwner = UUID()
     @State private var draft = ""
     @State private var error: String?
     @Environment(\.hmFeedSafeArea) private var safe
@@ -358,8 +364,8 @@ private struct PartnerCustomChrome: View {
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom).foregroundStyle(.white)
         }
-        .task(id: player.currentItem?.id == item.id && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(player.currentItem?.id == item.id && player.isFeedVisible && !player.isFullscreen) }
-        .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false) }
+        .task(id: player.currentItem?.id == item.id && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(player.currentItem?.id == item.id && player.isFeedVisible && !player.isFullscreen, for: replayOwner) }
+        .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false, for: replayOwner) }
     }
     private func control(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {

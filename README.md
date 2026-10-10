@@ -14,13 +14,13 @@ Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.doc
 
 ## Install
 
-For the complete draft delivery, pin a reviewed commit revision from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
+For the latest features, pin the commit SHA HotMic provides from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
 
 ```swift
 .package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Pin a reviewed commit revision for that path and subsequent fixes, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
+`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Pin the commit SHA HotMic provides for that path and subsequent fixes, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -31,13 +31,20 @@ Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
 ## 1. Player only
 
-Given your `mp4URL` and `hlsURL`, keep a player in screen state and present the feed on the main actor:
+Given your `mp4URL` and `hlsURL`, keep one player owner in screen state and present the feed on the main actor:
 
 ```swift
 import SwiftUI
 import HotMicPlayer
+@MainActor final class FeedOwner: ObservableObject {
+    let player = HMPlayer()
+    // Terminal cleanup when the screen owner is released, including source and event subscriptions.
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct Feed: View {
-    @State private var player = HMPlayer()
+    @StateObject private var owner = FeedOwner()
+    private var player: HMPlayer { owner.player }
     let mp4URL: URL, hlsURL: URL
     var body: some View {
         HMVerticalFeedView(player: player)

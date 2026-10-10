@@ -11,8 +11,15 @@ import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
 
+@MainActor final class FeedOwner: ObservableObject {
+    let player = HMPlayer(interactions: MemorySource())
+    // Terminal cleanup when the screen owner is released, including source and event subscriptions.
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct PartnerFeed: View {
-    @State private var player = HMPlayer(interactions: MemorySource())
+    @StateObject private var owner = FeedOwner()
+    private var player: HMPlayer { owner.player }
     let items: [HMMediaItem]
     var body: some View {
         HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)

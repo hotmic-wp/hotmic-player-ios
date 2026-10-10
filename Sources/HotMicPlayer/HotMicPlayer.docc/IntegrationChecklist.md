@@ -13,7 +13,7 @@ Prepare the host app, verify the ownership boundary and provide reproducible dia
 - **Media:** use immutable supported MP4/HLS VOD or local files, unique stable IDs and aspect hints. Check byte ranges, MIME types and <doc:EncodingForFastStart>.
 - **UI:** measure persistent navigation/safe areas, reserve chrome, configure fullscreen separately, test small screens and the largest accessibility text sizes. Disable simulator hardware keyboard and verify draft/post controls above the software keyboard.
 - **Services:** supply ad decisioning, consent/skip policy, backend authentication and stable engagement IDs. Advertise only supported interaction capabilities. No HotMic account is required for host URLs and backend.
-- **Lifecycle:** retain players and per-item adapters; reuse an adapter only if `adapter.engagement === player.engagement(for: item)`, replacing it after engagement rebuilds. The kit gates replay sampling to the current visible overlay; custom consumers must call `setReplayActive(false)` while hidden. Pause hidden feeds with `isFeedVisible = false`, restore it on return, and teardown only when the owner is permanently dismissed. A new screen after teardown requires a new player.
+- **Lifecycle:** retain players and per-item adapters; reuse an adapter only if `adapter.engagement === player.engagement(for: item)`, replacing it after engagement rebuilds. The kit gates replay sampling to the current visible overlay; custom consumers must keep a stable UUID per view instance and call `setReplayActive(false, for: token)` while hidden. Pause hidden feeds with `isFeedVisible = false`, restore it on return, and teardown only when the owner is permanently dismissed. A new screen after teardown requires a new player.
 
 ## Who owns what
 

@@ -23,7 +23,7 @@
 ### Changes
 
 - Bundle a privacy manifest for SystemBootTime elapsed timing and app-container FileTimestamp APIs.
-- The new engagement social adapter maps backend changes synchronously on demand; inactive cached adapters do no replay work. Hosts must replace cached adapters when their engagement identity changes.
+- The new engagement social adapter maps backend changes synchronously on demand; inactive cached adapters do no replay work. Hosts must replace cached adapters when their engagement identity changes. Custom replay consumers use a stable per-view UUID with `setReplayActive(_:for:)`; one disappearing view cannot deactivate another. Replay advances a cached comment-boundary cursor and stops for paged or socket item comments.
 - Preserve social overlay identity across swipes, isolate timed UI work, and stabilize gesture callbacks. Prevent Fire burst replay; clamp keyboard/sheet squeeze together; keep metadata during ads; add rail/metadata replacement slots and theme-selected engagement reactions.
 
 - Add optional `HMSocialPlayerView`, `HMSocialOverlay` and a UIKit host for themeable social playback on public hooks, with standalone metadata, preview, Fire burst, progress, pause and comment-sheet components. Extend the existing action rail without changing its original initializer.

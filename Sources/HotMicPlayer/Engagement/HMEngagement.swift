@@ -385,6 +385,17 @@ import Observation
         }
     }
 
+    /// Timed comment boundaries, or nil when paged or socket-delivered item comments own the list.
+    /// Cache this schedule until `revision` changes; advance a cursor rather than querying every clock tick.
+    public var commentReplayOffsets: [TimeInterval]? {
+        _ = revision
+        guard !hasLoadedComments, itemComments.isEmpty else { return nil }
+        let range = 0...Double.greatestFiniteMagnitude
+        let events = merged(timeline.events(in: range), own(in: range)).filter { $0.kind == .chat }
+        let pending = pendingMessages.filter { range.contains($0.offset) && !moderation.removesEvent($0.id) }
+        return (events.map(\.offset) + pending.map(\.offset)).sorted()
+    }
+
     /// Latest comment by default, or a rotating selection among the latest three loaded/eligible
     /// comments. Hosts advance `rotation` on their own timer; the SDK owns no background timer.
     public func previewComment(near mediaTime: TimeInterval? = nil, rotation: Int = 0) -> HMChatMessage? {

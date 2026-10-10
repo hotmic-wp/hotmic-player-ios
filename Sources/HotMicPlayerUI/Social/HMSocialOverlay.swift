@@ -79,6 +79,7 @@ private struct HMSocialChrome: View {
     @ScaledMetric(relativeTo: .body) private var railWidth: CGFloat = 144
     @State private var dragStart: CGFloat?
     @State private var expandedMetadata = false
+    @State private var replayOwner = UUID()
     private var current: Bool { player.currentItem?.id == item.id }
     private var adActive: Bool { player.adState.isActive }
     var body: some View {
@@ -118,8 +119,8 @@ private struct HMSocialChrome: View {
         // Keep one visual hierarchy. Gate sections individually so an outer false value cannot expose hidden controls.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(current ? "hm-current-social-overlay" : "hm-warm-social-overlay")
-        .task(id: current && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(current && player.isFeedVisible && !player.isFullscreen) }
-        .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false) }
+        .task(id: current && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(current && player.isFeedVisible && !player.isFullscreen, for: replayOwner) }
+        .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false, for: replayOwner) }
         .sheet(isPresented: $expandedMetadata) {
             NavigationStack {
                 ScrollView {
@@ -367,8 +368,8 @@ private struct HMSocialSidecar: View {
     }
     var body: some View {
         GeometryReader { geometry in
-            if player.currentItem?.id == item.id, player.snapshot(for: item).timeToFirstFrame != nil,
-               let slot, slotSize.width > 0, slotSize.height > 0 {
+            if let slot, slotSize.width > 0, slotSize.height > 0,
+               player.currentItem?.id == item.id, player.snapshot(for: item).timeToFirstFrame != nil {
                 let bounds = CGRect(origin: .zero, size: geometry.size)
                 let insets = HMVideoInsets(top: safe.top, left: safe.leading, bottom: safe.bottom, right: safe.trailing)
                 let excluded = reservations.filter { !approximatelyEqual($0, ownFrame) }

@@ -10,7 +10,7 @@ Add `https://github.com/hotmic-wp/hotmic-player-ios` in Xcode's Package Dependen
 .package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the reviewed commit revision until the next stable tag; see <doc:PartnerIntegrationGuide> for the draft delivery and version policy.
+`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the commit SHA HotMic provides until the next stable tag; see <doc:PartnerIntegrationGuide> for installation and version policy.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -27,10 +27,17 @@ Keep one player in SwiftUI state for the screen's lifetime. Replace `mp4URL` and
 import SwiftUI
 import HotMicPlayer
 
+@MainActor final class FeedOwner: ObservableObject {
+    let player = HMPlayer(configuration: .default)
+    // Terminal cleanup when the screen owner is released, including source and event subscriptions.
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct FeedScreen: View {
     let mp4URL: URL
     let hlsURL: URL
-    @State private var player = HMPlayer(configuration: .default)
+    @StateObject private var owner = FeedOwner()
+    private var player: HMPlayer { owner.player }
     var body: some View {
         HMVerticalFeedView(player: player) { item, snapshot in
             Text(item.title ?? "Video").foregroundStyle(.white)

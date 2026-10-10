@@ -118,6 +118,12 @@ public struct HMSocialContent: Equatable, Sendable {
     @ObservationIgnored private var replayTime: TimeInterval = 0
     @ObservationIgnored private var replayRows: [HMSocialComment] = []
     @ObservationIgnored private var replayTask: Task<Void, Never>?
+    @ObservationIgnored private var replayOwners: Set<UUID> = []
+    @ObservationIgnored private var replaySourceRevision: Int?
+    @ObservationIgnored private var replayIsTimed = false
+    @ObservationIgnored private var replayOffsets: [TimeInterval] = []
+    @ObservationIgnored private var replayCursor = 0
+    @ObservationIgnored private var lastReplayOffset: TimeInterval?
     @ObservationIgnored private var mappedKey: MappingKey?
     private struct MappingKey: Equatable {
         var revision: Int
@@ -145,24 +151,62 @@ public struct HMSocialContent: Equatable, Sendable {
         mappedKey = key; mappedContent = value
         return value
     }
-    /// Enables timed replay only while this item's UI is current and visible. The kit wires this automatically.
-    /// Custom consumers must disable it when hidden. Cached, inactive adapters perform no clock work.
-    public func setReplayActive(_ active: Bool) {
-        replayTask?.cancel(); replayTask = nil
-        guard active, !engagement.hasLoadedComments else { return }
-        refreshReplay()
+    /// Enables timed replay for one view instance while current and visible. The kit wires this automatically.
+    /// Keep a stable UUID per view and deactivate that same token when hidden. Other visible owners stay active.
+    public func setReplayActive(_ active: Bool, for owner: UUID) {
+        if active {
+            replayOwners.insert(owner)
+        } else {
+            replayOwners.remove(owner)
+        }
+        guard !replayOwners.isEmpty else {
+            replayTask?.cancel(); replayTask = nil
+            return
+        }
+        guard replayTask == nil, refreshReplay() else { return }
         replayTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                guard self?.engagement.hasLoadedComments == false else { return }
-                self?.refreshReplay()
+                guard self?.refreshReplay() == true else { return }
             }
         }
     }
-    private func refreshReplay() {
+    // Internal synchronous sampling also lets tests drive exact clock boundaries without wall-clock sleeps.
+    @discardableResult func refreshReplay() -> Bool {
+        guard !replayOwners.isEmpty else { return false }
+        let revision = engagement.revision
+        if replaySourceRevision != revision {
+            replaySourceRevision = revision
+            lastReplayOffset = nil
+            replayIsTimed = false
+            guard let offsets = engagement.commentReplayOffsets else {
+                replayTask?.cancel(); replayTask = nil
+                return false
+            }
+            replayIsTimed = true
+            replayOffsets = offsets
+        }
+        // A stopped item-comment source remains stopped even if another view activates it.
+        guard replayIsTimed else { return false }
         replayTime = engagement.currentMediaTime
+        let offset = engagement.timelineOffset(forMediaTime: replayTime)
+        let previousCursor = replayCursor
+        let reset = lastReplayOffset == nil || offset < lastReplayOffset!
+        if reset {
+            var low = 0, high = replayOffsets.count
+            while low < high {
+                let middle = (low + high) / 2
+                if replayOffsets[middle] <= offset { low = middle + 1 } else { high = middle }
+            }
+            replayCursor = low
+        } else {
+            while replayCursor < replayOffsets.count, replayOffsets[replayCursor] <= offset { replayCursor += 1 }
+        }
+        lastReplayOffset = offset
+        guard reset || replayCursor != previousCursor else { return true }
         let rows = engagement.comments(near: replayTime).map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
         if rows != replayRows { replayRows = rows; replayRevision += 1 }
+        return true
     }
     deinit { replayTask?.cancel() }
     /// Whether item reaction membership can be changed.

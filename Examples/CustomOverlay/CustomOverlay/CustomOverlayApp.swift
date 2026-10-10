@@ -6,7 +6,7 @@ import HotMicPlayer
     var body: some Scene { WindowGroup { CustomScreen() } }
 }
 
-@MainActor private final class CustomOwner {
+@MainActor private final class CustomOwner: ObservableObject {
     let player = HMPlayer(interactions: FakeComments())
     init() {
         player.replaceAll([
@@ -19,7 +19,7 @@ import HotMicPlayer
 
 /// Host UI links only HotMicPlayer. Its backend and styling are independent of the optional kit.
 @MainActor struct CustomScreen: View {
-    @State private var owner = CustomOwner()
+    @StateObject private var owner = CustomOwner()
     @State private var sheetHeight: CGFloat = 0
     @State private var keyboard: CGFloat = 0
     private var player: HMPlayer { owner.player }
@@ -31,7 +31,7 @@ import HotMicPlayer
                 HostChrome(player: player, item: item, videoFrame: snapshot.videoFrame,
                     sheetHeight: $sheetHeight, keyboard: keyboard).id(item.id)
             }
-            .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: 54),
+            .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: 54 + safe.bottom),
                 squeezeTarget: sheetHeight > 0 ? CGRect(x: 0, y: safe.top, width: geometry.size.width,
                     height: max(0, fullHeight - safe.top - safe.bottom - 54 - sheetHeight - keyboard)) : nil))
             .hmVideoGestures(isAdPlaying: player.adState.isActive, onTap: { player.togglePlayPause() }, onDoubleTap: { _ in
@@ -117,10 +117,13 @@ import HotMicPlayer
                             if let error { Text(error).font(.caption) }
                             HStack {
                                 TextField("Add a comment", text: $draft).textFieldStyle(.roundedBorder)
-                                Button("Post") { Task {
-                                    do { try await engagement.sendChat(draft); draft = ""; error = nil }
-                                    catch { self.error = error.localizedDescription }
-                                } }.disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                Button("Post") {
+                                    let text = draft
+                                    Task {
+                                        do { try await engagement.sendChat(text); if draft == text { draft = "" }; error = nil }
+                                        catch { self.error = error.localizedDescription }
+                                    }
+                                }.disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }.frame(minHeight: 44)
                         }.padding().frame(height: sheetHeight).frame(maxWidth: .infinity).background(.black)
                     }.padding(.bottom, safe.bottom + keyboard).task { try? await engagement.loadComments() }

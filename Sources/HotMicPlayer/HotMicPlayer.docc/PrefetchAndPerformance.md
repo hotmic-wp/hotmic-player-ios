@@ -40,7 +40,7 @@ Read ``HMPlayer/prefetchPlan`` for the last app-clamped plan, including its reas
 
 ## Read the benchmark
 
-The full [benchmark guide](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/docs/BENCHMARKING.md) covers fixture generation, origin setup, device grids and analysis. [Adaptive policy details](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/docs/ADAPTIVE_PREFETCH.md) explain measurement and experimental thresholds.
+The full [benchmark guide](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/BENCHMARKING.md) covers fixture generation, origin setup, device grids and analysis. [Adaptive policy details](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/ADAPTIVE_PREFETCH.md) explain measurement and experimental thresholds.
 
 Compare identical content, device, build, cache state and shaping profile. Use physical devices for tuning; simulator results prove behavior, not device performance. Read TTFF p50/p95 together with stall duration, network bytes and memory; a faster start that wastes bandwidth or stalls later is not a free improvement.
 

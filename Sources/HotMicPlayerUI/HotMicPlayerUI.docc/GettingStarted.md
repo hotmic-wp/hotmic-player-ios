@@ -23,7 +23,7 @@ import HotMicPlayerUI
 }
 ```
 
-`MemorySource` is your `HMInteractionSource`; a complete small implementation lives in [Examples/PlayerWithUI](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Examples/PlayerWithUI). It provides in-memory chat, reactions and a poll and declares the supported actions. Replace it with your backend adapter when ready. The player retains the source.
+`MemorySource` is your `HMInteractionSource`; a complete small implementation lives in [Examples/PlayerWithUI](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerWithUI). It provides in-memory chat, reactions and a poll and declares the supported actions. Replace it with your backend adapter when ready. The player retains the source.
 
 ## Configure the overlay
 
@@ -45,4 +45,4 @@ Share is hidden until a handler exists. Use `contentInsets` for extra host chrom
 
 Use the overlay closure to combine your controls with individual components, or implement `HMEngagementLayout.init(context:)` to create a reusable arrangement. `HMEngagementContext` includes the player, item, snapshot, engagement, and current-cell status. Only seek or start animations while the cell is current. Custom gestures that should defer failure skips must call the player's `beginInteraction()` and `endInteraction()`.
 
-For URL installation, playlist edits, event subscriptions and configuration, use the [player guides](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Sources/HotMicPlayer/HotMicPlayer.docc). The [full Sample](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Sample) adds labs and benchmark controls; its mock source requires Benchmark SPI and is not needed in partner apps.
+For URL installation, playlist edits, event subscriptions and configuration, use the [player guides](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sources/HotMicPlayer/HotMicPlayer.docc). The [full Sample](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sample) adds labs and benchmark controls; its mock source requires Benchmark SPI and is not needed in partner apps.

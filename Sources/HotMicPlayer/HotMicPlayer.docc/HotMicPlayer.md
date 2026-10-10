@@ -11,8 +11,8 @@ Use iOS 17 or later and Xcode 16 or later (Swift 6 tools). Playback and the feed
 Choose an integration level:
 
 1. **Player only:** supply VOD URLs and render your own overlay. Start with <doc:GettingStarted>.
-2. **Player + UI:** add the HotMicPlayerUI product and your `HMInteractionSource`. See the [UI guide](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Sources/HotMicPlayerUI/HotMicPlayerUI.docc).
-3. **HotMic streams + engagement:** add the separate HotMicPlayerCore adapter package. See <doc:HotMicIntegration>.
+2. **Player + UI:** add the HotMicPlayerUI product and your `HMInteractionSource`. See the [UI guide](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sources/HotMicPlayerUI/HotMicPlayerUI.docc).
+3. **HotMic streams + engagement:** add the separate HotMicPlayerConnect adapter package. See <doc:HotMicIntegration>.
 
 All player, timeline, source, and engagement access is isolated to the main actor. Resolver and paging protocols are `Sendable` and can perform asynchronous work outside that actor. Exported value models can cross tasks. Benchmark SPI and internal engine objects are outside the semver contract.
 

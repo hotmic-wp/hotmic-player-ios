@@ -25,7 +25,7 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public struct Reference: Hashable, Sendable {
-        /// Partner-defined namespace; the future Core adapter uses `hotmic`.
+        /// Partner-defined namespace; the HotMicPlayerConnect adapter uses `hotmic`.
         ///
         /// Use from any task; mutate only an exclusively owned value.
         public let namespace: String

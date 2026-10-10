@@ -4,13 +4,20 @@ Turn MP4 and HLS VOD URLs into a vertical feed.
 
 ## Install
 
-Add `https://github.com/hotmic-wp/hotmic-player-sdk.git` in Xcode's Package Dependencies, then link the **HotMicPlayer** product to your app target. In a package manifest:
+Add `https://github.com/hotmic-wp/hotmic-player-ios` in Xcode's Package Dependencies, then link the **HotMicPlayer** product to your app target. In a package manifest:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-sdk.git", from: "1.0.0")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0-rc.4")
 ```
 
-The release candidate is selected with `exact: "1.0.0-rc.1"`; `from: "1.0.0"` is for the final stable tag once published.
+The `1.0.0-rc.4` requirement resolves after its tag is published; `from: "1.0.0"` is for the final stable tag once published.
+
+Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
+
+```swift
+.product(name: "HotMicPlayer", package: "hotmic-player-ios"),
+.product(name: "HotMicPlayerUI", package: "hotmic-player-ios") // Optional UI
+```
 
 ## Present a feed
 
@@ -64,7 +71,7 @@ Start with `.default`, `.instantStart` or `.highQuality`; see <doc:PrefetchAndPe
 
 For paging implement ``HMPlaylistSource``. For opaque identifiers use `.reference(namespace:id:)` items and an ``HMItemResolver``. See <doc:PlaylistManagement>. A player without an interaction source has empty, read-only engagement.
 
-Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Examples/PlayerOnly) for a complete 40-line app with all five operations. It links only public API and requires no backend.
+Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerOnly) for a complete 40-line app with all five operations. It links only public API and requires no backend.
 
 ## Handle future enum cases
 

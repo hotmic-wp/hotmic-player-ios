@@ -1,25 +1,29 @@
 # Getting started: HotMic streams and engagement
 
-Use the separate HotMicPlayerCore adapter package when content and interaction data come from HotMic.
+Use the separate HotMicPlayerConnect adapter package when content and interaction data come from HotMic.
 
 ## Package boundary
 
-This repository supplies the player, plug-in protocols and optional UI. [HotMicPlayerCore](https://github.com/hotmic-wp/hotmic-player-core-ios) lives in another repository and binds HotMicCore content and engagement to `HMItemResolver`, `HMPlaylistSource`, and `HMInteractionSource`. Follow that package's README for its supported version, installation and adapter construction. This player release does not add live playback.
+This repository supplies the player, plug-in protocols and optional UI. [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect-ios) lives in another repository and binds HotMicCore content and engagement to the player’s public protocols: `HotMicItemResolver` implements `HMItemResolver`, `HotMicPlaylistSource` implements `HMPlaylistSource`, and `HotMicInteractionSource` implements `HMInteractionSource`. Follow that package's README for its supported version, installation and adapter construction. This player release does not add live playback.
 
 With adapters created according to that package's instructions, the player wiring is:
 
 ```swift
+import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
+import HotMicPlayerConnect
 
-// resolver, playlistSource and interactionSource come from HotMicPlayerCore.
-let player = HMPlayer(resolver: resolver, interactions: interactionSource)
-player.playlistSource = playlistSource
-// In your SwiftUI screen:
-HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
-// The feed loads the first page automatically.
+@MainActor func hotMicFeed(resolver: HotMicItemResolver,
+                          playlistSource: HotMicPlaylistSource,
+                          interactionSource: HotMicInteractionSource) -> some View {
+    let player = HMPlayer(resolver: resolver, interactions: interactionSource)
+    player.playlistSource = playlistSource
+    // The feed loads the first page automatically.
+    return HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
+}
 ```
 
-Create and access the player and interaction source on the main actor. Do not duplicate network-session ownership in your view; follow the adapter's lifecycle contract. The player package has no dependency on HotMicCore, and URL-only partners need neither package.
+Retain the player for the screen’s lifetime and call `teardown()` when the screen disappears, as in <doc:GettingStarted>. Create and access the player and interaction source on the main actor. Do not duplicate network-session ownership in your view; follow the adapter's lifecycle contract. The player package has no dependency on HotMicCore, and URL-only partners need neither package.
 
-The partner [README](https://github.com/hotmic-wp/hotmic-player-sdk#readme) links the adapter package. See <doc:EngagementAndCustomSources> for the shared contract and <doc:GettingStarted> for screen lifetime and event handling.
+The partner [README](https://github.com/hotmic-wp/hotmic-player-ios#readme) links the adapter package. See <doc:EngagementAndCustomSources> for the shared contract and <doc:GettingStarted> for screen lifetime and event handling.

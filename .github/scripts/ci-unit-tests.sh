@@ -8,9 +8,9 @@ mkdir -p "$validation_dir"
 derived="$validation_dir/DerivedData"
 started=$SECONDS
 job_name=unit-tests
-# Cold macos-26 is about 2.5-3x this Mac. The compile cap is above the 323s miss.
+# Boot time varies on the runner, so that step has no budget of its own.
+# The 540s total is what fails the job. The compile cap is above the 323s miss.
 budget_total=540
-budget_simulator=180
 budget_simulator_build=420
 budget_unit_tests=240
 simulator_id="${SIMULATOR_UDID:-}"
@@ -33,7 +33,7 @@ boot_simulator() {
   xcrun simctl boot "$simulator_id" || true
   xcrun simctl bootstatus "$simulator_id" -b
 }
-run_step simulator "$budget_simulator" boot_simulator
+run_step simulator "" boot_simulator
 run_step simulator-build "$budget_simulator_build" xcodebuild build-for-testing \
   -scheme HotMicPlayer-Package \
   -destination "platform=iOS Simulator,id=$simulator_id" -derivedDataPath "$derived" \

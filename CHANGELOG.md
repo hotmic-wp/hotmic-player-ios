@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add optional per-item reaction membership/counts, optimistic toggle with rollback, independent comment paging/counts and rotating preview selection on `HMEngagement`. Existing clock-indexed VOD chat and stream reactions retain their behavior; source methods have compatibility defaults.
+- Add a copyable custom engagement backend example and a shared social Sample UI switching between an in-memory host backend and a fake Connect client.
+
 - Add HLS legible track selection and per-language MP4 WebVTT sidecars, system-following CC preferences, bounded next-item caption prefetch, MediaAccessibility styling and caption-safe overlay regions/insets.
 - Observe audio interruptions, removed output routes, application lifecycle and media services resets; preserve host audio-session ownership and expose lifecycle events. Add explicit background-audio policy.
 - Add title/state/time/mute/CC accessibility values, core custom actions and a ten-second adjustable position shared with the UI scrubber (previously 5% steps). Add a generated local captions/audio Sample and DocC guides. `HMPlayerEvent` gains `audioSession` and `captionsChanged`; update exhaustive host switches.

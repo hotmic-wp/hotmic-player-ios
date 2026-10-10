@@ -7,12 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        DD0000000000000000000001 = {isa = PBXBuildFile; fileRef = DD0000000000000000000002; };
 		AA0000000000000000000012 /* HotMicPlayer in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000011 /* HotMicPlayer */; };
 		AA0000000000000000000014 /* HotMicPlayerUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000013 /* HotMicPlayerUI */; };
         CC0000000000000000000012 = {isa = PBXBuildFile; productRef = CC0000000000000000000011; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        DD0000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Examples/CustomEngagementBackend/CustomEngagementBackend.swift; sourceTree = SOURCE_ROOT; };
 		AA0000000000000000000005 /* HotMicPlayerDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HotMicPlayerDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB0000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HotMicPlayerDemoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
         CC0000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HotMicPlayerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -42,6 +44,7 @@
 		AA0000000000000000000002 = {
 			isa = PBXGroup;
 			children = (
+                DD0000000000000000000002,
 				AA0000000000000000000006 /* HotMicPlayerDemo */,
                 BB0000000000000000000006,
                 CC0000000000000000000006,
@@ -179,7 +182,7 @@
 		AA000000000000000000000D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (
+			files = (DD0000000000000000000001,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

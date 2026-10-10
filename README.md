@@ -8,6 +8,8 @@ A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in
 | Player + engagement overlay + your data | `HotMicPlayer`, `HotMicPlayerUI` | [PlayerWithUI Example](Examples/PlayerWithUI), [UI guide](Sources/HotMicPlayerUI/HotMicPlayerUI.docc/GettingStarted.md) |
 | HotMic content + engagement | Above plus separate `HotMicPlayerConnect` | [HotMicPlayerConnect package](https://github.com/hotmic-wp/hotmic-player-connect-ios) |
 
+See [Engagement from your backend or HotMic](Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) and the [custom backend adapter](Examples/CustomEngagementBackend) for host-built comments and fire UI.
+
 ## Install
 
 In Xcode, add `https://github.com/hotmic-wp/hotmic-player-ios` as a Package Dependency. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For a Swift package:

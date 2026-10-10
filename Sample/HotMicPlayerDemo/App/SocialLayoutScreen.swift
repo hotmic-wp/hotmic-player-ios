@@ -5,8 +5,25 @@ import HotMicPlayer
 
 /// Host-built social chrome; this file uses only the SDK's public API.
 struct SocialLayoutScreen: View {
-    @State private var player = HMPlayer(configuration: HMPlayerConfiguration(startsMuted: true))
-    @State private var model = SocialLayoutModel()
+    @State private var useConnect = false
+    @State private var host = CustomEngagementBackend()
+    @State private var connect = DemoConnectInteractionSource()
+    var body: some View {
+        SocialEngagementScreen(source: useConnect ? connect : host, sourceName: useConnect ? "Fake Connect" : "Host backend",
+            switchSource: { useConnect.toggle() }, failNext: {
+                if useConnect { connect.client.backend.failNextRequest = true }
+                else { host.client.failNextRequest = true }
+            }).id(useConnect)
+    }
+}
+
+private struct SocialEngagementScreen: View {
+    @State private var player: HMPlayer
+    @State private var model: SocialLayoutModel
+    init(source: HMInteractionSource, sourceName: String, switchSource: @escaping () -> Void, failNext: @escaping () -> Void) {
+        _player = State(initialValue: HMPlayer(configuration: HMPlayerConfiguration(startsMuted: true), interactions: source))
+        _model = State(initialValue: SocialLayoutModel(sourceName: sourceName, switchSource: switchSource, failNext: failNext))
+    }
     var body: some View {
         GeometryReader { outer in
             GeometryReader { geometry in
@@ -34,11 +51,29 @@ struct SocialLayoutScreen: View {
                 #endif
             } catch { model.error = error.localizedDescription }
         }
+        .task(id: player.currentItem?.id) {
+            guard let item = player.currentItem else { return }
+            do { try await player.engagement(for: item).loadComments() }
+            catch { model.error = error.localizedDescription }
+        }
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                model.previewRotation += 1
+            }
+        }
         .onDisappear { player.teardown() }
     }
 }
 
 @MainActor @Observable private final class SocialLayoutModel {
+    let sourceName: String
+    let switchSource: () -> Void
+    let failNext: () -> Void
+    var previewRotation = 0
+    init(sourceName: String, switchSource: @escaping () -> Void, failNext: @escaping () -> Void) {
+        self.sourceName = sourceName; self.switchSource = switchSource; self.failNext = failNext
+    }
     var sheetHeight: CGFloat = 0
     var dragStart: CGFloat?
     var fires = 0
@@ -52,7 +87,14 @@ struct SocialLayoutScreen: View {
         if reduceMotion { sheetHeight = height }
         else { withAnimation(.easeInOut(duration: 0.25)) { sheetHeight = height } }
     }
-    func fire(at point: CGPoint) {
+    func fire(at point: CGPoint, player: HMPlayer) {
+        guard let item = player.currentItem else { return }
+        let engagement = player.engagement(for: item)
+        error = nil
+        Task {
+            do { try await engagement.toggleReaction("🔥") }
+            catch { /* The shared engagement publishes lastActionError for host chrome. */ }
+        }
         fires += 1; fireLocation = point; trace.lastFire = point
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(700))
@@ -78,7 +120,7 @@ private struct SocialFeed: View {
         feed
             .modifier(SocialVideoLayout(sheetHeight: model.sheetHeight, size: size, safe: safe, aspect: player.snapshot.aspectRatio))
             .hmVideoGestures(isAdPlaying: model.adPlaying, accessibilityLabel: "Social video",
-                onTap: { model.taps += 1; player.togglePlayPause() }, onDoubleTap: { model.fire(at: $0) })
+                onTap: { model.taps += 1; player.togglePlayPause() }, onDoubleTap: { model.fire(at: $0, player: player) })
             // Fullscreen uses its own zero-inset layout and recomputes overlay hit areas.
             .hmFullscreenVideoLayout(HMVideoLayout())
     }
@@ -131,9 +173,9 @@ private struct SocialChrome: View {
                         Button("Fullscreen") { player.enterFullscreen() }.accessibilityIdentifier("social-sheet-fullscreen")
                         Button("Close") { setSheet(0) }.accessibilityIdentifier("social-close-comments")
                     }
-                    Text("@courtside  What a play! 🔥")
-                    Text("@fan  Run that back.")
-                    Spacer(minLength: 0)
+                    if let item = player.currentItem {
+                        SocialComments(engagement: player.engagement(for: item)).id(item.id)
+                    }
                 }
                 .padding(.horizontal, 24).frame(height: model.sheetHeight).frame(maxWidth: .infinity)
                 .background(.ultraThinMaterial, in: UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
@@ -149,12 +191,19 @@ private struct SocialChrome: View {
             }
             HStack {
                 Button(action: { dismiss() }) { Label("Home", systemImage: "house.fill") }.accessibilityIdentifier("social-home")
+                Spacer()
+                Button(model.sourceName, action: model.switchSource).accessibilityIdentifier("social-source")
+                Spacer(); Button("Fail next", action: model.failNext).accessibilityIdentifier("social-fail-next")
                 Spacer(); Button("Ad gate") { model.adPlaying.toggle() }.accessibilityIdentifier("social-ad-gate")
                 Spacer(); Label("Profile", systemImage: "person.crop.circle")
             }
             .font(.caption).padding(.horizontal, 24).padding(.bottom, safe.bottom)
             .frame(height: nav).background(.black).foregroundStyle(.white).compositingGroup().zIndex(20)
-            if let error = model.error { Text(error).padding().background(.red).frame(maxHeight: .infinity, alignment: .top) }
+            let actionError = player.currentItem.flatMap { player.engagement(for: $0).lastActionError }
+            if let error = model.error ?? (model.sheetHeight == 0 ? actionError : nil) {
+                Text(error).font(.caption).padding().background(.red).padding(.top, safe.top)
+                    .frame(maxHeight: .infinity, alignment: .top).accessibilityIdentifier("social-action-error")
+            }
         }
         .onChange(of: model.sheetHeight) { _, value in model.trace.sheetHeight = value }
     }
@@ -171,6 +220,9 @@ private struct SocialOverlay: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         GeometryReader { geometry in
+            let engagement = player.engagement(for: item)
+            let summary = engagement.reactionSummary(for: "🔥")
+            let preview = engagement.previewComment(near: snapshot.currentTime, rotation: model.previewRotation)
             let safe = player.isFullscreen ? geometry.safeAreaInsets : self.safe
             let nav: CGFloat = player.isFullscreen ? 0 : 78 + safe.bottom
             let sheetHeight: CGFloat = player.isFullscreen ? 0 : model.sheetHeight
@@ -202,13 +254,16 @@ private struct SocialOverlay: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Button("@courtside · Follow") { model.links += 1 }.accessibilityIdentifier("social-metadata-link")
                             Text(item.title ?? "The moment everyone is talking about")
-                            Button("View all comments") { setSheet(360) }.accessibilityIdentifier("social-comment-preview")
+                            Button(preview.map { "@\($0.author) · \($0.text)" } ?? "View all comments") { setSheet(360) }.accessibilityIdentifier("social-comment-preview")
                         }.padding(16).frame(width: max(0, geometry.size.width - 96), alignment: .leading)
                     }.padding(.bottom, nav + 12)
                     HMHitArea {
                         VStack(spacing: 24) {
-                            Button { model.fire(at: CGPoint(x: geometry.size.width - 44, y: geometry.size.height / 2)) } label: { VStack { Image(systemName: "flame.fill"); Text(HMCountFormatter().string(from: 12_345 + model.fires)) } }.accessibilityIdentifier("social-fire")
-                            Button { setSheet(360) } label: { Image(systemName: "bubble.right.fill") }.accessibilityIdentifier("social-comments")
+                            Button { model.fire(at: CGPoint(x: geometry.size.width - 44, y: geometry.size.height / 2), player: player) } label: { VStack { Image(systemName: "flame.fill"); Text(summary.map { HMCountFormatter().string(from: $0.count) } ?? "—") } }
+                            .foregroundStyle(summary?.reactedByViewer == true ? .orange : .white)
+                            .accessibilityValue("\(summary?.count ?? 0), \(summary?.reactedByViewer == true ? "reacted" : "not reacted")")
+                            .accessibilityIdentifier("social-fire")
+                            Button { setSheet(360) } label: { VStack { Image(systemName: "bubble.right.fill"); Text(engagement.commentCount.map { HMCountFormatter().string(from: $0) } ?? "—") } }.accessibilityIdentifier("social-comments")
                             Button("Share") { model.links += 1 }.accessibilityIdentifier("social-share")
                             Button { player.enterFullscreen() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.accessibilityIdentifier("social-fullscreen")
                         }.font(.title3).padding(12).frame(width: 76)
@@ -221,6 +276,45 @@ private struct SocialOverlay: View {
         }
     }
     private func setSheet(_ height: CGFloat) { model.setSheet(height, reduceMotion: reduceMotion) }
+}
+
+/// Both providers render through exactly the same observable engagement and actions.
+private struct SocialComments: View {
+    let engagement: HMEngagement
+    @State private var draft = ""
+    @State private var sending = false
+    var body: some View {
+        VStack(spacing: 8) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if !engagement.hasLoadedComments || engagement.olderCommentsCursor != nil {
+                        Button("Load older comments") {
+                            Task { try? await engagement.loadComments() }
+                        }.disabled(engagement.isLoadingComments).accessibilityIdentifier("social-older-comments")
+                    }
+                    ForEach(engagement.comments(), id: \.rowID) { message in
+                        Text("@\(message.author)  \(message.text)\(message.delivery == .sending ? " · Sending" : "")")
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.accessibilityIdentifier("social-comment-list")
+            HStack {
+                TextField("Add a comment", text: $draft).textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("social-comment-input")
+                Button("Post") {
+                    let text = draft
+                    sending = true
+                    Task {
+                        defer { sending = false }
+                        do { try await engagement.sendChat(text); draft = "" } catch { }
+                    }
+                }.disabled(sending || !engagement.supports(.sendChat)).accessibilityIdentifier("social-post-comment")
+            }
+            if let error = engagement.lastActionError {
+                Text(error).font(.caption).foregroundStyle(.red).accessibilityIdentifier("social-engagement-error")
+            }
+        }
+    }
 }
 
 /// Public analytics attachment exposes native layer identity without private SDK API.

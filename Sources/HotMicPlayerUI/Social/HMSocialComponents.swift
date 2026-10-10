@@ -25,7 +25,9 @@ public struct HMMetadataView: View {
         VStack(alignment: .leading, spacing: 6) {
             if !dynamicType.isAccessibilitySize || expanded, let community = content.community { Text(community).font(theme.fonts.caption) }
             Text(content.title).font(theme.fonts.headline).lineLimit(dynamicType.isAccessibilitySize && !expanded ? 1 : 2)
-            if !content.description.isEmpty || dynamicType.isAccessibilitySize {
+            if (!content.description.isEmpty && !dynamicType.isAccessibilitySize) ||
+                (dynamicType.isAccessibilitySize && onExpand != nil &&
+                 (!content.description.isEmpty || content.community != nil || !content.hashtags.isEmpty)) {
                 if !dynamicType.isAccessibilitySize || expanded {
                     Text(content.description).font(theme.fonts.body).lineLimit(expanded ? nil : 2)
                 }

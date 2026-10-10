@@ -1170,6 +1170,7 @@ enum Action
 @MainActor func loadMoreComments() async throws
 @MainActor func postComment(_ text: String) async throws
 @MainActor func setReacted(_ reacted: Bool) async throws
+@MainActor func setReplayActive(_ active: Bool)
 @MainActor init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default, previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) })
 @MainActor let engagement: HMEngagement
 @MainActor var canFire: Bool { get }
@@ -1415,7 +1416,6 @@ enum Surface
 ## HMSocialPlayerViewController
 
 ```swift
-@MainActor convenience init(player: HMPlayer, content: HMSocialPlayerView, theme: HMTheme = .default)
 @MainActor final class HMSocialPlayerViewController
 @MainActor init(content: HMSocialPlayerView, theme: HMTheme = .default)
 @MainActor init(player: HMPlayer, surface: HMSocialPlayerView.Surface = .feed, options: HMSocialOptions = .init(), theme: HMTheme = .default, callbacks: HMSocialCallbacks = .init(), data: @escaping (HMMediaItem) -> any HMSocialDataSource)

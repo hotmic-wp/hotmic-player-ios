@@ -69,6 +69,7 @@ import HotMicPlayer
         var mappings = 0
         let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: .init(title: "Moment"), theme: theme,
             previewSelection: { rows in mappings += 1; return rows })
+        XCTAssertEqual(mappings, 0) // Construction and cached, inactive instances do no mapping.
         XCTAssertEqual(adapter.content.fireCount, 42)
         XCTAssertFalse(adapter.content.isReacted)
         XCTAssertEqual(mappings, 1)
@@ -102,6 +103,7 @@ import HotMicPlayer
     @Observable final class Clock {
         var time: TimeInterval = 0
         var invalidations = 0
+        var reads = 0
     }
 
     func testReplayClockPublishesOnlyChangedRowsWithoutCommentPaging() async {
@@ -110,8 +112,12 @@ import HotMicPlayer
         let timeline = EngagementTests.FixtureTimeline(duration: 12, events: [
             .init(id: "at-two", offset: 2, kind: .chat, author: "Fan", text: "Great play")
         ])
-        let engagement = HMEngagement(item: item, timeline: timeline, source: nil, mediaClock: { clock.time })
+        let engagement = HMEngagement(item: item, timeline: timeline, source: nil, mediaClock: { clock.reads += 1; return clock.time })
         let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: .init(title: "Replay"))
+        XCTAssertEqual(clock.reads, 0)
+        _ = adapter.content
+        XCTAssertEqual(clock.reads, 0) // Lazy mapping never observes the player clock.
+        adapter.setReplayActive(true)
         let changed = expectation(description: "rows change at timestamp")
         withObservationTracking { _ = adapter.content } onChange: {
             MainActor.assumeIsolated { clock.invalidations += 1; changed.fulfill() }
@@ -132,7 +138,13 @@ import HotMicPlayer
         clock.time = 2.3
         await settleAdapter()
         clock.time = 3
-        await fulfillment(of: [unchanged], timeout: 0.1)
+        await fulfillment(of: [unchanged], timeout: 0.15)
+        adapter.setReplayActive(false)
+        let reads = clock.reads
+        clock.time = 0
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two"])
+        XCTAssertEqual(clock.reads, reads)
     }
 
 }

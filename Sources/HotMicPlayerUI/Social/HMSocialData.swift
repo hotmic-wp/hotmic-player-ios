@@ -114,11 +114,14 @@ public struct HMSocialContent: Equatable, Sendable {
     public var theme: HMTheme
     private var selectionRevision = 0
     @ObservationIgnored private var mappedContent: HMSocialContent?
-    private var publishedContent: HMSocialContent?
+    private var replayRevision = 0
+    @ObservationIgnored private var replayTime: TimeInterval = 0
+    @ObservationIgnored private var replayRows: [HMSocialComment] = []
+    @ObservationIgnored private var replayTask: Task<Void, Never>?
     @ObservationIgnored private var mappedKey: MappingKey?
     private struct MappingKey: Equatable {
         var revision: Int
-        var mediaTime: TimeInterval?
+        var replay: Int
         var metadata: HMSocialContent
         var reaction: String
         var selection: Int
@@ -127,41 +130,41 @@ public struct HMSocialContent: Equatable, Sendable {
     public init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default,
                 previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) }) {
         self.engagement = engagement; self.metadata = metadata; self.theme = theme; self.previewSelection = previewSelection
-        observeContent()
     }
-    /// Current host-supplied social data, observed by the UI.
+    /// Lazily maps observable backend state. Playback snapshots are never dependencies of this getter.
     public var content: HMSocialContent {
-        // Only changed mapped data invalidates consumers; clock observation stays in the adapter.
-        publishedContent ?? metadata
+        let key = MappingKey(revision: engagement.revision, replay: replayRevision,
+            metadata: metadata, reaction: theme.primaryReaction, selection: selectionRevision)
+        if mappedKey == key, let mappedContent { return mappedContent }
+        var value = metadata
+        let summary = engagement.reactionSummary(for: theme.primaryReaction)
+        value.fireCount = summary?.count; value.isReacted = summary?.reactedByViewer ?? false
+        value.commentCount = engagement.commentCount
+        value.comments = engagement.comments(near: replayTime).map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
+        value.previewComments = previewSelection(value.comments)
+        mappedKey = key; mappedContent = value
+        return value
     }
-    @ObservationIgnored private var mappingIsStale = false
-    private func observeContent() {
-        mappingIsStale = false
-        let value = withObservationTracking {
-            let key = MappingKey(revision: engagement.revision,
-                mediaTime: engagement.hasLoadedComments ? nil : engagement.currentMediaTime,
-                metadata: metadata, reaction: theme.primaryReaction, selection: selectionRevision)
-            if mappedKey == key, let mappedContent { return mappedContent }
-            var value = metadata
-            let summary = engagement.reactionSummary(for: theme.primaryReaction)
-            value.fireCount = summary?.count; value.isReacted = summary?.reactedByViewer ?? false
-            value.commentCount = engagement.commentCount
-            value.comments = engagement.comments().map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
-            value.previewComments = previewSelection(value.comments)
-            mappedKey = key
-            return value
-        } onChange: { [weak self] in
-            // Clock-indexed sources still reveal replay rows at their timestamps, but
-            // unchanged rows/counts never invalidate the overlay on progress ticks.
-            MainActor.assumeIsolated { self?.mappingIsStale = true }
-            Task { @MainActor [weak self] in
-                guard let self, self.mappingIsStale else { return }
-                self.observeContent()
+    /// Enables timed replay only while this item's UI is current and visible. The kit wires this automatically.
+    /// Custom consumers must disable it when hidden. Cached, inactive adapters perform no clock work.
+    public func setReplayActive(_ active: Bool) {
+        replayTask?.cancel(); replayTask = nil
+        guard active, !engagement.hasLoadedComments else { return }
+        refreshReplay()
+        replayTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard self?.engagement.hasLoadedComments == false else { return }
+                self?.refreshReplay()
             }
         }
-        mappedContent = value
-        if publishedContent != value { publishedContent = value }
     }
+    private func refreshReplay() {
+        replayTime = engagement.currentMediaTime
+        let rows = engagement.comments(near: replayTime).map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
+        if rows != replayRows { replayRows = rows; replayRevision += 1 }
+    }
+    deinit { replayTask?.cancel() }
     /// Whether item reaction membership can be changed.
     public var canFire: Bool { engagement.supports(.toggleReaction) && engagement.reactionSummary(for: theme.primaryReaction) != nil }
     /// Whether the viewer can submit a comment.

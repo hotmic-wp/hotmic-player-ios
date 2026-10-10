@@ -114,6 +114,12 @@ public enum HMRemovedCurrentPolicy: String, Sendable, Equatable {
 ///
 /// Use from any task; mutate only an exclusively owned value.
 public struct HMPlayerConfiguration: Sendable {
+    /// Ad decision deadline in seconds. Default 1; invalid values use 1, bounded to 0.05...10.
+    public var adDecisionTimeout: TimeInterval = 1
+    /// URL-ad startup deadline, default 5 seconds; invalid values use 5, bounded to 0.1...30.
+    public var adLoadTimeout: TimeInterval = 5
+    /// Allow vertical paging to cancel a pre-roll. Companion units never change this flag.
+    public var allowsSwipeDuringAds = true
     /// Rendering default. Automatic preserves fill for matching vertical media and fits landscape media.
     public var presentation: HMVideoPresentation = .automatic
     /// Relative aspect difference permitted by automatic fill; default 25% accommodates safe-area differences.
@@ -265,6 +271,9 @@ public struct HMPlayerConfiguration: Sendable {
 
     /// Complete experimental configuration serialization, excluded from partner imports.
     struct BenchmarkRecord: Codable, Sendable {
+        private let adDecisionTimeout: TimeInterval?
+        private let adLoadTimeout: TimeInterval?
+        private let allowsSwipeDuringAds: Bool?
         private let presentation: HMVideoPresentation?
         private let aspectRatioTolerance: Double?
         private let backdropColor: HMVideoBackdropColor?
@@ -292,6 +301,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let managesAudioSession: Bool
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
+            adDecisionTimeout = c.adDecisionTimeout; adLoadTimeout = c.adLoadTimeout; allowsSwipeDuringAds = c.allowsSwipeDuringAds
             presentation = c.presentation; aspectRatioTolerance = c.aspectRatioTolerance
             backdropColor = c.backdropColor; followsDeviceRotation = c.followsDeviceRotation
             failedItemPolicy = c.failedItemPolicy == .skip ? .skip : .stay
@@ -314,6 +324,7 @@ public struct HMPlayerConfiguration: Sendable {
                 startupBitRateWindow: startupBitRateWindow, loops: loops, startsMuted: startsMuted,
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
+            c.adDecisionTimeout = adDecisionTimeout ?? 1; c.adLoadTimeout = adLoadTimeout ?? 5; c.allowsSwipeDuringAds = allowsSwipeDuringAds ?? true
             c.presentation = presentation ?? .automatic; c.aspectRatioTolerance = aspectRatioTolerance ?? 0.25
             c.backdropColor = backdropColor ?? .black; c.followsDeviceRotation = followsDeviceRotation ?? false
             c.failedItemPolicy = failedItemPolicy == .stay ? .stay : .skip

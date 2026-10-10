@@ -84,6 +84,13 @@ public enum HMPlayerError: Error, Sendable, Equatable, LocalizedError {
 ///
 /// Use from any task; mutate only an exclusively owned value.
 public enum HMPlayerEvent: Sendable, Equatable {
+    /// State/progress for the associated content visit, never an ad playlist entry.
+    case adStateChanged(item: HMMediaItem, state: HMAdState)
+    /// Exactly one outcome per consulted visit; cancellation includes swipe-away/teardown.
+    case adBreakEnded(item: HMMediaItem, outcome: HMAdOutcome)
+    /// Bulk work paused/resumed; current preroll and next content head remain protected.
+    case adPrefetchChanged(paused: Bool)
+
     /// Current entry changed, or became nil when the list emptied.
     ///
     /// Use from any task; mutate only an exclusively owned value.

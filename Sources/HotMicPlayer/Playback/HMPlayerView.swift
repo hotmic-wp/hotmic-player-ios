@@ -202,9 +202,12 @@ struct HMItemSurface<Overlay: View>: View {
                 HMVideoGestureSurface(hooks: hooks, videoFrame: videoFrame, viewport: viewport, regions: regions,
                                       state: player.snapshot(for: item).state,
                                       wantsPlayback: player.wantsPlayback,
-                                      enabled: player.currentItem?.id == item.id && player.isFullscreen == fullscreen,
+                                      enabled: !player.adState.isActive && player.currentItem?.id == item.id && player.isFullscreen == fullscreen,
                                       toggle: { player.togglePlayPause() })
                     .frame(width: geometry.size.width, height: geometry.size.height)
+                if player.currentItem?.id == item.id, player.adState.isActive, player.isFullscreen == fullscreen {
+                    HMAdSurface(player: player).frame(width: geometry.size.width, height: geometry.size.height)
+                }
                 overlay(display, overlaySnapshot(videoFrame))
                     .environment(\.hmHitSpace, hitSpace)
                     .environment(\.hmReservedRegions, regions)

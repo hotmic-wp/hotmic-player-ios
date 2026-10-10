@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Behavior change:** video surfaces now enable single-tap play/pause by default and expose a localized Video accessibility element with Play/Pause actions. Hosts can override the tap callback; Fire is opt-in.
+- Fullscreen defaults to independent zero-inset layout with optional fullscreen layout hooks, recomputed overlay exclusions, and no inherited inline reservations.
+- Add UIKit video-frame change callbacks and explicit full-bleed safe-area opt-in. Preserve UIKit's safe-area default and HotMicPlayerUI's locale compact names.
+- Compact social counts roll rounded thousands/millions up to the next suffix and support billions.
+
+- Correct unconstrained inline sizing (`aspectRatio: nil`) so squeeze targets use stable host bounds.
+- Add rendering-only content insets and interactive squeeze targets for feed, inline and fullscreen, preserving native playback identity.
+- Add host tap/Fire hooks, automatic and explicit hit-area exclusions, free overlay rectangles, ad gesture gating, VoiceOver actions and Reduce Motion support.
+- Add locale-aware `HMCountFormatter` and a public-API social layout Sample plus “Building your own overlay” DocC guide.
+
+
 - Harden fullscreen for portrait-only hosts, open sheets and duplicate presenters; follow rotation from a portrait feed, preserve quick swipes after exit, and resume failed-item skipping on exit.
 - Reuse partner overlays in fullscreen (including a UIKit `fullscreenOverlay:` initializer), pause detached inline views, and preblur bounded decoded/poster backdrops without consuming startup measurement frames. Fix rotated still orientation and fallback video-output retention.
 - Add per-item aspect hints and warm-track/decoded presentation-size detection, exposed on playback snapshots. **Behavior change:** the default feed policy is now `.automatic`; landscape and other mismatched media letterbox instead of cropping to the vertical container. Matching vertical media still fills, and explicit `gravity:` calls retain their behavior.

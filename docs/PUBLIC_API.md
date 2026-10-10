@@ -22,6 +22,7 @@ Playback, playlist, plug-in protocols and the headless engagement data layer.
 
 ```swift
 var hmFeedSafeArea: EdgeInsets { get set }
+var hmReservedRegions: [CGRect] { get set }
 ```
 
 ## HMAdaptivePrefetchPolicy
@@ -101,6 +102,15 @@ let itemTitle: String
 struct Entry
 var kind: HMPlaybackEvent.Kind { get }
 var timestamp: Date { get }
+```
+
+## HMCountFormatter
+
+```swift
+func string(from count: Int) -> String
+init(locale: Locale = .current)
+struct HMCountFormatter
+var locale: Locale
 ```
 
 ## HMDensityBucket
@@ -189,6 +199,14 @@ var errorDescription: String? { get }
 case skip
 case stay
 enum HMFailedItemPolicy
+```
+
+## HMHitArea
+
+```swift
+@MainActor init(@ViewBuilder content: () -> Content)
+@MainActor struct HMHitArea<Content> where Content : View
+@MainActor var body: some View { get }
 ```
 
 ## HMInteractionError
@@ -326,6 +344,15 @@ var videoSourceURL: String
 var videoStreamType: String
 var videoTitle: String?
 var videoVariantName: String?
+```
+
+## HMOverlayRegions
+
+```swift
+enum HMOverlayRegions
+static func acceptsTap(at point: CGPoint, videoFrame: CGRect, excluding regions: [CGRect]) -> Bool
+static func freeRects(videoFrame: CGRect, in bounds: CGRect, safeArea: HMVideoInsets = .zero, contentInsets: HMVideoInsets = .zero, excluding regions: [CGRect] = []) -> [CGRect]
+static func isFree(_ rect: CGRect, videoFrame: CGRect, in bounds: CGRect, safeArea: HMVideoInsets = .zero, contentInsets: HMVideoInsets = .zero, excluding regions: [CGRect] = []) -> Bool
 ```
 
 ## HMPageTransition
@@ -561,6 +588,17 @@ enum HMPlayerEvent
 @MainActor init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9)
 @MainActor init<Content>(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9, @ViewBuilder fullscreenOverlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Content) where Content : View
 @MainActor let player: HMPlayer
+@MainActor override func viewDidLayoutSubviews()
+@MainActor var excludedHitAreas: [CGRect] { get set }
+@MainActor var extendsUnderSafeArea: Bool { get set }
+@MainActor var fullscreenVideoLayout: HMVideoLayout? { get set }
+@MainActor var isAdPlaying: Bool { get set }
+@MainActor var onDoubleTap: ((CGPoint) -> Void)? { get set }
+@MainActor var onTap: (() -> Void)? { get set }
+@MainActor var onVideoFrameChange: ((CGRect) -> Void)?
+@MainActor var videoAccessibilityLabel: String { get set }
+@MainActor var videoFrame: CGRect { get }
+@MainActor var videoLayout: HMVideoLayout { get set }
 ```
 
 ## HMPlaylistChange
@@ -805,6 +843,29 @@ var green: Double
 var red: Double
 ```
 
+## HMVideoInsets
+
+```swift
+init(top: CGFloat = 0, left: CGFloat = 0, bottom: CGFloat = 0, right: CGFloat = 0)
+static let zero: HMVideoInsets
+struct HMVideoInsets
+var bottom: CGFloat
+var left: CGFloat
+var right: CGFloat
+var top: CGFloat
+```
+
+## HMVideoLayout
+
+```swift
+func videoFrame(aspectRatio: Double?, presentation: HMVideoPresentation = .automatic, in bounds: CGRect, tolerance: Double = 0.25) -> CGRect
+func viewport(in bounds: CGRect) -> CGRect
+init(contentInsets: HMVideoInsets = .zero, squeezeTarget: CGRect? = nil)
+struct HMVideoLayout
+var contentInsets: HMVideoInsets
+var squeezeTarget: CGRect?
+```
+
 ## HMVideoPresentation
 
 ```swift
@@ -823,6 +884,21 @@ func videoFrame(aspectRatio: Double?, in bounds: CGRect, tolerance: Double = 0.2
 ```swift
 enum HotMicPlayer
 static let version: String
+```
+
+## View
+
+```swift
+@MainActor func hmExcludedHitArea() -> some View
+
+@MainActor func hmExcludedHitAreas(_ regions: [CGRect]) -> some View
+
+@MainActor func hmFullscreenVideoLayout(_ layout: HMVideoLayout) -> some View
+
+@MainActor func hmVideoGestures(isAdPlaying: Bool = false, accessibilityLabel: String? = nil, onTap: (() -> Void)? = nil, onDoubleTap: ((CGPoint) -> Void)? = nil) -> some View
+
+@MainActor func hmVideoLayout(_ layout: HMVideoLayout) -> some View
+
 ```
 
 # HotMicPlayerUI

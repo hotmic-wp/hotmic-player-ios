@@ -82,3 +82,7 @@ All player, timeline, source, and engagement access is isolated to the main acto
 
 ### Version
 - ``HotMicPlayer``
+
+### Host-built overlays
+
+- <doc:BuildingYourOwnOverlay>

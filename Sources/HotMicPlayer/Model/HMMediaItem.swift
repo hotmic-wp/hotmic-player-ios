@@ -79,6 +79,8 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     public let aspectRatio: Double?
     /// Per-item rendering override; nil inherits the player's configuration.
     public let presentation: HMVideoPresentation?
+    /// Sidecar WebVTT sources keyed by BCP-47 language (for example `en` or `es`).
+    public let captionSources: [String: URL]
     /// App metadata forwarded to analytics.
     ///
     /// Use from any task; mutate only an exclusively owned value.
@@ -103,13 +105,20 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
         self.init(id: id, source: source, posterURL: posterURL, title: title, author: author,
                   durationHint: durationHint, metadata: metadata, aspectRatio: nil, presentation: nil)
     }
+    /// Creates an entry with display metadata, retaining the original initializer function type.
+    public init(id: String, source: Source, posterURL: URL?, title: String?, author: String?,
+                durationHint: TimeInterval?, metadata: [String: String], aspectRatio: Double?, presentation: HMVideoPresentation?) {
+        self.init(id: id, source: source, posterURL: posterURL, title: title, author: author,
+                  durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation, captionSources: [:])
+    }
     /// Creates a VOD entry with optional display metadata. Use from any task.
     public init(id: String, source: Source, posterURL: URL? = nil, title: String? = nil,
                 author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String: String] = [:],
-                aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil) {
+                aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil, captionSources: [String: URL] = [:]) {
         self.id = id; self.source = source; self.posterURL = posterURL; self.title = title
         self.author = author; self.durationHint = durationHint; self.metadata = metadata
         self.aspectRatio = HMVideoAspect.valid(aspectRatio); self.presentation = presentation
+        self.captionSources = captionSources
     }
     /// Creates a direct VOD entry.
     ///
@@ -119,12 +128,18 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
         self.init(id: id, url: url, format: format, posterURL: posterURL, title: title, author: author,
                   durationHint: durationHint, metadata: metadata, aspectRatio: nil, presentation: nil)
     }
+    /// Creates a URL entry with display metadata, retaining the original initializer function type.
+    public init(id: String, url: URL, format: Format, posterURL: URL?, title: String?, author: String?,
+                durationHint: TimeInterval?, metadata: [String: String], aspectRatio: Double?, presentation: HMVideoPresentation?) {
+        self.init(id: id, url: url, format: format, posterURL: posterURL, title: title, author: author,
+                  durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation, captionSources: [:])
+    }
     /// Creates a direct VOD entry with optional display metadata. Use from any task.
     public init(id: String, url: URL, format: Format = .auto, posterURL: URL? = nil, title: String? = nil,
                 author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String: String] = [:],
-                aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil) {
+                aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil, captionSources: [String: URL] = [:]) {
         self.init(id: id, source: .url(url, format: format), posterURL: posterURL, title: title,
-                  author: author, durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation)
+                  author: author, durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation, captionSources: captionSources)
     }
     /// Creates a URL entry. Supply an app ID when the same URL can occur twice; otherwise its absolute URL is the ID.
     ///
@@ -153,9 +168,9 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     }
     func resolved(_ result: HMResolvedItem) -> Self {
         Self(id: id, url: result.url, format: result.format, posterURL: posterURL ?? result.poster,
-             title: title ?? result.title, author: author, durationHint: durationHint ?? result.duration, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation)
+             title: title ?? result.title, author: author, durationHint: durationHint ?? result.duration, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation, captionSources: captionSources)
     }
     func identified(_ id: String) -> Self {
-        Self(id: id, source: source, posterURL: posterURL, title: title, author: author, durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation)
+        Self(id: id, source: source, posterURL: posterURL, title: title, author: author, durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation, captionSources: captionSources)
     }
 }

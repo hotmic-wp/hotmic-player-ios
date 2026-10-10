@@ -6,12 +6,15 @@ import OSLog
 ///
 /// A feed player wants `.playback` so audio continues with the ringer off, and
 /// `.mixWithOthers` is deliberately *not* set — a vertical feed is a foreground
-/// experience that should duck other audio.
-enum HMAudioSession {
+/// experience that interrupts other nonmixing audio.
+@MainActor enum HMAudioSession {
     private static let logger = Logger(subsystem: "com.hotmic.player", category: "audio")
+
+    static private(set) var configurationCount = 0
 
     /// Activates playback audio.
     static func activatePlayback() {
+        configurationCount += 1
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .moviePlayback)
@@ -32,7 +35,7 @@ enum HMAudioSession {
 }
 #else
 /// Internal audio session helper.
-enum HMAudioSession {
+@MainActor enum HMAudioSession {
     /// Activates playback audio.
     static func activatePlayback() {}
     /// Deactivates playback audio.

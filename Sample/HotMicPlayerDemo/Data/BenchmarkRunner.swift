@@ -95,9 +95,10 @@ final class BenchmarkRunner {
               ["http", "https"].contains(playlist.scheme) else { throw BenchmarkOptions.Invalid("playlist_url") }
         var values = ["strategy": cell.strategy, "format": cell.format, "network": grid.network,
                       "manifest-url": playlist.absoluteString, "run-id": "grid", "script": cell.script]
-        let supported: Set<String> = ["players", "ahead", "behind", "prefetch-bytes", "prefetch-seconds", "threshold", "cache-cap", "startup-bitrate", "startup-window", "steady-bitrate", "steady-buffer", "warm-buffer", "adaptive", "prefetch-concurrency", "resolve-ahead", "cached-start-bytes", "adaptive-slow-bytes-per-second", "adaptive-fast-bytes-per-second", "adaptive-high-latency-seconds", "adaptive-speed-hysteresis-fraction", "adaptive-low-hit-rate", "adaptive-binge-dwell-seconds", "adaptive-long-dwell-seconds", "adaptive-safety-buffer-seconds", "adaptive-recovery-buffer-seconds", "adaptive-slow-budget-fraction", "adaptive-medium-budget-fraction", "adaptive-binge-budget-multiplier", "adaptive-long-dwell-budget-multiplier", "adaptive-long-dwell-delay-fraction", "adaptive-maximum-delay-seconds", "adaptive-slow-ahead", "adaptive-medium-ahead", "adaptive-slow-bit-rate", "adaptive-medium-bit-rate", "adaptive-fast-bit-rate", "adaptive-ewma-alpha"]
+        let supported: Set<String> = ["captions", "players", "ahead", "behind", "prefetch-bytes", "prefetch-seconds", "threshold", "cache-cap", "startup-bitrate", "startup-window", "steady-bitrate", "steady-buffer", "warm-buffer", "adaptive", "prefetch-concurrency", "resolve-ahead", "cached-start-bytes", "adaptive-slow-bytes-per-second", "adaptive-fast-bytes-per-second", "adaptive-high-latency-seconds", "adaptive-speed-hysteresis-fraction", "adaptive-low-hit-rate", "adaptive-binge-dwell-seconds", "adaptive-long-dwell-seconds", "adaptive-safety-buffer-seconds", "adaptive-recovery-buffer-seconds", "adaptive-slow-budget-fraction", "adaptive-medium-budget-fraction", "adaptive-binge-budget-multiplier", "adaptive-long-dwell-budget-multiplier", "adaptive-long-dwell-delay-fraction", "adaptive-maximum-delay-seconds", "adaptive-slow-ahead", "adaptive-medium-ahead", "adaptive-slow-bit-rate", "adaptive-medium-bit-rate", "adaptive-fast-bit-rate", "adaptive-ewma-alpha"]
         for (key, number) in cell.knobs ?? [:] {
             guard supported.contains(key), number.isFinite else { throw BenchmarkOptions.Invalid("knob \(key)") }
+            if key == "captions", number != 0 && number != 1 { throw BenchmarkOptions.Invalid("captions must be 0 or 1") }
             values[key] = String(format: "%.15g", number)
         }
         return BenchmarkOptions(values: values)
@@ -129,6 +130,7 @@ final class BenchmarkRunner {
             if event.kind == .error { playbackError = event.properties["error_message"] ?? "Decoder error" }
         })
         let created = HMPlayer(configuration: configuration, analytics: hub)
+        created.captionsEnabled = cell.knobs?["captions"] == 1
         if cell.scenario == "ads" || cell.scenario == "ads-inline" {
             created.adBreakProvider = BenchmarkAdProvider(url: try await socialVideoFixture(landscape: true, name: "benchmark-preroll", seconds: 3))
         }

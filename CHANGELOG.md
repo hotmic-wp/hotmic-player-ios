@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add HLS legible track selection and per-language MP4 WebVTT sidecars, system-following CC preferences, bounded next-item caption prefetch, MediaAccessibility styling and caption-safe overlay regions/insets.
+- Observe audio interruptions, removed output routes, application lifecycle and media services resets; preserve host audio-session ownership and expose lifecycle events. Add explicit background-audio policy.
+- Add title/state/time/mute/CC accessibility values, core custom actions and a ten-second adjustable position shared with the UI scrubber (previously 5% steps). Add a generated local captions/audio Sample and DocC guides. `HMPlayerEvent` gains `audioSession` and `captionsChanged`; update exhaustive host switches.
+
 - Add visit-scoped `HMAdBreakProvider` for host SDK and URL pre-rolls, safe-area letterboxing, `adState`/`adProgress`, host playback permission, skip/cancellation, bounded deadlines and protected content prefetch. Add the offline Ads lab and ad/no-fill benchmark scenarios.
 - **Source compatibility:** `HMPlayerEvent` and `HMPlaybackEvent.Kind` gain ad lifecycle cases. Update exhaustive host switches when upgrading; use `@unknown default` for future SDK enum cases. Ad phase is `.playing(kind:)`; observe `HMPlayer.adProgress` separately from lifecycle events.
 

@@ -75,12 +75,12 @@ struct BenchmarkOptions {
         guard let url = URL(string: raw), ["http", "https"].contains(url.scheme) else { throw Invalid("manifest-url") }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Invalid("manifest HTTP status") }
-        struct Entry: Decodable { let id: String; let url: String; let poster: String?; let format: String; let duration: Double?; let aspectRatio: Double? }
+        struct Entry: Decodable { let id: String; let url: String; let poster: String?; let format: String; let duration: Double?; let aspectRatio: Double?; let captions: [String: String]? }
         let entries = try JSONDecoder().decode([Entry].self, from: data)
         guard !entries.isEmpty, Set(entries.map(\.id)).count == entries.count else { throw Invalid("manifest empty or duplicate IDs") }
         let items = try entries.map { e -> HMMediaItem in
             guard let media = URL(string: e.url, relativeTo: url)?.absoluteURL, ["https", "http"].contains(media.scheme) else { throw Invalid("media URL") }
-            return HMMediaItem(id: e.id, url: media, posterURL: e.poster.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }, title: e.id, durationHint: e.duration, metadata: ["format": e.format], aspectRatio: e.aspectRatio)
+            return HMMediaItem(id: e.id, url: media, posterURL: e.poster.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }, title: e.id, durationHint: e.duration, metadata: ["format": e.format], aspectRatio: e.aspectRatio, captionSources: (e.captions ?? [:]).compactMapValues { URL(string: $0, relativeTo: url)?.absoluteURL })
         }
         return HMStaticPlaylistSource(items: items, pageSize: items.count, loopsForever: false, simulatedLatency: .zero)
     }

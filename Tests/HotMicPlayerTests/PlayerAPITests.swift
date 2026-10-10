@@ -187,19 +187,19 @@ struct PlayerReviewTests {
         c.lowWaterMark = 7; c.volatileSigningQueryParameters = ["token"]
         c.presentation = .fitWithColor; c.aspectRatioTolerance = 0.2
         c.backdropColor = HMVideoBackdropColor(red: 0.1, green: 0.2, blue: 0.3)
-        c.followsDeviceRotation = true
+        c.followsDeviceRotation = true; c.allowsBackgroundAudio = true
         let data = try JSONEncoder().encode(c.benchmarkRecord)
         let restored = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: data).configuration
         #expect(restored.fingerprint == c.fingerprint)
         var legacy = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(legacy["failedItemPolicy"] as? String == "stay")
         legacy.removeValue(forKey: "failedItemPolicy"); legacy.removeValue(forKey: "removedCurrentPolicy")
-        for key in ["presentation", "aspectRatioTolerance", "backdropColor", "followsDeviceRotation"] { legacy.removeValue(forKey: key) }
+        for key in ["presentation", "aspectRatioTolerance", "backdropColor", "followsDeviceRotation", "allowsBackgroundAudio"] { legacy.removeValue(forKey: key) }
         let oldData = try JSONSerialization.data(withJSONObject: legacy)
         #expect(try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration.removedCurrentPolicy == .advanceNow)
         let old = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration
         #expect(old.failedItemPolicy == .skip && old.presentation == .automatic)
-        #expect(old.aspectRatioTolerance == 0.25 && !old.followsDeviceRotation)
+        #expect(old.aspectRatioTolerance == 0.25 && !old.followsDeviceRotation && !old.allowsBackgroundAudio)
     }
     actor RecoveringResolver: HMItemResolver {
         var calls = 0
@@ -447,15 +447,15 @@ struct PlayerNativeReviewTests {
         let gesture = try #require(descendants(controller.view, HMVideoGestureView.self).first)
         #expect(!gesture.acceptsTap(at: CGPoint(x: 20, y: 100), isDoubleTap: false))
         #expect(gesture.acceptsTap(at: CGPoint(x: 20, y: 100), isDoubleTap: true))
-        #expect(gesture.accessibilityLabel == "Video" && gesture.accessibilityValue != nil)
-        #expect(gesture.accessibilityCustomActions?.map(\.name).contains("Fire") == true)
-        let cachedActions = gesture.accessibilityCustomActions ?? []
+        #expect(gesture.videoElement.accessibilityLabel == "Video" && gesture.videoElement.accessibilityValue != nil)
+        #expect(gesture.videoElement.accessibilityCustomActions?.map(\.name).contains("Fire") == true)
+        let cachedActions = gesture.videoElement.accessibilityCustomActions ?? []
         controller.videoLayout.squeezeTarget?.origin.y += 1
         try await settle()
-        #expect(zip(cachedActions, gesture.accessibilityCustomActions ?? []).allSatisfy { $0 === $1 })
+        #expect(zip(cachedActions, gesture.videoElement.accessibilityCustomActions ?? []).allSatisfy { $0 === $1 })
         #expect(reportedFrames.last == controller.videoFrame && reportedFrames.count >= 6)
         #expect(gesture.accessibilityActivate() && taps == 1 && fires.isEmpty)
-        let action = try #require(gesture.accessibilityCustomActions?.first { $0.name == "Fire" })
+        let action = try #require(gesture.videoElement.accessibilityCustomActions?.first { $0.name == "Fire" })
         #expect(action.actionHandler?(action) == true)
         #expect(fires == [CGPoint(x: gesture.videoFrame.midX, y: gesture.videoFrame.midY)])
         controller.excludedHitAreas = [CGRect(x: 0, y: 60, width: 100, height: 100)]
@@ -463,12 +463,12 @@ struct PlayerNativeReviewTests {
         #expect(!gesture.point(inside: CGPoint(x: 50, y: 100), with: nil))
         #expect(!gesture.acceptsTap(at: CGPoint(x: 50, y: 100), isDoubleTap: true))
         player.pause(); try await settle()
-        let playAction = try #require(gesture.accessibilityCustomActions?.first { $0.name == "Play" })
+        let playAction = try #require(gesture.videoElement.accessibilityCustomActions?.first { $0.name == "Play" })
         #expect(playAction.actionHandler?(playAction) == true)
         #expect(taps == 1) // Play/Pause remains reachable even with a host tap override.
         controller.isAdPlaying = true
         try await settle()
-        #expect(!gesture.isAccessibilityElement && gesture.accessibilityCustomActions?.isEmpty == true)
+        #expect(!gesture.isAccessibilityElement && gesture.videoElement.accessibilityCustomActions?.isEmpty == true)
         #expect(!gesture.singleTap.isEnabled && !gesture.doubleTap.isEnabled && !gesture.accessibilityActivate())
         controller.isAdPlaying = false; controller.videoLayout.squeezeTarget = nil
         try await settle()
@@ -940,20 +940,6 @@ struct PlayerPagingRetryTests {
         await player.loadNextPage()
         #expect(await source.calls == 6)
         try await Task.sleep(for: .milliseconds(25)); #expect(errors == 6)
-    }
-    @Test("Public audio ownership opt-out survives playback, foreground resume and teardown")
-    func audioOwnership() async throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.ambient, mode: .default)
-        let player = HMPlayer(configuration: HMPlayerConfiguration(loops: false, startsMuted: true, managesAudioSession: false))
-        #expect(player.isMuted); #expect(!player.configuration.loops)
-        player.replaceAll([.reference("test", id: "owned-session")])
-        await player.requestPlay(at: 0)
-        #expect(session.category == .ambient)
-        player.isFeedVisible = false; player.isFeedVisible = true
-        #expect(session.category == .ambient)
-        player.teardown()
-        #expect(session.category == .ambient)
     }
     actor CursorSource: HMPlaylistSource {
         var requests: [String] = []

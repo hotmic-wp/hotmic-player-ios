@@ -66,3 +66,24 @@ Open **Social layout** or launch with `--hm-social-layout 1`. This screen uses p
 Open **Ads lab** or launch with `--hm-ads-lab 1`. All media are generated offline. The four entries demonstrate a six-second landscape URL pre-roll, a six-second colored host-played break with countdown, a slow decision that times out after one second, and content without an ad. The host overlay hides Comments, its preview and the squeezeback trigger while `adState.isActive`; Skip ad calls `skipAd()`.
 
 Use `--hm-ads-inline 1` for standalone, `--hm-start-index 1` to start with the host break, or `--hm-ads-block-swipe 1` to disable pre-roll paging. The Feed/Standalone switch keeps the same player. Debug-only Documents diagnostics are `ads-events.jsonl`, `ads-state.json` and `ads-command.txt` (`action|unique-nonce`, actions: `swipe`, `next`, `skip`, `pause`, `play`, `feed`, `standalone`). The state records content's zero playhead and retained assignments during ads, plus content readiness and TTFF afterwards. See [Ads](../Sources/HotMicPlayer/HotMicPlayer.docc/Ads.md) for integration ownership and timeout details.
+
+## Captions, audio and accessibility lab
+
+Generate twelve seconds of synthetic video/audio plus English/Spanish WebVTT (requires ffmpeg). No remote media is downloaded:
+
+```sh
+python3 bench/prepare_captions_smoke.py
+python3 bench/origin.py --root bench/generated/captions --port 18433 --log bench/results/captions-origin.jsonl
+```
+
+Open **Captions + audio** or launch with `--hm-accessibility-lab 1 --hm-captions 1`. MP4 uses bundled `bench.en.vtt`; HLS uses a real subtitle rendition discovered through AVMediaSelection. Toggle CC, choose English, swipe, and inspect the caption above the registered metadata/rail. Omit `--hm-captions 1` to follow the platform CC setting. Use `--hm-lab-origin URL` for another owned fixture origin. `--hm-host-audio 1` disables SDK session management; `--hm-background-audio 1` opts into background playback policy (the Sample does not enable an Audio background mode).
+
+Debug-only Documents files: `caption-state.json` includes timing, caption preferences/languages, caption bounds and native accessibility labels/values/custom actions; `caption-events.jsonl` records ordered player events. Write `action|unique-nonce` to `caption-command.txt`: `cc`, `system`, `system-on`, `system-off`, `swipe`, `next`, `previous`, `pause`, `play`, `began`, `began-suspended`, `began-was-suspended`, `language-missing`, `ended`, `ended-no-resume`, `route`, `background`, `foreground`, `reset`, `a11y-pause`, `a11y-mute`, `a11y-cc`, `a11y-increment`, `a11y-decrement`. System commands change the dedicated simulator's MediaAccessibility preference for validation; restore its original value afterwards. The in-memory original is restored when the lab is normally dismissed. Synthetic audio notifications test the handler, rather than actual telephony/hardware. Use `--hm-selection-fixture 1` to inspect regular English/French versus forced-only English HLS tracks. With CC off, the forced English track follows English audio; `language-missing` requests an unavailable language and must not select French.
+
+For paired S3 MP4/HLS binge smoke (CC off/on, six settled swipes each), start a loopback results receiver and launch with `--hm-grid-url http://127.0.0.1:18433/grid.json`:
+
+```sh
+python3 bench/results_receiver.py --host 127.0.0.1 --port 18435 --output bench/results/captions
+```
+
+The benchmark manifest accepts `"captions": {"en": "relative/file.vtt"}` and a grid cell can set `"knobs": {"captions": 1}`. These runs are simulator smoke evidence, not physical-device latency measurements.

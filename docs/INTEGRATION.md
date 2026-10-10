@@ -36,7 +36,7 @@ struct FeedScreen: View {
 
 [MinimalIntegration.swift](../Sample/HotMicPlayerDemo/Integration/MinimalIntegration.swift) compiles this shape in the Sample app with only `import HotMicPlayer`. The overlay gets the item (including resolved metadata fallbacks) and an observable snapshot with state, position, duration, buffer, bitrate, stalls, TTFF and readiness tier. Use `snapshot.currentTime` to query `player.timeline(for: item)`; overlays render from the media clock, so seeking rewinds engagement along with video.
 
-Use `player.isFeedVisible = false` when the host disappears or backgrounds. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. The default player configures and activates `AVAudioSession` for playback, and deactivates it on teardown. If your app owns the session, set `managesAudioSession: false` before creating/presenting the player. With that flag false, playback, foreground resume and teardown leave your session category and activation alone. `startsMuted` sets the initial mute state; `loops` controls repeating at the end of a VOD. All three are stable public settings:
+Use `player.isFeedVisible = false` when the host disappears. The SDK handles application background/foreground notifications independently; keep visibility tied to presentation when opting into background audio. Setting it true resumes a resolved current item synchronously; an unresolved entry must first finish resolution. `pause()` records playback intent so hiding and showing a paused player keeps it paused. Call `teardown()` on permanent dismissal; it ends this player instance. The default player configures and activates `AVAudioSession` for playback, and deactivates it on teardown. If your app owns the session, set `managesAudioSession: false` before creating/presenting the player. With that flag false, playback, foreground resume and teardown leave your session category and activation alone. `startsMuted` sets the initial mute state; `loops` controls repeating at the end of a VOD. All three are stable public settings:
 
 ```swift
 let configuration = HMPlayerConfiguration(loops: false, startsMuted: true, managesAudioSession: false)
@@ -209,3 +209,7 @@ case .idle, .loading, .ready, .paused, .buffering, .failed: showOtherState()
 @unknown default: showOtherState()
 }
 ```
+
+## Captions and core accessibility
+
+See [Captions](../Sources/HotMicPlayer/HotMicPlayer.docc/Captions.md), [Audio and interruptions](../Sources/HotMicPlayer/HotMicPlayer.docc/AudioAndInterruptions.md), and [Accessibility](../Sources/HotMicPlayer/HotMicPlayer.docc/Accessibility.md) for CC/sidecar language selection, overlay reservations, session ownership, lifecycle events and the shared ten-second VoiceOver seek policy.

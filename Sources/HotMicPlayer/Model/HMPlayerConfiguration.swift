@@ -202,6 +202,8 @@ public struct HMPlayerConfiguration: Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public var managesAudioSession: Bool
+    /// Allows playback while backgrounded. The host must also enable its audio background mode.
+    public var allowsBackgroundAudio = false
     /// Whether revisiting an entry restores its last playhead.
     @_spi(Benchmark) public var restoresPlaybackPosition: Bool
 
@@ -306,6 +308,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let loops: Bool
         private let startsMuted: Bool
         private let managesAudioSession: Bool
+        private let allowsBackgroundAudio: Bool?
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
             adBreakMaxDuration = c.adBreakMaxDuration; adNoProgressTimeout = c.adNoProgressTimeout
@@ -323,6 +326,7 @@ public struct HMPlayerConfiguration: Sendable {
             steadyPeakBitRate = c.steadyPeakBitRate; startupBitRateWindow = c.startupBitRateWindow
             loops = c.loops; startsMuted = c.startsMuted; managesAudioSession = c.managesAudioSession
             restoresPlaybackPosition = c.restoresPlaybackPosition
+            allowsBackgroundAudio = c.allowsBackgroundAudio
         }
         /// Restores the experimental configuration recorded by a benchmark.
         public var configuration: HMPlayerConfiguration {
@@ -332,6 +336,7 @@ public struct HMPlayerConfiguration: Sendable {
                 startupBitRateWindow: startupBitRateWindow, loops: loops, startsMuted: startsMuted,
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
+            c.allowsBackgroundAudio = allowsBackgroundAudio ?? false
             c.adBreakMaxDuration = adBreakMaxDuration ?? 120; c.adNoProgressTimeout = adNoProgressTimeout ?? 10
             c.adDecisionTimeout = adDecisionTimeout ?? 1; c.adLoadTimeout = adLoadTimeout ?? 5; c.allowsSwipeDuringAds = allowsSwipeDuringAds ?? true
             c.presentation = presentation ?? .automatic; c.aspectRatioTolerance = aspectRatioTolerance ?? 0.25

@@ -2,6 +2,10 @@
 import AVFoundation
 import Foundation
 import Observation
+import MediaAccessibility
+#if os(iOS)
+import UIKit
+#endif
 
 /// The partner SDK entry point. Owns a VOD playlist, playback, prefetch and events.
 /// All mutations are synchronous and atomic on the main actor. During a swipe,
@@ -31,6 +35,118 @@ import Observation
     @ObservationIgnored private var adDecisionTask: Task<Void, Never>?
     @ObservationIgnored private var adTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var adProgressTask: Task<Void, Never>?
+
+    /// Nil follows the system Closed Captions + SDH preference; assigning captionsEnabled overrides it.
+    public var captionPreference: Bool? { didSet { updateCaptions() } }
+    /// Effective caption preference, retained across playlist changes and swipes.
+    public var captionsEnabled: Bool {
+        get { captionPreference ?? systemCaptionsEnabled }
+        set { captionPreference = newValue }
+    }
+    private var systemCaptionsEnabled = MACaptionAppearanceGetDisplayType(.user) == .alwaysOn
+    /// BCP-47 languages from current HLS legible tracks and MP4 sidecars. May grow when HLS metadata loads.
+    public var availableCaptionLanguages: [String] { currentNode?.captions.languages ?? [] }
+    /// Requested language, retained across swipes. Nil uses the system's preferred caption language.
+    public private(set) var selectedCaptionLanguage: String?
+    /// Selects a language and enables captions; nil returns language choice to the system.
+    public func selectCaption(_ language: String?) { selectedCaptionLanguage = language; captionsEnabled = true }
+    @ObservationIgnored private var captionObserver: HMCaptionSettingsObserver?
+    private(set) var captionStyleRevision = 0
+    private func updateCaptions() {
+        for node in pool.nodes { node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage) }
+        emit(.captionsChanged(enabled: captionsEnabled, language: selectedCaptionLanguage))
+        prefetchCaptions()
+    }
+    private func prefetchCaptions() {
+        guard isFeedVisible, captionsEnabled else { return }
+        for item in items.dropFirst(activeIndex).prefix(2) {
+            if let language = HMCaptionController.matchLanguage(in: item.captionSources.keys.sorted(), preferences: HMCaptionController.preferences(selectedCaptionLanguage)),
+               let url = item.captionSources[language] {
+                Task { _ = await HMCaptionCache.shared.cues(for: url, prefetch: true) }
+            }
+        }
+    }
+    #if os(iOS)
+    @ObservationIgnored private var audioObserver: HMAudioObserver?
+    /// Number of SDK audio-session configurations in this process, for ownership diagnostics.
+    @_spi(Benchmark) public var audioSessionConfigurationCount: Int { HMAudioSession.configurationCount }
+    private var audioInterrupted = false
+    private var appBackgrounded = false
+    private var resumeAfterInterruption = false
+    private var resumeAfterBackground = false
+    private var audioBlocked: Bool { audioInterrupted || (appBackgrounded && !configuration.allowsBackgroundAudio) }
+    func handleAudioNotification(_ note: Notification) {
+        guard !ended else { return }
+        switch note.name {
+        case AVAudioSession.interruptionNotification:
+            guard let raw = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            if type == .began {
+                let reason = (note.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber)?.uintValue
+                let suspended = (note.userInfo?[AVAudioSessionInterruptionWasSuspendedKey] as? NSNumber)?.boolValue == true
+                guard reason != AVAudioSession.InterruptionReason.appWasSuspended.rawValue, !suspended else { return }
+                if !audioInterrupted { resumeAfterInterruption = wantsPlayback }
+                audioInterrupted = true; pauseAll(); updateHostPlaybackPermission()
+                emit(.audioSession(.interruptionBegan))
+            } else {
+                let options = AVAudioSession.InterruptionOptions(rawValue: (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? NSNumber)?.uintValue ?? 0)
+                let shouldResume = options.contains(.shouldResume)
+                guard audioInterrupted else {
+                    emit(.audioSession(.interruptionEnded(shouldResume: shouldResume, resumed: false))); return
+                }
+                let eligible = resumeAfterInterruption && shouldResume && wantsPlayback
+                audioInterrupted = false; resumeAfterInterruption = false
+                if !shouldResume { wantsPlayback = false; resumeAfterBackground = false }
+                let resumed = eligible && isFeedVisible && !audioBlocked
+                if resumed { activateAudioIfManaged(); resumeActive() }
+                updateHostPlaybackPermission()
+                emit(.audioSession(.interruptionEnded(shouldResume: shouldResume, resumed: resumed)))
+            }
+        case AVAudioSession.routeChangeNotification:
+            let raw = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue ?? 0
+            if raw == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { pause() }
+            emit(.audioSession(.routeChanged(reason: raw)))
+        case UIApplication.didEnterBackgroundNotification:
+            guard !appBackgrounded else { return }
+            resumeAfterBackground = wantsPlayback
+            appBackgrounded = true
+            if !configuration.allowsBackgroundAudio { pauseAll() }
+            updateHostPlaybackPermission(); emit(.audioSession(.enteredBackground))
+        case UIApplication.didBecomeActiveNotification:
+            let eligible = wantsPlayback && (resumeAfterBackground || audioInterrupted || !appBackgrounded)
+            appBackgrounded = false; audioInterrupted = false
+            resumeAfterBackground = false; resumeAfterInterruption = false
+            let resumed = eligible && isFeedVisible && !audioBlocked
+            if resumed { activateAudioIfManaged(); resumeActive(); refreshWindow() }
+            updateHostPlaybackPermission(); emit(.audioSession(.enteredForeground(resumed: resumed)))
+        case AVAudioSession.mediaServicesWereResetNotification:
+            let resume = wantsPlayback
+            pauseAll()
+            // Rebuild AVPlayerItems, preserving the current playhead and preferences.
+            if let item = currentItem { resumePositions[identity(item)] = snapshot.currentTime }
+            let position = snapshot.currentTime
+            if adState.isActive { endAd(.failed, resume: false) }
+            for node in pool.nodes { analytics.detach(playerKey: node.id) }
+            pool.rebuild()
+            activateAudioIfManaged()
+            if !resume { wantsPlayback = false }
+            refreshWindow()
+            if position > 0 { currentNode?.seek(to: position) }
+            emit(.audioSession(.mediaServicesReset))
+        default: break
+        }
+    }
+    #else
+    private var audioBlocked: Bool { false }
+    #endif
+    @ObservationIgnored private var didActivateAudioSession = false
+    private var playbackAllowed: Bool { wantsPlayback && !audioBlocked }
+    private func activateAudioIfManaged() {
+        guard !ended, currentItem != nil else { return }
+        if configuration.managesAudioSession && !audioBlocked {
+            HMAudioSession.activatePlayback(); didActivateAudioSession = true
+        }
+    }
 
     private var playlist = HMPlaylistState()
     /// Loaded playlist entries, in display order.
@@ -140,7 +256,7 @@ import Observation
         didSet {
             guard isFeedVisible != oldValue else { return }
             updateHostPlaybackPermission()
-            if isFeedVisible { Task { [weak self] in await self?.prepareTransport() }; if configuration.managesAudioSession { HMAudioSession.activatePlayback() }; refreshWindow() }
+            if isFeedVisible { Task { [weak self] in await self?.prepareTransport() }; activateAudioIfManaged(); refreshWindow() }
             else { pauseAll() }
         }
     }
@@ -274,9 +390,28 @@ import Observation
         resolutions.configure(signingParameters: configuration.volatileSigningQueryParameters)
         pool.onEvent = { [weak self] event, item in self?.handle(event, item: item) }
         pool.willRecycle = { [weak self] node, item in self?.analytics.videoChange(playerKey: node.id, item: item) }
-        for node in pool.nodes { node.onBufferChanged = { [weak self] in self?.updatePrefetch() } }
+        pool.didCreate = { [weak self] node in self?.wire(node) }
+        for node in pool.nodes { wire(node) }
+        captionObserver = HMCaptionSettingsObserver { [weak self] in
+            guard let self else { return }
+            self.systemCaptionsEnabled = MACaptionAppearanceGetDisplayType(.user) == .alwaysOn
+            self.captionStyleRevision += 1
+            self.updateCaptions()
+        }
+        #if os(iOS)
+        audioObserver = HMAudioObserver { [weak self] in self?.handleAudioNotification($0) }
+        #endif
         connectivityMonitor = HMConnectivityMonitor { [weak self] satisfied in
             Task { @MainActor [weak self] in self?.connectivityChanged(satisfied: satisfied) }
+        }
+    }
+
+    private func wire(_ node: HMPlayerNode) {
+        node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
+        node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage)
+        node.captions.onLanguagesChanged = { [weak self, weak node] in
+            guard let self, let node, node.item?.id == self.currentItem?.id else { return }
+            self.emit(.captionsChanged(enabled: self.captionsEnabled, language: self.selectedCaptionLanguage))
         }
     }
 
@@ -381,12 +516,21 @@ import Observation
     /// Begins playback, or resumes the current item without resetting its position.
     ///
     /// Access on the main actor.
-    public func play() { wantsPlayback = true; updateHostPlaybackPermission(); resumeActive(); refreshWindow() }
+    public func play() {
+        #if os(iOS)
+        audioInterrupted = false; resumeAfterInterruption = false
+        #endif
+        wantsPlayback = true; activateAudioIfManaged(); updateHostPlaybackPermission(); resumeActive(); refreshWindow()
+    }
     /// Pauses playback without changing the playlist or current position.
     ///
     /// Access on the main actor.
     public func pause() {
-        wantsPlayback = false; updateHostPlaybackPermission()
+        wantsPlayback = false
+        #if os(iOS)
+        resumeAfterInterruption = false; resumeAfterBackground = false
+        #endif
+        updateHostPlaybackPermission()
         if currentNode?.isActive == true { currentNode?.pause() }
         adNode?.pause()
     }
@@ -482,7 +626,10 @@ import Observation
     @_spi(Benchmark) public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
         guard items.indices.contains(index) else { return }
         let selected = items[index]
-        if configuration.managesAudioSession { HMAudioSession.activatePlayback() }
+        #if os(iOS)
+        audioInterrupted = false; resumeAfterInterruption = false
+        #endif
+        activateAudioIfManaged()
         await prepareTransport()
         guard let index = items.firstIndex(of: selected), !ended else { return }
         wantsPlayback = true; navigate(to: index, requestedAt: requestedAt); isFeedVisible = true
@@ -499,6 +646,7 @@ import Observation
     ///
     /// Access on the main actor.
     public func start() async {
+        if isFeedVisible { activateAudioIfManaged() }
         guard !ended else { return }
         let firstStart = !hasStarted; hasStarted = true
         if playlistSource != nil, firstStart || items.isEmpty { await fetchNextPage() }
@@ -614,6 +762,8 @@ import Observation
     }
     private func refreshWindow() {
         guard !ended else { return }
+        // Fetch the next sidecar alongside the protected media head, including one-player configurations.
+        prefetchCaptions()
         consultAdIfNeeded()
         if let currentItem, resolutions.cached(currentItem) == nil {
             pendingSnapshot.readinessTier = .resolving
@@ -730,6 +880,7 @@ import Observation
         }
     }
     private func resumeActive() {
+        guard !audioBlocked else { return }
         if adNode?.isActive == true, isFeedVisible, wantsPlayback { adNode?.play() }
         guard isFeedVisible, !ended, let original = currentItem, !terminalFailures.contains(identity(original)),
               networkFailures[identity(original)].map({ $0.nextAttempt.isFinite }) != true, let item = resolutions.cached(original), let url = item.url else { return }
@@ -738,6 +889,7 @@ import Observation
         let node = pool.node(for: item, protecting: [item.id], playbackURL: proxy?.url(for: item))
         node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
         node.setMuted(isMuted)
+        node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage)
         analytics.attach(playerLayer: node.playerLayer, playerKey: node.id, item: item)
         if adState.isActive {
             if !prefetchIdentity.isEmpty { proxy?.cancelPrefetch(); prefetchIdentity = "" }
@@ -749,7 +901,7 @@ import Observation
             proxy?.markPlayed(item)
             node.activate(startingAt: configuration.restoresPlaybackPosition ? resumePositions[identity(original)] : nil,
                           requestedAt: requestTime, reason: requestReason, cachedBytes: proxy?.cachedByteCount(for: item) ?? 0)
-            if !wantsPlayback { node.pause() }
+            if !playbackAllowed { node.pause() }
         } else if wantsPlayback && (node.snapshot.state == .paused || node.player.timeControlStatus == .paused) { node.play() }
     }
     private func updatePrefetch(force: Bool = false) {
@@ -974,9 +1126,13 @@ import Observation
         for node in pool.nodes { analytics.detach(playerKey: node.id) }; pool.releaseAll()
         finishSubscribers()
         engagements.removeAll(); detachedEngagements.removeAll(); timelines.removeAll(); moderationByItemID.removeAll()
-        if configuration.managesAudioSession { HMAudioSession.deactivate() }
+        if configuration.managesAudioSession && didActivateAudioSession { HMAudioSession.deactivate(); didActivateAudioSession = false }
     }
     private func stopWork() {
+        captionObserver?.cancel(); captionObserver = nil
+        #if os(iOS)
+        audioObserver?.cancel(); audioObserver = nil
+        #endif
         if adState.isActive { endAd(.cancelled, resume: false) }
         failureAdvanceTask?.cancel(); failureAdvanceTask = nil
         interactionTimeoutTask?.cancel(); interactionTimeoutTask = nil
@@ -1048,7 +1204,7 @@ import Observation
     private func updateHostPlaybackPermission() {
         // Paused time is not evidence of a stuck SDK; the wall-clock cap still applies.
         adLastProgressAt = ProcessInfo.processInfo.systemUptime
-        hostAdContext?.setPlaybackAllowed(isFeedVisible && wantsPlayback && adState.isActive)
+        hostAdContext?.setPlaybackAllowed(isFeedVisible && playbackAllowed && adState.isActive)
     }
     private func updateAdProgress(_ value: HMAdProgress) {
         if value.elapsed != adProgress.elapsed { adLastProgressAt = ProcessInfo.processInfo.systemUptime }
@@ -1065,7 +1221,7 @@ import Observation
                 do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
                 guard let self, self.adToken == token, self.adState.isActive else { return }
                 let now = ProcessInfo.processInfo.systemUptime
-                if !self.isFeedVisible || !self.wantsPlayback { self.adLastProgressAt = now }
+                if !self.isFeedVisible || !self.playbackAllowed { self.adLastProgressAt = now }
                 let stuck = self.adState != .loading && now - self.adLastProgressAt >= idle
                 if now - started >= cap || stuck { self.endAd(.timedOut); return }
             }
@@ -1081,7 +1237,7 @@ import Observation
             self.updateAdProgress(progress)
         })
         hostAdContext = context
-        context.setPlaybackAllowed(isFeedVisible && wantsPlayback)
+        context.setPlaybackAllowed(isFeedVisible && playbackAllowed)
         setAdState(.playing(kind: .host))
         host.start(context)
     }
@@ -1106,7 +1262,7 @@ import Observation
         // Use the same AVFoundation engine; leave content's native assignment untouched.
         node.warm(with: ad)
         node.activate(requestedAt: ProcessInfo.processInfo.systemUptime, reason: "ad", cachedBytes: 0)
-        if !isFeedVisible || !wantsPlayback { node.pause() }
+        if !isFeedVisible || !playbackAllowed { node.pause() }
         adTimeoutTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(Self.adTimeout(config.adLoadTimeout, fallback: 5, range: 0.1...30))) } catch { return }
             guard let self, self.adToken == token, self.adState == .loading else { return }; self.endAd(.timedOut)
@@ -1165,6 +1321,7 @@ import Observation
     private func finishSubscribers() { for continuation in subscribers.values { continuation.finish() }; subscribers.removeAll() }
     private func applyConfiguration() {
         guard !ended else { return }
+        if !configuration.managesAudioSession { didActivateAudioSession = false }
         resolutions.configure(signingParameters: configuration.volatileSigningQueryParameters)
         var effective = configuration
         if let plan = prefetchPlan { effective.startupPeakBitRate = plan.clamped(to: configuration).startingBitRate }

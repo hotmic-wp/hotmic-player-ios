@@ -13,6 +13,7 @@ struct DemoRootView: View {
     private let benchmark = BenchmarkOptions()
     @State private var showsSocial = false
     @State private var showsAds = false
+    @State private var showsCaptions = false
     @State private var showsBenchmark = false
     @State private var showsLab = BenchmarkOptions().values["playlist-lab"] == "1"
     @State private var fileSink: HMJSONLFileSink?
@@ -21,7 +22,9 @@ struct DemoRootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if benchmark.values["ads-lab"] == "1" {
+        if benchmark.values["accessibility-lab"] == "1" {
+            CaptionsAudioLabScreen()
+        } else if benchmark.values["ads-lab"] == "1" {
             AdsLabScreen()
         } else if benchmark.values["social-layout"] == "1" {
             SocialLayoutScreen()
@@ -71,6 +74,7 @@ struct DemoRootView: View {
         }
         .overlay(alignment: .bottom) {
             HStack {
+            Button("Captions + audio") { showsCaptions = true }
             Button("Ads lab") { showsAds = true }
             Button("Social layout") { showsSocial = true }
             Button("Playlist lab") { showsLab = true }.accessibilityIdentifier("playlist-lab")
@@ -83,6 +87,7 @@ struct DemoRootView: View {
                 .accessibilityIdentifier("benchmark-mode").padding(12)
             }
         }
+        .fullScreenCover(isPresented: $showsCaptions) { CaptionsAudioLabScreen() }
         .fullScreenCover(isPresented: $showsAds) { AdsLabScreen() }
         .fullScreenCover(isPresented: $showsSocial) { SocialLayoutScreen() }
         .fullScreenCover(isPresented: $showsLab) { PlaylistLabScreen { showsLab = false } }

@@ -91,6 +91,11 @@ public enum HMPlayerEvent: Sendable, Equatable {
     /// Bulk work paused/resumed; current preroll and next content head remain protected.
     case adPrefetchChanged(paused: Bool)
 
+    /// Audio or application lifecycle notification, delivered even when the host manages the session.
+    case audioSession(HMAudioSessionEvent)
+    /// Caption preference or available language selection changed.
+    case captionsChanged(enabled: Bool, language: String?)
+
     /// Current entry changed, or became nil when the list emptied.
     ///
     /// Use from any task; mutate only an exclusively owned value.
@@ -127,4 +132,20 @@ public enum HMPlayerEvent: Sendable, Equatable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     case nearingEnd(remaining: Int)
+}
+
+/// Main-actor observations forwarded through `HMPlayer.events`.
+public enum HMAudioSessionEvent: Sendable, Equatable {
+    /// Playback was suspended by an audio interruption.
+    case interruptionBegan
+    /// The interruption ended; resumed reports whether automatic playback was requested.
+    case interruptionEnded(shouldResume: Bool, resumed: Bool)
+    /// The output route changed; reason is the AVAudioSession raw reason value.
+    case routeChanged(reason: UInt)
+    /// The application entered the background.
+    case enteredBackground
+    /// The application became active; resumed reports whether automatic playback was requested.
+    case enteredForeground(resumed: Bool)
+    /// Native playback objects and the managed session were rebuilt after a media services reset.
+    case mediaServicesReset
 }

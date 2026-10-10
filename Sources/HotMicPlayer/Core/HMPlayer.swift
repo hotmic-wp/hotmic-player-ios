@@ -229,7 +229,7 @@ import Observation
     @ObservationIgnored private var nextCursor: String?
     @ObservationIgnored private var hasStarted = false
     @ObservationIgnored private var ended = false
-    @ObservationIgnored private var wantsPlayback = true
+    private(set) var wantsPlayback = true
     @ObservationIgnored private var prefetchSafe = false
     @ObservationIgnored private var requestTime = ProcessInfo.processInfo.systemUptime
     @ObservationIgnored private var requestReason = "initial"

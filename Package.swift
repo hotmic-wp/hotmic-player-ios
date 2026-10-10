@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "HotMicPlayer",
+    defaultLocalization: "en",
     platforms: [.iOS(.v17), .tvOS(.v17), .macOS(.v14)],
     products: [
         // Playback, playlist, plug-in protocols and the headless engagement data layer.
@@ -14,6 +15,7 @@ let package = Package(
     targets: [
         .target(
             name: "HotMicPlayer",
+            resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(

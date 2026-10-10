@@ -1,0 +1,11 @@
+"Video" = "Video";
+"Play" = "Play";
+"Pause" = "Pause";
+"Fire" = "Fire";
+"Idle" = "Idle";
+"Loading" = "Loading";
+"Ready" = "Ready";
+"Playing" = "Playing";
+"Paused" = "Paused";
+"Buffering" = "Buffering";
+"Failed" = "Failed";

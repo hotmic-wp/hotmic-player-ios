@@ -49,6 +49,30 @@ import Observation
     /// Access on the main actor.
     public private(set) var lastActionError: String?
 
+    private var itemReactionValues: [String: HMItemReactionSummary] = [:]
+    private var pendingItemReactions: [String: Bool] = [:]
+    private var hasToggledItemReaction = false
+    private var itemComments: [String: HMTimelineEvent] = [:]
+    private var itemCommentVersions: [String: Int] = [:]
+    private var itemCommentRevision = 0
+    /// Maximum cached source comments per item. Oldest rows are evicted; viewer sends are retained separately.
+    public static let maximumLoadedComments = 512
+    /// Whether the first item-comment page has loaded.
+    public private(set) var hasLoadedComments = false
+    /// Whether a page request is in flight. Concurrent requests are coalesced.
+    public private(set) var isLoadingComments = false
+    /// Opaque cursor for the next older page, or nil at the end.
+    public private(set) var olderCommentsCursor: String?
+    /// Total item comments including optimistic sends, or nil if unknown.
+    public var commentCount: Int? {
+        _ = revision
+        guard let count = commentCountValue else { return nil }
+        let pending = pendingMessages.filter { !moderation.removesEvent($0.id) }.count
+        return count > Int.max - pending ? Int.max : count + pending
+    }
+    private var commentCountValue: Int?
+    private var commentCountVersion = 0
+
     /// Longest chat message accepted, in characters.
     ///
     /// Access on the main actor.
@@ -239,6 +263,138 @@ import Observation
     /// Access on the main actor.
     public func supports(_ capability: HMEngagementCapabilities) -> Bool { capabilities.isSuperset(of: capability) }
 
+    /// Authoritative item reaction state with any in-flight optimistic membership applied.
+    /// Nil means unknown; it never substitutes weighted `reactionTotals` for a server count.
+    public func reactionSummary(for emoji: String) -> HMItemReactionSummary? {
+        guard let base = itemReactionValues[emoji] else { return nil }
+        guard let desired = pendingItemReactions[emoji], desired != base.reactedByViewer else { return base }
+        let count = desired ? (base.count == Int.max ? Int.max : base.count + 1) : max(0, base.count - 1)
+        return HMItemReactionSummary(count: count, reactedByViewer: desired)
+    }
+
+    /// Pushes authoritative membership state. During a request, its optimistic membership remains
+    /// overlaid; a failed request reveals this latest server state, rather than an old snapshot.
+    public func updateReactionSummary(_ summary: HMItemReactionSummary, for emoji: String) {
+        itemReactionValues[emoji] = summary; changed()
+    }
+
+    /// Toggles the latest wanted membership, including an in-flight optimistic change.
+    /// Rapid taps update that intent; the active request sends a follow-up only if needed.
+    /// Throws and rolls back on failure. Cancellation is rethrown without a user-facing error.
+    public func toggleReaction(_ emoji: String) async throws {
+        guard let current = reactionSummary(for: emoji) else { throw fail(HMInteractionError.unsupportedAction) }
+        try await setReaction(emoji, reacted: !current.reactedByViewer)
+    }
+
+    /// Sets desired membership, suitable for add-only video double taps (`reacted: true`).
+    /// An already satisfied state does not send a request. While a request runs, calls update
+    /// the latest wanted state and return immediately; the original caller drains any follow-up.
+    /// Failure rolls back to the latest server state. No timed reaction event is created.
+    public func setReaction(_ emoji: String, reacted: Bool) async throws {
+        try require(.toggleReaction)
+        guard let current = reactionSummary(for: emoji) else { throw fail(HMInteractionError.unsupportedAction) }
+        guard current.reactedByViewer != reacted else { succeeded(); return }
+        let inFlight = pendingItemReactions[emoji] != nil
+        pendingItemReactions[emoji] = reacted; changed()
+        guard !inFlight else { return }
+        defer { pendingItemReactions[emoji] = nil; changed() }
+        var target = reacted
+        do {
+            while true {
+                let confirmed = try await performReturning { try await $0.setReaction(emoji, isReacted: target, for: self.item) }
+                itemReactionValues[emoji] = confirmed
+                hasToggledItemReaction = true
+                guard let latest = pendingItemReactions[emoji], latest != target,
+                      latest != confirmed.reactedByViewer else { break }
+                target = latest
+            }
+            succeeded()
+        } catch {
+            if isCancellation(error) { throw error }
+            throw fail(error)
+        }
+    }
+
+    /// Whether the given item's membership request is in flight.
+    public func isTogglingReaction(_ emoji: String) -> Bool { pendingItemReactions[emoji] != nil }
+
+    /// Publishes an authoritative item count; nil clears an unavailable count.
+    public func updateCommentCount(_ count: Int?) {
+        commentCountValue = count.map { max(0, $0) }; commentCountVersion += 1; changed()
+    }
+
+    /// Loads the newest page initially, then older pages. Refresh replaces loaded history only
+    /// after success. Errors preserve rows/cursor/count and set `lastActionError`.
+    public func loadComments(refresh: Bool = false) async throws {
+        try require(.loadComments)
+        guard !isLoadingComments, refresh || !hasLoadedComments || olderCommentsCursor != nil else { return }
+        let loadVersion = itemCommentRevision
+        isLoadingComments = true; changed()
+        defer { isLoadingComments = false; changed() }
+        do {
+            let cursor = refresh ? nil : olderCommentsCursor
+            let page = try await performReturning { try await $0.comments(for: self.item, before: cursor) }
+            let valid = page.comments.filter { $0.kind == .chat && !moderation.removesEvent($0.id) }
+            let liveIDs = Set(itemCommentVersions.filter { $0.value > loadVersion }.keys)
+            if refresh {
+                let newest = valid.max(by: commentPrecedes)
+                itemComments = itemComments.filter { id, event in
+                    liveIDs.contains(id) || newest.map { commentPrecedes($0, event) } == true
+                }
+                itemCommentVersions = itemCommentVersions.filter { itemComments[$0.key] != nil }
+            }
+            for event in valid where !liveIDs.contains(event.id) { upsertComment(event) }
+            olderCommentsCursor = page.olderCursor
+            hasLoadedComments = true
+            if let count = page.totalCount { updateCommentCount(count) }
+            succeeded()
+        } catch {
+            if isCancellation(error) { throw error }
+            throw fail(error)
+        }
+    }
+
+    /// Inserts or updates an independent item comment by server ID, for example from a socket.
+    /// This never enters the replay timeline or changes the count; push totals separately.
+    /// Deleted IDs and non-chat events are ignored. It does not mark the first page as loaded.
+    public func upsertComment(_ event: HMTimelineEvent) {
+        guard event.kind == .chat, !moderation.removesEvent(event.id) else { return }
+        itemComments[event.id] = event
+        itemCommentRevision += 1; itemCommentVersions[event.id] = itemCommentRevision
+        if itemComments.count > Self.maximumLoadedComments {
+            let oldest = itemComments.values.sorted(by: commentPrecedes).prefix(itemComments.count - Self.maximumLoadedComments)
+            for row in oldest { itemComments[row.id] = nil; itemCommentVersions[row.id] = nil }
+        }
+        changed()
+    }
+
+    /// Item comments, oldest first, including optimistic sends. Without item comments or a loaded page,
+    /// returns media-clock chat through the playhead, preserving VOD replay and hiding future chat.
+    /// Paged history never changes `messages(near:)`, the waveform or timed reaction volume.
+    public func comments(near mediaTime: TimeInterval? = nil) -> [HMChatMessage] {
+        _ = revision
+        guard hasLoadedComments || !itemComments.isEmpty else {
+            return messages(near: mediaTime ?? currentMediaTime, lookback: .greatestFiniteMagnitude, limit: Int.max)
+        }
+        var events = itemComments
+        for event in ownEvents where event.kind == .chat && events[event.id] == nil { events[event.id] = event }
+        let rows = events.values.filter { !moderation.removesEvent($0.id) }.map(message(from:))
+        return (rows + pendingMessages.filter { !moderation.removesEvent($0.id) }).sorted {
+            let left = $0.wallTime ?? .distantPast, right = $1.wallTime ?? .distantPast
+            return left == right ? ($0.offset == $1.offset ? $0.id < $1.id : $0.offset < $1.offset) : left < right
+        }
+    }
+
+    /// Latest comment by default, or a rotating selection among the latest three loaded/eligible
+    /// comments. Hosts advance `rotation` on their own timer; the SDK owns no background timer.
+    public func previewComment(near mediaTime: TimeInterval? = nil, rotation: Int = 0) -> HMChatMessage? {
+        let rows = hasLoadedComments || !itemComments.isEmpty ? comments(near: mediaTime)
+            : messages(near: mediaTime ?? currentMediaTime, limit: 3)
+        let recent = Array(rows.suffix(3).reversed())
+        guard !recent.isEmpty else { return nil }
+        return recent[((rotation % recent.count) + recent.count) % recent.count]
+    }
+
     // MARK: - Viewer actions
 
     /// Sends a chat message at the current media time (or `mediaTime`).
@@ -261,6 +417,7 @@ import Observation
                                     isOwn: true, delivery: .sending)
         let index = pendingMessages.firstIndex { $0.offset > offset } ?? pendingMessages.endIndex
         pendingMessages.insert(message, at: index); ownMessageIDs.insert(id); changed()
+        let countVersion = commentCountVersion
         var confirmed: HMTimelineEvent?
         do {
             confirmed = try await performReturning { try await $0.sendChat(message, for: self.item) }
@@ -287,6 +444,9 @@ import Observation
             clientIDs[event.id] = id
         }
         keepOwn(event)
+        if commentCountVersion == countVersion, let count = commentCountValue, count < Int.max {
+            commentCountValue = count + 1
+        }
         succeeded()
     }
 
@@ -581,6 +741,7 @@ import Observation
     /// keeps such engagements when their item leaves the window, so that state isn't lost.
     var holdsViewerState: Bool {
         return !ownEvents.isEmpty || !pendingMessages.isEmpty || !votesInFlight.isEmpty || !votedPolls.isEmpty
+            || !pendingItemReactions.isEmpty || hasToggledItemReaction
             || !ownMessageReactions.values.allSatisfy(\.isEmpty)
     }
 
@@ -609,6 +770,15 @@ import Observation
             moments.insert(event, at: index)
         default: break
         }
+    }
+
+    private func commentPrecedes(_ left: HMTimelineEvent, _ right: HMTimelineEvent) -> Bool {
+        let lhs = left.wallTime ?? .distantPast, rhs = right.wallTime ?? .distantPast
+        return lhs == rhs ? (left.offset == right.offset ? left.id < right.id : left.offset < right.offset) : lhs < rhs
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     private func require(_ capability: HMEngagementCapabilities) throws {
@@ -655,6 +825,8 @@ import Observation
             pendingMessages.removeAll { moderation.removesEvent($0.id) }
             ownMessageIDs = ownMessageIDs.filter { !moderation.removesEvent($0) }
             receivedEvents = receivedEvents.filter { !moderation.removesEvent($0.key) }
+            itemComments = itemComments.filter { !moderation.removesEvent($0.key) }
+            itemCommentVersions = itemCommentVersions.filter { itemComments[$0.key] != nil }
             foldedIDs = foldedIDs.filter { !moderation.removesEvent($0) }
             moments.removeAll { moderation.removesEvent($0.id) }
             clientIDs = clientIDs.filter { !moderation.removesEvent($0.key) && !moderation.removesEvent($0.value) }

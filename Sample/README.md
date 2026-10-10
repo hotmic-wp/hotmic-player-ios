@@ -87,3 +87,11 @@ python3 bench/results_receiver.py --host 127.0.0.1 --port 18435 --output bench/r
 ```
 
 The benchmark manifest accepts `"captions": {"en": "relative/file.vtt"}` and a grid cell can set `"knobs": {"captions": 1}`. These runs are simulator smoke evidence, not physical-device latency measurements.
+
+## Host or HotMic engagement
+
+The Social layout screen shares one `HMEngagement` UI between **Host backend** and **Fake Connect**. Source switching creates a new screen/player lifetime; each fake client keeps its own per-item backend data. Preview comments rotate every three seconds. Fire toggles from the rail; double tap only adds fire; the sheet loads older pages and posts comments. **Fail next** injects a transport error before the next request commits, showing optimistic rollback and retaining failed drafts.
+
+The host adapter is compiled directly from [CustomEngagementBackend](../Examples/CustomEngagementBackend). The fake Connect client is an offline stand-in; use the separate Connect package for a real HotMic session. See [Engagement from your backend or HotMic](../Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) for the contract. Benchmark grid cells accept `"engagement": 0` (off), `1` (fake host) or `2` (fake Connect) in `knobs`, exercising the same observed preview/count state during playback.
+
+For an offline two-item social feed, launch with `--hm-social-layout 1 --hm-social-fixture feed`. Use `--hm-engagement-latency-ms 1500` to inspect pending requests and edit a draft while posting (clamped to 0–5000 ms). Preview selection resets on each item; rapid rail taps settle to the latest intended membership.

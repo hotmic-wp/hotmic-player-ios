@@ -29,6 +29,7 @@ All player, timeline, source, and engagement access is isolated to the main acto
 - <doc:PrefetchAndPerformance>
 - <doc:EncodingForFastStart>
 - <doc:EngagementAndCustomSources>
+- <doc:EngagementFromYourBackendOrHotMic>
 
 ### Playback and playlists
 - ``HMPlayer``
@@ -65,6 +66,8 @@ All player, timeline, source, and engagement access is isolated to the main acto
 - ``HMInteractionError``
 - ``HMEngagementCapabilities``
 - ``HMEngagementError``
+- ``HMItemReactionSummary``
+- ``HMCommentPage``
 - ``HMChatMessage``
 - ``HMPoll``
 - ``HMReactionEcho``

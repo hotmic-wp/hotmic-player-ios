@@ -40,6 +40,14 @@ import Foundation
     ///
     /// Access on the main actor.
     func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent?
+    /// Sets membership in an item's reaction count. Implement as an idempotent set operation,
+    /// returning authoritative totals including the viewer. Separate from timed stream reactions.
+    /// Defaults to unsupported; advertise `.toggleReaction` only when implemented.
+    func setReaction(_ emoji: String, isReacted: Bool, for item: HMMediaItem) async throws -> HMItemReactionSummary
+    /// Loads newest comments for nil, or older comments using the opaque cursor. Item comments
+    /// are independent of VOD replay; do not put untimed history on the media timeline.
+    /// Defaults to unsupported; advertise `.loadComments` only when implemented.
+    func comments(for item: HMMediaItem, before cursor: String?) async throws -> HMCommentPage
     /// Optional poll action.
     ///
     /// Access on the main actor.
@@ -89,6 +97,14 @@ public extension HMInteractionSource {
     ///
     /// Access on the main actor.
     func didLeave(_ item: HMMediaItem) {}
+    /// Default sources do not support item reaction membership.
+    func setReaction(_ emoji: String, isReacted: Bool, for item: HMMediaItem) async throws -> HMItemReactionSummary {
+        throw HMInteractionError.unsupportedAction
+    }
+    /// Default sources retain media-clock chat without item comment paging.
+    func comments(for item: HMMediaItem, before cursor: String?) async throws -> HMCommentPage {
+        throw HMInteractionError.unsupportedAction
+    }
     /// Default action reports unsupported.
     ///
     /// Access on the main actor.
@@ -149,12 +165,13 @@ public extension HMInteractionSource {
 /// every action, accepted after a short simulated round trip. Opt-in Benchmark SPI for
 /// demos; pass it as `HMPlayer(interactions:)` explicitly.
 @MainActor @_spi(Benchmark) public final class HMMockInteractionSource: HMInteractionSource {
+    private var itemReactions: [String: [String: HMItemReactionSummary]] = [:]
     /// Actions the mock accepts; narrow it to preview capability gating.
     public var capabilities: HMEngagementCapabilities
     /// Simulated round trip for every action.
     public var latency: Duration
     /// Creates the default demo provider.
-    public init(capabilities: HMEngagementCapabilities = .all, latency: Duration = .milliseconds(180)) {
+    public init(capabilities: HMEngagementCapabilities = [.all, .toggleReaction, .loadComments], latency: Duration = .milliseconds(180)) {
         self.capabilities = capabilities
         self.latency = latency
     }
@@ -184,6 +201,24 @@ public extension HMInteractionSource {
     public func react(_ emoji: String, toMessage messageID: String, for item: HMMediaItem) async throws { try await roundTrip(.reactToMessage) }
     /// Accepts after the simulated latency.
     public func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws { try await roundTrip(.vote) }
+
+    /// Seeds known item metadata for the opt-in demo.
+    public func engagementDidLoad(_ engagement: HMEngagement) {
+        engagement.updateReactionSummary(itemReactions[engagement.item.id]?["🔥"] ?? .init(count: 0, reactedByViewer: false), for: "🔥")
+    }
+    /// Sets idempotent membership after simulated latency.
+    public func setReaction(_ emoji: String, isReacted: Bool, for item: HMMediaItem) async throws -> HMItemReactionSummary {
+        try await roundTrip(.toggleReaction)
+        let old = itemReactions[item.id]?[emoji] ?? HMItemReactionSummary(count: 0, reactedByViewer: false)
+        let summary = HMItemReactionSummary(count: old.count + (old.reactedByViewer == isReacted ? 0 : (isReacted ? 1 : -1)), reactedByViewer: isReacted)
+        itemReactions[item.id, default: [:]][emoji] = summary
+        return summary
+    }
+    /// Provides one independent item-comment page for the opt-in demo.
+    public func comments(for item: HMMediaItem, before cursor: String?) async throws -> HMCommentPage {
+        try await roundTrip(.loadComments)
+        return HMCommentPage(comments: [], totalCount: 0)
+    }
 
     private func roundTrip(_ capability: HMEngagementCapabilities) async throws {
         guard capabilities.isSuperset(of: capability) else { throw HMInteractionError.unsupportedAction }

@@ -15,7 +15,9 @@ struct BenchmarkScreen: View {
                 if runner.isInline {
                     HMPlayerView(player: controller).id(ObjectIdentifier(controller))
                 } else {
-                    HMVerticalFeedView(player: controller).id(ObjectIdentifier(controller))
+                    HMVerticalFeedView(player: controller) { item, snapshot in
+                        BenchmarkEngagementOverlay(engagement: controller.engagement(for: item), mediaTime: snapshot.currentTime)
+                    }.id(ObjectIdentifier(controller))
                 }
             }
             VStack(spacing: 12) {
@@ -54,6 +56,24 @@ struct BenchmarkScreen: View {
         .task {
             url = initialURL ?? UserDefaults.standard.string(forKey: "HMGridURL") ?? ""
             if autoStart, !url.isEmpty { runner.start(urlString: url) }
+        }
+    }
+}
+
+/// Exercises observation and comment loading during paired engagement on/off smoke cells.
+private struct BenchmarkEngagementOverlay: View {
+    let engagement: HMEngagement
+    let mediaTime: TimeInterval
+    var body: some View {
+        VStack {
+            Spacer()
+            Text(engagement.previewComment(near: mediaTime)?.text ?? "")
+            if let fire = engagement.reactionSummary(for: "🔥") {
+                Text("Fire \(HMCountFormatter().string(from: fire.count))")
+            }
+        }.padding(.bottom, 80).foregroundStyle(.white).allowsHitTesting(false)
+        .task {
+            if engagement.supports(.loadComments) { try? await engagement.loadComments() }
         }
     }
 }

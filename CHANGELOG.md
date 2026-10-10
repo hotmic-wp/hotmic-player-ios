@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve `.all` as the original chat, timed reaction and poll capability mask; opt into `.toggleReaction` and `.loadComments` explicitly. Add `HMEngagement.setReaction(_:reacted:)` for add-only double taps and retain the latest rapid-tap intent with serialized follow-up requests.
+- Treat cancelled engagement loads/reactions silently, preserve known counts when pages omit totals, and bound cached source comments to 512 while retaining live refresh updates. Reset social preview selection on item changes, retain drafts edited during posting, and reject stale example paging cursors.
+
+- Add optional per-item reaction membership/counts, optimistic toggle with rollback, independent comment paging/counts and rotating preview selection on `HMEngagement`. Existing clock-indexed VOD chat and stream reactions retain their behavior; source methods have compatibility defaults.
+- Add a copyable custom engagement backend example and a shared social Sample UI switching between an in-memory host backend and a fake Connect client.
+
 - Add HLS legible track selection and per-language MP4 WebVTT sidecars, system-following CC preferences, bounded next-item caption prefetch, MediaAccessibility styling and caption-safe overlay regions/insets.
 - Observe audio interruptions, removed output routes, application lifecycle and media services resets; preserve host audio-session ownership and expose lifecycle events. Add explicit background-audio policy.
 - Add title/state/time/mute/CC accessibility values, core custom actions and a ten-second adjustable position shared with the UI scrubber (previously 5% steps). Add a generated local captions/audio Sample and DocC guides. `HMPlayerEvent` gains `audioSession` and `captionsChanged`; update exhaustive host switches.

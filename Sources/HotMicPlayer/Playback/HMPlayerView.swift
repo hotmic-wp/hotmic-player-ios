@@ -194,7 +194,10 @@ struct HMItemSurface<Overlay: View>: View {
                         .position(x: videoFrame.midX, y: videoFrame.midY)
                 }
                 HMVideoSurface(node: player.isFullscreen == fullscreen ? player.node(for: item) : nil,
-                               gravity: effectiveGravity, observesWarmFrame: observesWarmFrame,
+                               gravity: effectiveGravity,
+                               // Keep the incoming decoded frame's display proof while decisioning
+                               // holds content inactive. No fill must not cost two fresh boundaries.
+                               observesWarmFrame: observesWarmFrame || (player.currentItem?.id == item.id && player.adState == .loading),
                                capturesBackdrop: resolved == .fitWithBlurredBackdrop && display.posterURL == nil)
                     .frame(width: viewport.width, height: viewport.height)
                     .position(x: viewport.midX, y: viewport.midY)

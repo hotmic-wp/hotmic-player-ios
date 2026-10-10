@@ -75,6 +75,7 @@ private struct HMSocialChrome: View {
     @Environment(\.hmTheme) private var theme
     @Environment(\.hmFeedSafeArea) private var feedSafeArea
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicType
     @ScaledMetric(relativeTo: .body) private var railWidth: CGFloat = 144
     @State private var dragStart: CGFloat?
     @State private var expandedMetadata = false
@@ -97,7 +98,7 @@ private struct HMSocialChrome: View {
                         .padding(.bottom, nav + 12).opacity(adActive ? 0 : 1).allowsHitTesting(!adActive)
                         .accessibilityHidden(!current || adActive)
                 } else {
-                    resting(safe: safe, nav: nav)
+                    resting(safe: safe, nav: nav, width: geometry.size.width)
                         .opacity(state.isSheetOpen || (adActive && options.hidesMetadataDuringAds) ? 0 : 1)
                         .allowsHitTesting(!state.isSheetOpen && !(adActive && options.hidesMetadataDuringAds))
                     HMSocialSidecar(player: player, item: item, videoFrame: videoFrame, slot: sidecar, slotSize: sidecarSize, safe: safe, nav: nav)
@@ -134,7 +135,7 @@ private struct HMSocialChrome: View {
             }.presentationDetents([.medium, .large]).hmTheme(theme).preferredColorScheme(.dark)
         }
     }
-    private func resting(safe: EdgeInsets, nav: CGFloat) -> some View {
+    private func resting(safe: EdgeInsets, nav: CGFloat, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Spacer(minLength: 0)
@@ -143,11 +144,13 @@ private struct HMSocialChrome: View {
                         rail
                         HMSocialAuxiliaryControls(player: player, item: item, aspectRatio: aspectRatio, showsMute: options.showsMute)
                             .frame(height: 44)
-                    }.frame(minWidth: railWidth, alignment: .trailing)
+                    }.frame(minWidth: min(railWidth, max(0, width - safe.leading - safe.trailing - 28)), alignment: .trailing)
                 }.opacity(adActive ? 0 : 1).allowsHitTesting(!adActive).accessibilityHidden(!current || state.isSheetOpen || adActive)
             }
-            HMSocialPreviewSlot(player: player, item: item, data: data, state: state, options: options,
-                eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen, onOpen: openComments)
+            if !dynamicType.isAccessibilitySize {
+                HMSocialPreviewSlot(player: player, item: item, data: data, state: state, options: options,
+                    eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen, onOpen: openComments)
+            }
             HMHitArea {
                 let context = HMSocialMetadataContext(content: data.content, hashtagTapped: callbacks.hashtagTapped, expand: { expandedMetadata = true })
                 if let replacementMetadata { replacementMetadata(context) }
@@ -197,7 +200,7 @@ private struct HMSocialChrome: View {
                     .accessibilityAction(named: Text("Expand comments")) { state.dragComments(to: state.sheetHeight + 60) }
                     .accessibilityAction(named: Text("Shrink comments")) { state.dragComments(to: max(140, state.sheetHeight - 60)) }
                     .accessibilityIdentifier("hm-comment-handle")
-                Button(action: closeComments) { theme.image(for: .close).frame(width: 44, height: 44) }
+                Button(action: closeComments) { theme.image(for: .close).font(.system(size: 22)).frame(width: 44, height: 44) }
                     .accessibilityLabel("Close comments").accessibilityIdentifier("hm-close-comments")
             }.padding(.horizontal, 12)
             Text("Comments").font(theme.fonts.headline).accessibilityAddTraits(.isHeader)
@@ -271,7 +274,7 @@ private struct HMSocialControl: View {
     let action: () -> Void
     @Environment(\.hmTheme) private var theme
     var body: some View {
-        Button(action: action) { theme.image(for: icon).font(.title3).frame(minWidth: 44, minHeight: 44) }
+        Button(action: action) { theme.image(for: icon).font(.system(size: 22)).frame(minWidth: 44, minHeight: 44) }
             .buttonStyle(.plain).foregroundStyle(theme.colors.onVideo).accessibilityLabel(label).accessibilityValue(value)
     }
 }
@@ -333,6 +336,15 @@ private struct HMSocialSidecar: View {
     let nav: CGFloat
     @Environment(\.hmReservedRegions) private var reservations
     @State private var ownFrame = CGRect.zero
+    @State private var candidate: CGRect?
+    private struct Placement: Equatable {
+        let bounds: CGRect
+        let video: CGRect
+        let safe: HMVideoInsets
+        let nav: CGFloat
+        let size: CGSize
+        let excluded: [CGRect]
+    }
     @State private var ready = false
     var body: some View {
         GeometryReader { geometry in
@@ -340,18 +352,22 @@ private struct HMSocialSidecar: View {
                 let bounds = CGRect(origin: .zero, size: geometry.size)
                 let insets = HMVideoInsets(top: safe.top, left: safe.leading, bottom: safe.bottom, right: safe.trailing)
                 let excluded = reservations.filter { !approximatelyEqual($0, ownFrame) }
-                let candidate = HMOverlayRegions.freeRects(videoFrame: videoFrame, in: bounds,
-                    safeArea: insets, contentInsets: HMVideoInsets(bottom: nav), excluding: excluded)
-                    .sorted { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY }
-                    .compactMap { region -> CGRect? in
-                        let rect = CGRect(x: region.minX + 12, y: region.minY + 12, width: slotSize.width, height: slotSize.height)
-                        return HMOverlayRegions.isFree(rect, videoFrame: videoFrame, in: bounds, safeArea: insets,
-                            contentInsets: HMVideoInsets(bottom: nav), excluding: excluded) ? rect : nil
-                    }.first
+                let inputs = Placement(bounds: bounds, video: videoFrame, safe: insets, nav: nav,
+                    size: slotSize, excluded: excluded)
                 if let rect = candidate {
                     HMHitArea { slot.frame(width: rect.width, height: rect.height) }
                         .position(x: rect.midX, y: rect.midY).accessibilityIdentifier("hm-sidecar")
-                        .onChange(of: rect, initial: true) { _, value in if !approximatelyEqual(value, ownFrame) { ownFrame = value } }
+                }
+                Color.clear.allowsHitTesting(false).onChange(of: inputs, initial: true) { _, input in
+                    candidate = HMOverlayRegions.freeRects(videoFrame: input.video, in: input.bounds,
+                        safeArea: input.safe, contentInsets: HMVideoInsets(bottom: input.nav), excluding: input.excluded)
+                        .sorted { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY }
+                        .compactMap { region -> CGRect? in
+                            let rect = CGRect(x: region.minX + 12, y: region.minY + 12, width: input.size.width, height: input.size.height)
+                            return HMOverlayRegions.isFree(rect, videoFrame: input.video, in: input.bounds,
+                                safeArea: input.safe, contentInsets: HMVideoInsets(bottom: input.nav), excluding: input.excluded) ? rect : nil
+                        }.first
+                    if let candidate, !approximatelyEqual(candidate, ownFrame) { ownFrame = candidate }
                 }
             }
         }.task(id: player.currentItem?.id == item.id && player.snapshot(for: item).timeToFirstFrame != nil) {

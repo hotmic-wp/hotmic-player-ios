@@ -114,6 +114,7 @@ public struct HMSocialContent: Equatable, Sendable {
     public var theme: HMTheme
     private var selectionRevision = 0
     @ObservationIgnored private var mappedContent: HMSocialContent?
+    private var publishedContent: HMSocialContent?
     @ObservationIgnored private var mappedKey: MappingKey?
     private struct MappingKey: Equatable {
         var revision: Int
@@ -126,22 +127,40 @@ public struct HMSocialContent: Equatable, Sendable {
     public init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default,
                 previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) }) {
         self.engagement = engagement; self.metadata = metadata; self.theme = theme; self.previewSelection = previewSelection
+        observeContent()
     }
     /// Current host-supplied social data, observed by the UI.
     public var content: HMSocialContent {
-        // Public revision is the invalidation key. The clock matters only before independent pages arrive.
-        let key = MappingKey(revision: engagement.revision,
-            mediaTime: engagement.hasLoadedComments ? nil : engagement.currentMediaTime,
-            metadata: metadata, reaction: theme.primaryReaction, selection: selectionRevision)
-        if mappedKey == key, let mappedContent { return mappedContent }
-        var value = metadata
-        let summary = engagement.reactionSummary(for: theme.primaryReaction)
-        value.fireCount = summary?.count; value.isReacted = summary?.reactedByViewer ?? false
-        value.commentCount = engagement.commentCount
-        value.comments = engagement.comments().map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
-        value.previewComments = previewSelection(value.comments)
-        mappedKey = key; mappedContent = value
-        return value
+        // Only changed mapped data invalidates consumers; clock observation stays in the adapter.
+        publishedContent ?? metadata
+    }
+    @ObservationIgnored private var mappingIsStale = false
+    private func observeContent() {
+        mappingIsStale = false
+        let value = withObservationTracking {
+            let key = MappingKey(revision: engagement.revision,
+                mediaTime: engagement.hasLoadedComments ? nil : engagement.currentMediaTime,
+                metadata: metadata, reaction: theme.primaryReaction, selection: selectionRevision)
+            if mappedKey == key, let mappedContent { return mappedContent }
+            var value = metadata
+            let summary = engagement.reactionSummary(for: theme.primaryReaction)
+            value.fireCount = summary?.count; value.isReacted = summary?.reactedByViewer ?? false
+            value.commentCount = engagement.commentCount
+            value.comments = engagement.comments().map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
+            value.previewComments = previewSelection(value.comments)
+            mappedKey = key
+            return value
+        } onChange: { [weak self] in
+            // Clock-indexed sources still reveal replay rows at their timestamps, but
+            // unchanged rows/counts never invalidate the overlay on progress ticks.
+            MainActor.assumeIsolated { self?.mappingIsStale = true }
+            Task { @MainActor [weak self] in
+                guard let self, self.mappingIsStale else { return }
+                self.observeContent()
+            }
+        }
+        mappedContent = value
+        if publishedContent != value { publishedContent = value }
     }
     /// Whether item reaction membership can be changed.
     public var canFire: Bool { engagement.supports(.toggleReaction) && engagement.reactionSummary(for: theme.primaryReaction) != nil }

@@ -30,6 +30,6 @@ Options select chat, polls, reactions, metadata, scrubber and playback tap handl
 
 ## Accessibility
 
-Keep VoiceOver labels meaningful when replacing controls. Built-in components provide action labels and the scrubber adjusts in 5% steps. Reduce Motion replaces travel with fades and disables ambient floating reactions. Larger accessibility text sizes show fewer, larger chat lines. Check your palette, scrim and fonts in both appearances and at accessibility sizes on your target devices.
+Keep VoiceOver labels meaningful when replacing controls. Built-in components provide action labels and the scrubber adjusts in ten-second steps. Reduce Motion replaces travel with fades and disables ambient floating reactions. Larger accessibility text sizes show fewer, larger chat lines. Check your palette, scrim and fonts in both appearances and at accessibility sizes on your target devices.
 
 Use [Examples/PlayerWithUI](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerWithUI) to preview the orange/yellow theme, or the full Sample for layout and accessibility exploration.

@@ -9,6 +9,7 @@ public struct HMMetadataView: View {
     /// Host navigation callback for an activated tag.
     public var onHashtag: (String) -> Void
     @State private var expanded = false
+    @Environment(\.dynamicTypeSize) private var dynamicType
     private let onExpand: (() -> Void)?
     @Environment(\.hmTheme) private var theme
     /// Creates this component with host-supplied data and actions.
@@ -22,10 +23,12 @@ public struct HMMetadataView: View {
     /// Renders the component using current observable data and environment theme.
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let community = content.community { Text(community).font(theme.fonts.caption) }
-            Text(content.title).font(theme.fonts.headline).lineLimit(2)
-            if !content.description.isEmpty {
-                Text(content.description).font(theme.fonts.body).lineLimit(expanded ? nil : 2)
+            if !dynamicType.isAccessibilitySize || expanded, let community = content.community { Text(community).font(theme.fonts.caption) }
+            Text(content.title).font(theme.fonts.headline).lineLimit(dynamicType.isAccessibilitySize && !expanded ? 1 : 2)
+            if !content.description.isEmpty || dynamicType.isAccessibilitySize {
+                if !dynamicType.isAccessibilitySize || expanded {
+                    Text(content.description).font(theme.fonts.body).lineLimit(expanded ? nil : 2)
+                }
                 Button(expanded ? "Show less" : "Show more") {
                     if let onExpand { onExpand() } else { expanded.toggle() }
                 }
@@ -34,9 +37,11 @@ public struct HMMetadataView: View {
                     .accessibilityIdentifier("hm-description-toggle")
             }
             // Wrapping adapts to large accessibility sizes without truncating a tappable tag.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { tags }
-                VStack(alignment: .leading, spacing: 0) { tags }
+            if !dynamicType.isAccessibilitySize || expanded {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { tags }
+                    VStack(alignment: .leading, spacing: 0) { tags }
+                }
             }
         }
         .foregroundStyle(theme.colors.onVideo)

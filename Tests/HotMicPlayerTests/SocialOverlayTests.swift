@@ -1,5 +1,6 @@
 #if os(iOS)
 import XCTest
+import Observation
 import HotMicPlayer
 @testable import HotMicPlayerUI
 
@@ -73,20 +74,65 @@ import HotMicPlayer
         XCTAssertEqual(mappings, 1)
         try await adapter.setReacted(true)
         XCTAssertEqual(engagement.reactionSummary(for: "💜")?.reactedByViewer, true)
+        await settleAdapter()
         XCTAssertTrue(adapter.content.isReacted)
         let priorMappings = mappings
         engagement.updateCommentCount(99)
+        await settleAdapter()
         XCTAssertEqual(adapter.content.commentCount, 99)
         XCTAssertEqual(mappings, priorMappings + 1)
         adapter.theme = .default
+        await settleAdapter()
         XCTAssertEqual(adapter.content.fireCount, 7)
         adapter.metadata.title = "Updated"
+        await settleAdapter()
         XCTAssertEqual(adapter.content.title, "Updated")
         adapter.previewSelection = { _ in mappings += 1; return [] }
+        await settleAdapter()
         _ = adapter.content
         let finalMappings = mappings
         _ = adapter.content
         XCTAssertEqual(mappings, finalMappings)
+    }
+
+    private func settleAdapter() async {
+        for _ in 0..<10 { await Task.yield() }
+    }
+
+    @Observable final class Clock {
+        var time: TimeInterval = 0
+        var invalidations = 0
+    }
+
+    func testReplayClockPublishesOnlyChangedRowsWithoutCommentPaging() async {
+        let clock = Clock()
+        let item = HMMediaItem(id: "replay", url: URL(string: "https://example.com/replay.mp4")!)
+        let timeline = EngagementTests.FixtureTimeline(duration: 12, events: [
+            .init(id: "at-two", offset: 2, kind: .chat, author: "Fan", text: "Great play")
+        ])
+        let engagement = HMEngagement(item: item, timeline: timeline, source: nil, mediaClock: { clock.time })
+        let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: .init(title: "Replay"))
+        let changed = expectation(description: "rows change at timestamp")
+        withObservationTracking { _ = adapter.content } onChange: {
+            MainActor.assumeIsolated { clock.invalidations += 1; changed.fulfill() }
+        }
+        clock.time = 0.2
+        await settleAdapter()
+        clock.time = 1.8
+        await settleAdapter()
+        XCTAssertTrue(adapter.content.comments.isEmpty)
+        XCTAssertEqual(clock.invalidations, 0)
+        // A clock-only publication would fulfill before the row boundary.
+        clock.time = 2.1
+        await fulfillment(of: [changed], timeout: 2)
+        XCTAssertEqual(adapter.content.comments.map(\.id), ["at-two"])
+        let unchanged = expectation(description: "steady replay rows do not invalidate chrome")
+        unchanged.isInverted = true
+        withObservationTracking { _ = adapter.content } onChange: { unchanged.fulfill() }
+        clock.time = 2.3
+        await settleAdapter()
+        clock.time = 3
+        await fulfillment(of: [unchanged], timeout: 0.1)
     }
 
 }

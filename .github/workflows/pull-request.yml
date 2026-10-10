@@ -15,7 +15,7 @@ concurrency:
 jobs:
   validate:
     runs-on: macos-26
-    timeout-minutes: 8
+    timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -32,6 +32,14 @@ jobs:
           fi
           printf '%s\n' "$version"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .bench/release/DerivedData/SourcePackages
+            .bench/release/DerivedData/ModuleCache.noindex
+          key: swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
+          restore-keys: |
+            swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-
       - name: Check partner docs and API; build products and run the unit suite once
         env:
           PARTNER_DOCS_DENYLIST: ${{ secrets.PARTNER_DOCS_DENYLIST }}

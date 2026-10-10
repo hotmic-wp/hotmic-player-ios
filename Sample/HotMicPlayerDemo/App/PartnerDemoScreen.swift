@@ -70,11 +70,12 @@ struct PartnerDemoScreen: View {
                     }.accessibilityLabel("Demo options").accessibilityIdentifier("partner-options")
                 }
                 .padding(.horizontal, 16).background(.black.opacity(0.7))
-                Text(customUI ? "Custom UI on hooks" : "Partner demo · Kit UI").font(.caption).lineLimit(1)
+                Text(customUI ? "Partner demo · Custom UI" : "Partner demo · Kit UI").font(.caption).lineLimit(1)
                 if !notice.isEmpty { Text(notice).font(.caption).lineLimit(1).accessibilityIdentifier("partner-notice") }
                 }
                 if model.player.adState.isActive {
                     Button("Skip ad") { model.player.skipAd() }.frame(minHeight: 44).accessibilityIdentifier("partner-skip-ad")
+                        .disabled(model.player.adProgress.elapsed < 3 || !adPlaying) // Fake host's skip policy.
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red) }
                 Spacer()
@@ -111,8 +112,10 @@ struct PartnerDemoScreen: View {
             await model.record(reduceMotion: reduceMotion, dynamicType: String(describing: dynamicType))
         }
         #endif
-        .onDisappear { model.player.teardown() }
+        .onAppear { model.player.isFeedVisible = selectedTab == 0 }
+        .onDisappear { model.player.isFeedVisible = false }
     }
+    private var adPlaying: Bool { if case .playing = model.player.adState { return true }; return false }
     private var kit: HMSocialPlayerView {
         var view = HMSocialPlayerView(player: model.player, options: options, callbacks: callbacks, data: model.data)
             .sidecar(size: CGSize(width: 120, height: 54)) { _ in
@@ -146,6 +149,7 @@ struct PartnerDemoScreen: View {
     @ObservationIgnored private var adapters: [String: HMEngagementSocialAdapter] = [:]
     var error: String?
     init() { player = HMPlayer(interactions: CustomEngagementBackend()) }
+    deinit { MainActor.assumeIsolated { player.teardown() } }
     func selectSource(connect: Bool) async {
         guard connect != self.connect else { return }
         self.connect = connect; error = nil
@@ -229,56 +233,152 @@ struct PartnerDemoScreen: View {
 
 }
 
-/// Deliberately host-owned chrome using only core playback/layout/gesture APIs.
+/// Deliberately host-owned chrome using only public playback/layout/gesture hooks.
 private struct PartnerCustomSurface: View {
     let player: HMPlayer
     let data: (HMMediaItem) -> any HMSocialDataSource
     let navHeight: CGFloat
     @State private var sheetHeight: CGFloat = 0
-    @State private var fire = false
+    @State private var keyboard: CGFloat = 0
     var body: some View {
         GeometryReader { geometry in
-            HMVerticalFeedView(player: player) { item, snapshot in
-                GeometryReader { cell in
-                    VStack {
-                        Spacer()
-                        if player.adState.isActive { EmptyView() } else if sheetHeight == 0 {
-                            HMHitArea {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Text(data(item).content.title).font(.headline)
-                                    Text("Host-designed controls").font(.caption)
-                                    HStack {
-                                        Button(fire ? "Fire, reacted" : "Fire") { react(item) }
-                                        Button("Comments") { sheetHeight = 360 }
-                                        if let url = item.url { ShareLink("Share", item: url) }
-                                        Button("Fullscreen") { player.enterFullscreen() }
-                                    }.frame(minHeight: 44)
-                                }.padding().background(.black.opacity(0.65))
-                            }
-                        } else {
-                            HMHitArea {
-                                VStack {
-                                    Button("Close comments") { sheetHeight = 0 }.frame(minHeight: 44)
-                                    Text("Host comment sheet").font(.headline)
-                                    ForEach(data(item).content.comments) { Text("\($0.author): \($0.text)") }
-                                    Spacer()
-                                }.padding().frame(height: sheetHeight).frame(maxWidth: .infinity).background(.regularMaterial)
-                                .gesture(DragGesture().onChanged { sheetHeight = max(120, 360 - $0.translation.height) }
-                                    .onEnded { if $0.translation.height > 160 { sheetHeight = 0 } })
-                            }
-                        }
-                    }.padding(.bottom, navHeight + geometry.safeAreaInsets.bottom)
-                }
+            let safe = geometry.safeAreaInsets
+            let fullHeight = geometry.size.height + safe.top + safe.bottom
+            HMVerticalFeedView(player: player) { item, _ in
+                PartnerCustomChrome(player: player, item: item, data: data(item), sheetHeight: $sheetHeight, keyboard: keyboard).id(item.id)
             }
             .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: navHeight + geometry.safeAreaInsets.bottom),
-                squeezeTarget: sheetHeight > 0 ? CGRect(x: 0, y: 0, width: geometry.size.width, height: geometry.size.height - sheetHeight) : nil))
+                squeezeTarget: sheetHeight > 0 ? CGRect(x: 0, y: safe.top, width: geometry.size.width,
+                    height: max(0, fullHeight - safe.top - safe.bottom - navHeight - sheetHeight - keyboard)) : nil))
             .hmVideoGestures(isAdPlaying: player.adState.isActive, onTap: { player.togglePlayPause() },
-                onDoubleTap: { _ in if let item = player.currentItem { react(item) } })
+                onDoubleTap: { _ in
+                    if let item = player.currentItem { Task { try? await data(item).setReacted(true) } }
+                })
             .onChange(of: player.adState.isActive) { _, active in if active { sheetHeight = 0 } }
+            .onChange(of: player.currentItem?.id) { _, _ in sheetHeight = 0 }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+                let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
+                keyboard = max(0, geometry.frame(in: .global).maxY - end.minY - navHeight)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = 0 }
         }
     }
-    private func react(_ item: HMMediaItem) {
-        fire = true
-        Task { try? await data(item).setReacted(true) }
+}
+
+private struct PartnerCustomChrome: View {
+    let player: HMPlayer
+    let item: HMMediaItem
+    let data: any HMSocialDataSource
+    @Binding var sheetHeight: CGFloat
+    let keyboard: CGFloat
+    @State private var draft = ""
+    @State private var error: String?
+    @Environment(\.hmFeedSafeArea) private var safe
+    @Environment(\.dynamicTypeSize) private var textSize
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomLeading) {
+                LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+                    .allowsHitTesting(false)
+                if !player.adState.isActive && sheetHeight == 0 {
+                    HMHitArea {
+                        VStack(spacing: 16) {
+                            Button {
+                                Task { try? await data.setReacted(!data.content.isReacted) }
+                            } label: {
+                                PartnerHostAction(symbol: "flame.fill", title: "Fire",
+                                    detail: data.content.fireCount.map { HMCountFormatter().string(from: $0) })
+                                    .foregroundStyle(data.content.isReacted ? .orange : .white)
+                            }.disabled(!data.canFire).accessibilityLabel("Fire")
+                                .accessibilityValue(data.content.isReacted ? "Reacted" : "Not reacted")
+                            Button { sheetHeight = 360 } label: {
+                                PartnerHostAction(symbol: "bubble.right.fill", title: "Comments",
+                                    detail: data.content.commentCount.map { HMCountFormatter().string(from: $0) })
+                            }.accessibilityLabel("Comments")
+                            if let url = item.url {
+                                ShareLink(item: url) { PartnerHostAction(symbol: "arrowshape.turn.up.right.fill", title: "Share") }
+                                    .accessibilityLabel("Share")
+                            }
+                        }.padding(10).background(.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 24))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 16).padding(.bottom, safe.bottom + 190)
+                    HMHitArea {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if let community = data.content.community {
+                                Text(community.uppercased()).font(.caption2.bold()).tracking(1)
+                                    .padding(.horizontal, 10).padding(.vertical, 6).background(.indigo, in: Capsule())
+                            }
+                            Text(data.content.title).font(.title2.bold()).lineLimit(textSize.isAccessibilitySize ? 1 : 2)
+                            if !textSize.isAccessibilitySize {
+                                Text(data.content.description).font(.subheadline).lineLimit(2).foregroundStyle(.white.opacity(0.8))
+                                Text(data.content.hashtags.map { "#" + $0 }.joined(separator: "  ")).font(.caption.bold())
+                            }
+                            HStack(spacing: 8) {
+                                control(player.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", label: player.isMuted ? "Unmute" : "Mute") { player.toggleMute() }
+                                if !player.availableCaptionLanguages.isEmpty {
+                                    control("captions.bubble", label: "Closed captions") { player.captionsEnabled.toggle() }
+                                }
+                                control("arrow.up.left.and.arrow.down.right", label: player.isFullscreen ? "Exit fullscreen" : "Fullscreen") {
+                                    if player.isFullscreen { player.exitFullscreen() } else { player.enterFullscreen() }
+                                }
+                            }
+                        }.frame(maxWidth: max(0, geometry.size.width - 116), alignment: .leading)
+                    }.padding(16).padding(.bottom, safe.bottom)
+                }
+                if sheetHeight > 0 && player.currentItem?.id == item.id && !player.adState.isActive {
+                    HMHitArea {
+                        VStack(spacing: 12) {
+                            Capsule().fill(.secondary).frame(width: 40, height: 5)
+                                .frame(maxWidth: .infinity).frame(height: 24).contentShape(Rectangle())
+                                .gesture(DragGesture().onChanged { sheetHeight = max(120, 360 - $0.translation.height) }
+                                    .onEnded { if $0.translation.height > 160 { sheetHeight = 0 } })
+                            HStack { Text("Comments").font(.headline); Spacer(); Button("Close comments") { sheetHeight = 0 } }
+                                .frame(minHeight: 44)
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    if data.canLoadMore { Button("Load older comments") { Task { try? await data.loadMoreComments() } } }
+                                    ForEach(data.content.comments) { Text("\($0.author): \($0.text)") }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            HStack {
+                                TextField("Add a comment", text: $draft).textFieldStyle(.roundedBorder).accessibilityIdentifier("partner-custom-input")
+                                Button("Post") {
+                                    let text = draft
+                                    Task {
+                                        do { try await data.postComment(text); if draft == text { draft = "" }; error = nil }
+                                        catch { self.error = error.localizedDescription }
+                                    }
+                                }.disabled(draft.isEmpty || !data.canPost)
+                            }.frame(minHeight: 44)
+                            if let error { Text(error).font(.caption).foregroundStyle(.orange) }
+                        }.padding().frame(height: sheetHeight).frame(maxWidth: .infinity)
+                            .background(.black, in: UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
+                    }.padding(.bottom, safe.bottom + keyboard)
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom).foregroundStyle(.white)
+        }
+        .task(id: player.currentItem?.id == item.id && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(player.currentItem?.id == item.id && player.isFeedVisible && !player.isFullscreen) }
+        .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false) }
+    }
+    private func control(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 18, weight: .semibold)).frame(width: 44, height: 44)
+                .background(.white.opacity(0.12), in: Circle())
+        }.accessibilityLabel(label)
+    }
+}
+
+/// A host style shared conceptually with the core-only CustomOverlay starter.
+private struct PartnerHostAction: View {
+    let symbol: String
+    let title: String
+    var detail: String? = nil
+    var body: some View {
+        VStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: 22, weight: .semibold)).frame(width: 44, height: 44)
+            Text(title).font(.caption2.bold()).lineLimit(1)
+            if let detail { Text(detail).font(.caption2.monospacedDigit()).lineLimit(1) }
+        }.frame(width: 64)
     }
 }

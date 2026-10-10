@@ -69,5 +69,27 @@ final class PartnerDemoUITests: XCTestCase {
         expectation(for: NSPredicate(format: "label == %@", "A moment to share"), evaluatedWith: surface)
         waitForExpectations(timeout: 8)
         expectValue(fire, contains: "not reacted")
+        // Exercise the host-owned sheet as part of this same flow, including the software keyboard.
+        app.buttons["partner-options"].tap()
+        app.descendants(matching: .any)["Custom UI on hooks"].firstMatch.tap()
+        let customComments = app.buttons["partner-custom-comments"].firstMatch
+        XCTAssertTrue(customComments.waitForExistence(timeout: 5))
+        customComments.tap()
+        let customClose = app.buttons["Close comments"]
+        XCTAssertTrue(customClose.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(customClose.frame.minY, app.frame.height * 0.4)
+        let customInput = app.textFields["partner-custom-input"].firstMatch
+        customInput.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        customInput.typeText("Another great play")
+        XCTAssertLessThanOrEqual(customInput.frame.maxY, app.keyboards.firstMatch.frame.minY + 2)
+        let customFocused = XCTAttachment(screenshot: app.screenshot())
+        customFocused.name = "custom-composer-layout"; customFocused.lifetime = .keepAlways; add(customFocused)
+        app.buttons["Post"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Another great play")).firstMatch.waitForExistence(timeout: 8))
+        customClose.tap()
+        app.buttons["Guide"].tap()
+        app.buttons["Feed"].tap()
+        expectValue(surface, contains: "Playing")
     }
 }

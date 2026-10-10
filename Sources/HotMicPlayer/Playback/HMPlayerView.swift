@@ -95,6 +95,8 @@ public final class HMPlayerViewController: UIHostingController<HMPlayerView<Empt
     }
     /// Sibling UIKit overlay rectangles, converted into this view's coordinates by the host.
     public var excludedHitAreas: [CGRect] = [] { didSet { updateSurface() } }
+    /// Additional caption-safe surface-edge insets; registered excludedHitAreas are also reserved.
+    public var captionInsets = HMVideoInsets.zero { didSet { updateSurface() } }
     /// Suppresses taps and video accessibility actions during ads.
     public var isAdPlaying = false { didSet { updateSurface() } }
     /// Overrides the default single-tap toggle.
@@ -115,6 +117,7 @@ public final class HMPlayerViewController: UIHostingController<HMPlayerView<Empt
                 let frame = surface.convert(surface.videoFrame, to: self.view)
                 self.reportVideoFrame(frame)
             }, coordinateReference: { [weak self] in self?.viewIfLoaded })
+        surface.surfaceHooks?.captionInsets = captionInsets
         rootView = surface
     }
     private func reportVideoFrame(_ frame: CGRect) {
@@ -159,6 +162,7 @@ struct HMItemSurface<Overlay: View>: View {
     let gravity: AVLayerVideoGravity?
     let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
     @Environment(\.hmSurfaceHooks) private var hooks
+    @Environment(\.hmFeedSafeArea) private var feedSafeArea
     @State private var hitSpace = UUID()
     @State private var overlayRegions: [CGRect] = []
 
@@ -206,10 +210,25 @@ struct HMItemSurface<Overlay: View>: View {
                                       state: player.snapshot(for: item).state,
                                       wantsPlayback: player.wantsPlayback,
                                       enabled: !player.adState.isActive && player.currentItem?.id == item.id && player.isFullscreen == fullscreen,
-                                      toggle: { player.togglePlayPause() })
+                                      toggle: { player.togglePlayPause() }, title: display.title,
+                                      snapshot: player.snapshot(for: item), muted: player.isMuted,
+                                      captions: player.captionsEnabled, hasCaptions: !player.availableCaptionLanguages.isEmpty,
+                                      toggleMute: { player.toggleMute() }, toggleCaptions: { player.captionsEnabled.toggle() },
+                                      seek: { player.seek(to: $0) })
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 if player.currentItem?.id == item.id, player.adState.isActive, player.isFullscreen == fullscreen {
                     HMAdSurface(player: player).frame(width: geometry.size.width, height: geometry.size.height)
+                }
+                if player.currentItem?.id == item.id, !player.adState.isActive, player.isFullscreen == fullscreen,
+                   let node = player.node(for: item) {
+                    let safe = HMVideoInsets(top: max(geometry.safeAreaInsets.top, feedSafeArea.top), left: max(geometry.safeAreaInsets.leading, feedSafeArea.leading),
+                                             bottom: max(geometry.safeAreaInsets.bottom, feedSafeArea.bottom), right: max(geometry.safeAreaInsets.trailing, feedSafeArea.trailing))
+                    HMCaptionOverlay(controller: node.captions, text: node.captions.text(at: node.snapshot.currentTime),
+                        videoFrame: videoFrame, safeArea: safe, insets: hooks.captionInsets, regions: regions,
+                        coordinateReference: hooks.coordinateReference, hostRegions: hooks.excludedRegions,
+                        useNative: item.captionSources.isEmpty && regions.isEmpty && hooks.captionInsets == .zero && safe == .zero,
+                        styleRevision: player.captionStyleRevision)
+                        .allowsHitTesting(false)
                 }
                 overlay(display, overlaySnapshot(videoFrame))
                     .environment(\.hmHitSpace, hitSpace)

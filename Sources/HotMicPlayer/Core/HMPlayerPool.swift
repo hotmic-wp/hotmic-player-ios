@@ -103,6 +103,10 @@ final class HMPlayerPool {
         }
     }
 
+    func rebuild() {
+        releaseAll(); nodes.removeAll(); resize(to: configuration.poolSize)
+    }
+
     func releaseAll() {
         for node in nodes {
             if let item = node.item { willRecycle?(node, item) }

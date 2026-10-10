@@ -7,7 +7,7 @@ import HotMicPlayer
 /// Bars fill as you watch. Emoji over the busiest moments are buttons: tap one to
 /// jump there. Drag anywhere on the bars to scrub; the rail grows and a timecode
 /// with what happened at that point follows the thumb. VoiceOver adjusts it in
-/// 5% steps, and each peak is its own button.
+/// ten-second steps, and each peak is its own button.
 ///
 /// Built so playback does not redraw it: the bars are a `Shape` that depends
 /// only on the density array, drawn twice and revealed by a mask whose width is
@@ -91,8 +91,10 @@ public struct HMEngagementScrubber: View {
             .accessibilityLabel("Playback position")
             .accessibilityValue("\(HMFormat.spoken(displayProgress * duration)) of \(HMFormat.spoken(duration))")
             .accessibilityAdjustableAction { direction in
-                let step = direction == .increment ? 0.05 : -0.05
-                seek(toProgress: clamped(progress + step))
+                guard duration > 0 else { return }
+                let target = HMAccessibility.seekTarget(position: snapshot.seekableStart + progress * duration,
+                    start: snapshot.seekableStart, duration: duration, increment: direction == .increment)
+                onSeek(target)
             }
         }
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: isScrubbing)

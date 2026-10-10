@@ -9,3 +9,10 @@
 "Paused" = "Paused";
 "Buffering" = "Buffering";
 "Failed" = "Failed";
+"Mute" = "Mute";
+"Unmute" = "Unmute";
+"Muted" = "Muted";
+"Audio on" = "Audio on";
+"Captions on" = "Captions on";
+"Captions off" = "Captions off";
+"Playback position" = "Playback position";

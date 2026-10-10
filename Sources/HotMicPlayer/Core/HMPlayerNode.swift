@@ -30,6 +30,7 @@ enum HMBackdropImage {
 @Observable
 final class HMPlayerNode: Identifiable {
 
+    let captions = HMCaptionController()
     let id: String
     @ObservationIgnored let player: AVPlayer
     @ObservationIgnored let playerLayer: AVPlayerLayer
@@ -142,6 +143,7 @@ final class HMPlayerNode: Identifiable {
     var finishesThenLeaves = false
     func updateMetadata(_ updated: HMMediaItem) {
         guard item?.hasSameMedia(as: updated, ignoring: configuration.volatileSigningQueryParameters) == true else { return }
+        if item?.captionSources != updated.captionSources, let playerItem = player.currentItem { captions.attach(playerItem, media: updated) }
         item = updated
         if !hasConfirmedAspect { snapshot.aspectRatio = updated.aspectRatio }
     }
@@ -479,6 +481,7 @@ final class HMPlayerNode: Identifiable {
     }
 
     private func installItemObservers(for playerItem: AVPlayerItem) {
+        if let item { captions.attach(playerItem, media: item) }
         observations.append(playerItem.observe(\.presentationSize, options: [.initial, .new]) { [weak self, weak playerItem] _, _ in
             Task { @MainActor [weak self, weak playerItem] in
                 guard let self, self.player.currentItem === playerItem else { return }
@@ -531,6 +534,7 @@ final class HMPlayerNode: Identifiable {
     }
 
     private func teardownItemObservers() {
+        captions.reset()
         aspectTask?.cancel(); aspectTask = nil
         // Keep the player-level observation, drop everything item-scoped.
         observations.removeAll()

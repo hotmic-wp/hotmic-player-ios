@@ -103,3 +103,7 @@ Open **Partner demo**, or launch with `--hm-partner-demo 1`. It generates offlin
 Benchmark grid cells accept `"social-overlay": 0` or `1` in `knobs` for paired S3 MP4/HLS runs through the actual kit. Set the same `"engagement": 1` backend in both cells to isolate UI overhead.
 
 The Debug-only `--hm-partner-trace 1` option records public player state, Reduce Motion/Dynamic Type settings and native accessibility actions in Documents `partner-state.json`. Its `partner-command.txt` accepts `fire|unique-nonce` to activate the native VoiceOver Fire action. Diagnostics are off by default.
+
+## Partner demo
+
+Launch with `--hm-partner-demo 1` for persistent Feed/Guide tabs, mixed portrait/landscape MP4 and HLS, ready-made/custom overlays, fake host/Connect sources, ranking refresh, captions, sidecar and both URL/host-played ad modes. Demo options select each capability. MP4, ads and social data are generated/offline. HLS uses a public sample by default; pass `--hm-partner-hls-url URL` for your own fixture (including a loopback origin). Fake Connect simulates capabilities beyond the current HotMic backend. See the [Partner integration guide](../Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md) and checklist.

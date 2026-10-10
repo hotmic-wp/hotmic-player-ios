@@ -75,9 +75,11 @@ private struct HMSocialChrome: View {
     @Environment(\.hmTheme) private var theme
     @Environment(\.hmFeedSafeArea) private var feedSafeArea
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicType
     @ScaledMetric(relativeTo: .body) private var railWidth: CGFloat = 144
     @State private var dragStart: CGFloat?
     @State private var expandedMetadata = false
+    @State private var replayOwner = UUID()
     private var current: Bool { player.currentItem?.id == item.id }
     private var adActive: Bool { player.adState.isActive }
     var body: some View {
@@ -97,7 +99,7 @@ private struct HMSocialChrome: View {
                         .padding(.bottom, nav + 12).opacity(adActive ? 0 : 1).allowsHitTesting(!adActive)
                         .accessibilityHidden(!current || adActive)
                 } else {
-                    resting(safe: safe, nav: nav)
+                    resting(safe: safe, nav: nav, width: geometry.size.width)
                         .opacity(state.isSheetOpen || (adActive && options.hidesMetadataDuringAds) ? 0 : 1)
                         .allowsHitTesting(!state.isSheetOpen && !(adActive && options.hidesMetadataDuringAds))
                     HMSocialSidecar(player: player, item: item, videoFrame: videoFrame, slot: sidecar, slotSize: sidecarSize, safe: safe, nav: nav)
@@ -117,6 +119,8 @@ private struct HMSocialChrome: View {
         // Keep one visual hierarchy. Gate sections individually so an outer false value cannot expose hidden controls.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(current ? "hm-current-social-overlay" : "hm-warm-social-overlay")
+        .task(id: current && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(current && player.isFeedVisible && !player.isFullscreen, for: replayOwner) }
+        .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false, for: replayOwner) }
         .sheet(isPresented: $expandedMetadata) {
             NavigationStack {
                 ScrollView {
@@ -134,7 +138,7 @@ private struct HMSocialChrome: View {
             }.presentationDetents([.medium, .large]).hmTheme(theme).preferredColorScheme(.dark)
         }
     }
-    private func resting(safe: EdgeInsets, nav: CGFloat) -> some View {
+    private func resting(safe: EdgeInsets, nav: CGFloat, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Spacer(minLength: 0)
@@ -143,11 +147,13 @@ private struct HMSocialChrome: View {
                         rail
                         HMSocialAuxiliaryControls(player: player, item: item, aspectRatio: aspectRatio, showsMute: options.showsMute)
                             .frame(height: 44)
-                    }.frame(minWidth: railWidth, alignment: .trailing)
+                    }.frame(minWidth: min(railWidth, max(0, width - safe.leading - safe.trailing - 28)), alignment: .trailing)
                 }.opacity(adActive ? 0 : 1).allowsHitTesting(!adActive).accessibilityHidden(!current || state.isSheetOpen || adActive)
             }
-            HMSocialPreviewSlot(player: player, item: item, data: data, state: state, options: options,
-                eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen, onOpen: openComments)
+            if !dynamicType.isAccessibilitySize {
+                HMSocialPreviewSlot(player: player, item: item, data: data, state: state, options: options,
+                    eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen, onOpen: openComments)
+            }
             HMHitArea {
                 let context = HMSocialMetadataContext(content: data.content, hashtagTapped: callbacks.hashtagTapped, expand: { expandedMetadata = true })
                 if let replacementMetadata { replacementMetadata(context) }
@@ -197,7 +203,7 @@ private struct HMSocialChrome: View {
                     .accessibilityAction(named: Text("Expand comments")) { state.dragComments(to: state.sheetHeight + 60) }
                     .accessibilityAction(named: Text("Shrink comments")) { state.dragComments(to: max(140, state.sheetHeight - 60)) }
                     .accessibilityIdentifier("hm-comment-handle")
-                Button(action: closeComments) { theme.image(for: .close).frame(width: 44, height: 44) }
+                Button(action: closeComments) { theme.image(for: .close).font(.system(size: 22)).frame(width: 44, height: 44) }
                     .accessibilityLabel("Close comments").accessibilityIdentifier("hm-close-comments")
             }.padding(.horizontal, 12)
             Text("Comments").font(theme.fonts.headline).accessibilityAddTraits(.isHeader)
@@ -271,7 +277,7 @@ private struct HMSocialControl: View {
     let action: () -> Void
     @Environment(\.hmTheme) private var theme
     var body: some View {
-        Button(action: action) { theme.image(for: icon).font(.title3).frame(minWidth: 44, minHeight: 44) }
+        Button(action: action) { theme.image(for: icon).font(.system(size: 22)).frame(minWidth: 44, minHeight: 44) }
             .buttonStyle(.plain).foregroundStyle(theme.colors.onVideo).accessibilityLabel(label).accessibilityValue(value)
     }
 }
@@ -333,30 +339,51 @@ private struct HMSocialSidecar: View {
     let nav: CGFloat
     @Environment(\.hmReservedRegions) private var reservations
     @State private var ownFrame = CGRect.zero
-    @State private var ready = false
+    @State private var placementCache = PlacementCache()
+    private struct Placement: Equatable {
+        let bounds: CGRect
+        let video: CGRect
+        let safe: HMVideoInsets
+        let nav: CGFloat
+        let size: CGSize
+        let excluded: [CGRect]
+    }
+    // A non-observable cache keeps geometry synchronous without recalculating on progress ticks.
+    private final class PlacementCache {
+        var inputs: Placement?
+        var rect: CGRect?
+        func resolve(_ input: Placement) -> CGRect? {
+            if inputs == input { return rect }
+            inputs = input
+            rect = HMOverlayRegions.freeRects(videoFrame: input.video, in: input.bounds,
+                safeArea: input.safe, contentInsets: HMVideoInsets(bottom: input.nav), excluding: input.excluded)
+                .sorted { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY }
+                .compactMap { region -> CGRect? in
+                    let rect = CGRect(x: region.minX + 12, y: region.minY + 12, width: input.size.width, height: input.size.height)
+                    return HMOverlayRegions.isFree(rect, videoFrame: input.video, in: input.bounds,
+                        safeArea: input.safe, contentInsets: HMVideoInsets(bottom: input.nav), excluding: input.excluded) ? rect : nil
+                }.first
+            return rect
+        }
+    }
     var body: some View {
         GeometryReader { geometry in
-            if ready, let slot, slotSize.width > 0, slotSize.height > 0 {
+            if let slot, slotSize.width > 0, slotSize.height > 0,
+               player.currentItem?.id == item.id, player.snapshot(for: item).timeToFirstFrame != nil {
                 let bounds = CGRect(origin: .zero, size: geometry.size)
                 let insets = HMVideoInsets(top: safe.top, left: safe.leading, bottom: safe.bottom, right: safe.trailing)
                 let excluded = reservations.filter { !approximatelyEqual($0, ownFrame) }
-                let candidate = HMOverlayRegions.freeRects(videoFrame: videoFrame, in: bounds,
-                    safeArea: insets, contentInsets: HMVideoInsets(bottom: nav), excluding: excluded)
-                    .sorted { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY }
-                    .compactMap { region -> CGRect? in
-                        let rect = CGRect(x: region.minX + 12, y: region.minY + 12, width: slotSize.width, height: slotSize.height)
-                        return HMOverlayRegions.isFree(rect, videoFrame: videoFrame, in: bounds, safeArea: insets,
-                            contentInsets: HMVideoInsets(bottom: nav), excluding: excluded) ? rect : nil
-                    }.first
+                let inputs = Placement(bounds: bounds, video: videoFrame, safe: insets, nav: nav,
+                    size: slotSize, excluded: excluded)
+                let candidate = placementCache.resolve(inputs)
                 if let rect = candidate {
                     HMHitArea { slot.frame(width: rect.width, height: rect.height) }
                         .position(x: rect.midX, y: rect.midY).accessibilityIdentifier("hm-sidecar")
-                        .onChange(of: rect, initial: true) { _, value in if !approximatelyEqual(value, ownFrame) { ownFrame = value } }
+                }
+                Color.clear.allowsHitTesting(false).onChange(of: candidate, initial: true) { _, rect in
+                    if let rect, !approximatelyEqual(rect, ownFrame) { ownFrame = rect }
                 }
             }
-        }.task(id: player.currentItem?.id == item.id && player.snapshot(for: item).timeToFirstFrame != nil) {
-            guard player.currentItem?.id == item.id, player.snapshot(for: item).timeToFirstFrame != nil else { return }
-            await Task.yield(); ready = true
         }
     }
     private func approximatelyEqual(_ a: CGRect, _ b: CGRect) -> Bool {
@@ -442,11 +469,6 @@ private struct HMSocialSidecar: View {
     /// Creates this component with host-supplied data and actions.
     public init(content: HMSocialPlayerView, theme: HMTheme = .default) {
         self.player = content.player; super.init(rootView: AnyView(content.hmTheme(theme)))
-    }
-    /// Compatibility initializer. The content already owns the player; use init(content:theme:).
-    @available(*, deprecated, message: "Use init(content:theme:); content already contains its player")
-    public convenience init(player: HMPlayer, content: HMSocialPlayerView, theme: HMTheme = .default) {
-        self.init(content: content, theme: theme)
     }
     @available(*, unavailable) required dynamic init?(coder aDecoder: NSCoder) { fatalError("Use init(player:)") }
 }

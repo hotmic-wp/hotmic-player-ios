@@ -1,4 +1,4 @@
-# HotMicPlayer 1.0 release candidate
+# HotMicPlayer
 
 A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in your app. `HMPlayer` owns playback, five atomic playlist operations, bounded adaptive prefetch and events. Add only the integration layers you need.
 
@@ -10,15 +10,17 @@ A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in
 
 See [Engagement from your backend or HotMic](Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) and the [custom backend adapter](Examples/CustomEngagementBackend) for host-built comments and fire UI.
 
+Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md), [capability matrix](Sources/HotMicPlayer/HotMicPlayer.docc/CapabilityMatrix.md) and [integration checklist](Sources/HotMicPlayer/HotMicPlayer.docc/IntegrationChecklist.md). Choose either [ReadyMadeOverlay](Examples/ReadyMadeOverlay) or [CustomOverlay](Examples/CustomOverlay); both starters build in examples CI. The 1.1.0 changelog is a draft.
+
 ## Install
 
-In Xcode, add `https://github.com/hotmic-wp/hotmic-player-ios` as a Package Dependency. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For a Swift package:
+For the latest features, pin the commit SHA HotMic provides from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0-rc.4")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-This branch is `1.0.0-rc.4`. The requirement above resolves after its tag is published. Use `from: "1.0.0"` for the final stable release once that tag is published.
+`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Pin the commit SHA HotMic provides for that path and subsequent fixes, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -29,18 +31,26 @@ Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
 ## 1. Player only
 
-Given your `mp4URL` and `hlsURL`, keep a player in screen state and present the feed on the main actor:
+Given your `mp4URL` and `hlsURL`, keep one player owner in screen state and present the feed on the main actor:
 
 ```swift
 import SwiftUI
 import HotMicPlayer
+@MainActor final class FeedOwner: ObservableObject {
+    let player = HMPlayer()
+    // Terminal cleanup when the screen owner is released, including source and event subscriptions.
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct Feed: View {
-    @State private var player = HMPlayer()
+    @StateObject private var owner = FeedOwner()
+    private var player: HMPlayer { owner.player }
     let mp4URL: URL, hlsURL: URL
     var body: some View {
         HMVerticalFeedView(player: player)
-            .task { player.replaceAll([.init(id: "mp4", url: mp4URL), .init(id: "hls", url: hlsURL)]) }
-            .onDisappear { player.teardown() }
+            .task { guard player.items.isEmpty else { return }; player.replaceAll([.init(id: "mp4", url: mp4URL), .init(id: "hls", url: hlsURL)]) }
+            .onAppear { player.isFeedVisible = true }
+            .onDisappear { player.isFeedVisible = false }
     }
 }
 ```
@@ -94,17 +104,16 @@ Install [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect
 import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
-import HotMicPlayerConnect
-@MainActor func hotMicFeed(resolver: HotMicItemResolver,
-                          source: HotMicPlaylistSource,
-                          interactions: HotMicInteractionSource) -> some View {
+@MainActor func hotMicFeed(resolver: any HMItemResolver,
+                          source: any HMPlaylistSource,
+                          interactions: any HMInteractionSource) -> some View {
     let player = HMPlayer(resolver: resolver, interactions: interactions)
     player.playlistSource = source
     return HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
 }
 ```
 
-Retain and tear down the player with the screen as in level 1. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
+Retain the player with the screen as in level 1; hide it with `isFeedVisible` and call terminal `teardown()` only when its owner is permanently dismissed. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
 
 ## Requirements and performance
 

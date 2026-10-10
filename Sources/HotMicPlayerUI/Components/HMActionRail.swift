@@ -190,7 +190,7 @@ public struct HMActionRail: View {
     private func socialButton(icon: HMTheme.Icon, label: String, count: Int?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 2) {
-                theme.image(for: icon).font(.system(size: iconSize, weight: .semibold))
+                theme.image(for: icon).font(.system(size: min(44, iconSize), weight: .semibold))
                     .background(GeometryReader { geometry in
                         if icon == .fire {
                             Color.clear.onChange(of: geometry.frame(in: .named("hm-social-overlay")), initial: true) { _, frame in

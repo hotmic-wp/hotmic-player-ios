@@ -12,11 +12,10 @@ With adapters created according to that package's instructions, the player wirin
 import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
-import HotMicPlayerConnect
 
-@MainActor func hotMicFeed(resolver: HotMicItemResolver,
-                          playlistSource: HotMicPlaylistSource,
-                          interactionSource: HotMicInteractionSource) -> some View {
+@MainActor func hotMicFeed(resolver: any HMItemResolver,
+                          playlistSource: any HMPlaylistSource,
+                          interactionSource: any HMInteractionSource) -> some View {
     let player = HMPlayer(resolver: resolver, interactions: interactionSource)
     player.playlistSource = playlistSource
     // The feed loads the first page automatically.
@@ -24,6 +23,6 @@ import HotMicPlayerConnect
 }
 ```
 
-Retain the player for the screen’s lifetime and call `teardown()` when the screen disappears, as in <doc:GettingStarted>. Create and access the player and interaction source on the main actor. Do not duplicate network-session ownership in your view; follow the adapter's lifecycle contract. The player package has no dependency on HotMicCore, and URL-only partners need neither package.
+Retain the player for the screen’s lifetime and call `teardown()` only when its owner is permanently dismissed, as in <doc:GettingStarted>. Create and access the player and interaction source on the main actor. Do not duplicate network-session ownership in your view; follow the adapter's lifecycle contract. The player package has no dependency on HotMicCore, and URL-only partners need neither package.
 
 The partner [README](https://github.com/hotmic-wp/hotmic-player-ios#readme) links the adapter package. See <doc:EngagementAndCustomSources> for the shared contract and <doc:GettingStarted> for screen lifetime and event handling.

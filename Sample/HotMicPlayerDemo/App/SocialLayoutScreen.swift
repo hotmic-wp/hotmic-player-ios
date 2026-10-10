@@ -388,23 +388,71 @@ private struct SocialComments: View {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(name + ".mp4")
     try? FileManager.default.removeItem(at: url)
     let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-    let width = landscape ? 320 : 180, height = landscape ? 180 : 320
+    let width = landscape ? 640 : 360, height = landscape ? 360 : 640
     let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height])
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height])
     writer.add(input)
     guard writer.startWriting() else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     writer.startSession(atSourceTime: .zero)
-    var buffer: CVPixelBuffer?
-    CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
-    guard let pixels = buffer else { throw CocoaError(.fileWriteUnknown) }
-    CVPixelBufferLockBaseAddress(pixels, [])
-    memset(CVPixelBufferGetBaseAddress(pixels), 80, CVPixelBufferGetDataSize(pixels))
-    CVPixelBufferUnlockBaseAddress(pixels, [])
     for frame in 0..<(seconds * 10) {
         while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
+        guard let pixels = buffer else { throw CocoaError(.fileWriteUnknown) }
+        CVPixelBufferLockBaseAddress(pixels, [])
+        guard let context = CGContext(data: CVPixelBufferGetBaseAddress(pixels), width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixels), space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            CVPixelBufferUnlockBaseAddress(pixels, [])
+            throw CocoaError(.fileWriteUnknown)
+        }
+        drawDemoCourt(context, size: CGSize(width: width, height: height), time: Double(frame) / 10)
+        CVPixelBufferUnlockBaseAddress(pixels, [])
         guard adaptor.append(pixels, withPresentationTime: CMTime(value: Int64(frame), timescale: 10)) else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }
     input.markAsFinished(); await writer.finishWriting()
     guard writer.status == .completed else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     return url
+}
+
+/// Original synthetic court animation; every encoded frame contains visible action.
+private func drawDemoCourt(_ context: CGContext, size: CGSize, time: Double) {
+    if size.width > size.height {
+        context.translateBy(x: size.width, y: 0); context.rotate(by: .pi / 2)
+        context.scaleBy(x: size.height / 360, y: size.width / 640)
+    } else {
+        context.scaleBy(x: size.width / 360, y: size.height / 640)
+    }
+    context.setFillColor(CGColor(red: 0.06, green: 0.17, blue: 0.23, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 360, height: 640))
+    for strip in 0..<14 {
+        context.setFillColor(CGColor(red: strip.isMultiple(of: 2) ? 0.82 : 0.87, green: 0.61, blue: 0.37, alpha: 1))
+        context.fill(CGRect(x: 18 + strip * 24, y: 28, width: 24, height: 584))
+    }
+    context.setFillColor(CGColor(red: 0.12, green: 0.31, blue: 0.39, alpha: 1))
+    context.fill(CGRect(x: 112, y: 28, width: 136, height: 125))
+    context.fill(CGRect(x: 112, y: 487, width: 136, height: 125))
+    context.setStrokeColor(CGColor(gray: 1, alpha: 0.85)); context.setLineWidth(3)
+    context.stroke(CGRect(x: 18, y: 28, width: 324, height: 584))
+    context.move(to: CGPoint(x: 18, y: 320)); context.addLine(to: CGPoint(x: 342, y: 320)); context.strokePath()
+    context.strokeEllipse(in: CGRect(x: 131, y: 271, width: 98, height: 98))
+    for y in [CGFloat(48), 568] {
+        context.strokeEllipse(in: CGRect(x: 167, y: y, width: 26, height: 26))
+        context.stroke(CGRect(x: 150, y: y < 100 ? y - 5 : y + 31, width: 60, height: 3))
+    }
+    for index in 0..<6 {
+        let x = 80 + Double(index % 3) * 94 + sin(time * 1.1 + Double(index)) * 22
+        let y = 215 + Double(index / 3) * 150 + cos(time * 0.8 + Double(index)) * 40
+        context.setFillColor(CGColor(gray: 0, alpha: 0.18))
+        context.fillEllipse(in: CGRect(x: x - 13, y: y - 9, width: 32, height: 32))
+        context.setFillColor(index < 3 ? CGColor(red: 0.11, green: 0.45, blue: 0.94, alpha: 1)
+            : CGColor(red: 0.91, green: 0.25, blue: 0.27, alpha: 1))
+        context.fillEllipse(in: CGRect(x: x - 14, y: y - 14, width: 28, height: 28))
+        context.setFillColor(CGColor(gray: 1, alpha: 0.9))
+        context.fillEllipse(in: CGRect(x: x - 4, y: y - 4, width: 8, height: 8))
+    }
+    let ball = CGRect(x: 171 + sin(time * 1.4) * 75, y: 300 + cos(time * 0.9) * 105, width: 18, height: 18)
+    context.setFillColor(CGColor(red: 1, green: 0.48, blue: 0.08, alpha: 1)); context.fillEllipse(in: ball)
+    context.setStrokeColor(CGColor(gray: 0.15, alpha: 1)); context.setLineWidth(2); context.strokeEllipse(in: ball)
+    context.move(to: CGPoint(x: ball.midX, y: ball.minY)); context.addLine(to: CGPoint(x: ball.midX, y: ball.maxY)); context.strokePath()
 }

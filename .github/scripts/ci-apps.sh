@@ -21,4 +21,7 @@ build_app() {
 run_step Sample-simulator "$budget_sample" build_app Sample/HotMicPlayerDemo.xcodeproj HotMicPlayerDemo
 run_step PlayerOnly-simulator "$budget_example" build_app Examples/PlayerOnly/PlayerOnly.xcodeproj PlayerOnly
 run_step PlayerWithUI-simulator "$budget_example" build_app Examples/PlayerWithUI/PlayerWithUI.xcodeproj PlayerWithUI
+run_step ReadyMadeOverlay-simulator "$budget_example" build_app Examples/ReadyMadeOverlay/ReadyMadeOverlay.xcodeproj ReadyMadeOverlay
+run_step CustomOverlay-simulator "$budget_example" build_app Examples/CustomOverlay/CustomOverlay.xcodeproj CustomOverlay
+run_step documentation-snippets 90 python3 .github/scripts/compile-doc-snippets.py --derived-data "$derived" --output "$validation_dir/snippets"
 enforce_total

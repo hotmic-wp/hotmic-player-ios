@@ -7,10 +7,10 @@ Turn MP4 and HLS VOD URLs into a vertical feed.
 Add `https://github.com/hotmic-wp/hotmic-player-ios` in Xcode's Package Dependencies, then link the **HotMicPlayer** product to your app target. In a package manifest:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0-rc.4")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-The `1.0.0-rc.4` requirement resolves after its tag is published; `from: "1.0.0"` is for the final stable tag once published.
+`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the commit SHA HotMic provides until the next stable tag; see <doc:PartnerIntegrationGuide> for installation and version policy.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -27,21 +27,30 @@ Keep one player in SwiftUI state for the screen's lifetime. Replace `mp4URL` and
 import SwiftUI
 import HotMicPlayer
 
+@MainActor final class FeedOwner: ObservableObject {
+    let player = HMPlayer(configuration: .default)
+    // Terminal cleanup when the screen owner is released, including source and event subscriptions.
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct FeedScreen: View {
     let mp4URL: URL
     let hlsURL: URL
-    @State private var player = HMPlayer(configuration: .default)
+    @StateObject private var owner = FeedOwner()
+    private var player: HMPlayer { owner.player }
     var body: some View {
         HMVerticalFeedView(player: player) { item, snapshot in
             Text(item.title ?? "Video").foregroundStyle(.white)
         }
         .task {
+            guard player.items.isEmpty else { return }
             player.replaceAll([
                 HMMediaItem(id: "intro", url: mp4URL, format: .mp4),
                 HMMediaItem(id: "replay", url: hlsURL, format: .hls)
             ])
         }
-        .onDisappear { player.teardown() }
+        .onAppear { player.isFeedVisible = true }
+        .onDisappear { player.isFeedVisible = false }
     }
 }
 ```

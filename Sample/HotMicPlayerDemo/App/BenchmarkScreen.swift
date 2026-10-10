@@ -98,8 +98,9 @@ private struct BenchmarkSocialSurface: View {
 @MainActor private final class BenchmarkSocialData {
     private var adapters: [String: HMEngagementSocialAdapter] = [:]
     func adapter(player: HMPlayer, item: HMMediaItem) -> HMEngagementSocialAdapter {
-        if let adapter = adapters[item.id] { return adapter }
-        let adapter = HMEngagementSocialAdapter(engagement: player.engagement(for: item), metadata: HMSocialContent(
+        let engagement = player.engagement(for: item)
+        if let adapter = adapters[item.id], adapter.engagement === engagement { return adapter }
+        let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: HMSocialContent(
             title: "A moment to share", description: "Watch, react and join the conversation.", hashtags: ["Highlights"], community: "Community"))
         adapters[item.id] = adapter
         return adapter

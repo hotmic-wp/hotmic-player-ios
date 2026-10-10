@@ -180,6 +180,8 @@ public struct HMTheme {
         case fullscreen
         /// Playback affordance.
         case play
+        /// Pauses active playback.
+        case pause
         /// Closes sheets or exits fullscreen.
         case close
     }
@@ -197,6 +199,8 @@ public struct HMTheme {
     public var fullscreenSymbol = "arrow.up.left.and.arrow.down.right"
     /// Fallback SF Symbol for the paused playback affordance.
     public var playSymbol = "play.fill"
+    /// Fallback SF Symbol for active playback.
+    public var pauseSymbol = "pause.fill"
     /// Fallback SF Symbol for close and fullscreen exit controls.
     public var closeSymbol = "xmark"
 
@@ -213,6 +217,7 @@ public struct HMTheme {
         case .captions: symbol = captionsSymbol
         case .fullscreen: symbol = fullscreenSymbol
         case .play: symbol = playSymbol
+        case .pause: symbol = pauseSymbol
         case .close: symbol = closeSymbol
         }
         return Image(systemName: symbol)

@@ -170,7 +170,7 @@ public struct HMActionRail: View {
             if let onFire {
                 socialButton(icon: .fire, label: "Fire", count: content.fireCount, action: onFire)
                     .foregroundStyle(content.isReacted ? theme.colors.accentSecondary : theme.colors.onVideo)
-                    .accessibilityValue(content.isReacted ? "reacted" : "not reacted")
+                    .accessibilityValue((content.isReacted ? "reacted" : "not reacted") + (content.fireCount.map { ", \($0) reactions" } ?? ""))
                     .accessibilityIdentifier("hm-fire")
 
             }
@@ -183,6 +183,7 @@ public struct HMActionRail: View {
                     .accessibilityIdentifier("hm-share")
             }
         }.foregroundStyle(theme.colors.onVideo)
+        .padding(6).background(theme.colors.scrim.opacity(0.7), in: RoundedRectangle(cornerRadius: theme.cornerRadius))
         .sensoryFeedback(.impact(weight: .light), trigger: fireEvent)
     }
 
@@ -198,8 +199,9 @@ public struct HMActionRail: View {
                         }
                     })
                 if let count { Text(HMCountFormatter().string(from: count)).font(theme.fonts.caption.monospacedDigit()) }
-            }.frame(minWidth: 52, minHeight: 52).hmVideoLegible()
+            }.frame(minWidth: 52, minHeight: 52)
         }.buttonStyle(.plain).accessibilityLabel(label)
+            .accessibilityValue(count.map { "\($0)" } ?? "")
     }
 
     private func railButton(symbol: String, label: String, action: @escaping () -> Void) -> some View {

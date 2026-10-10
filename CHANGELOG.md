@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve social overlay identity across swipes, isolate timed UI work, and stabilize gesture callbacks. Prevent Fire burst replay; clamp keyboard/sheet squeeze together; keep metadata during ads; add rail/metadata replacement slots and theme-selected engagement reactions.
+
 - Add optional `HMSocialPlayerView`, `HMSocialOverlay` and a UIKit host for themeable social playback on public hooks, with standalone metadata, preview, Fire burst, progress, pause and comment-sheet components. Extend the existing action rail without changing its original initializer.
 - Add backend-independent social data/actions, an `HMEngagement` adapter, native sharing helper, interactive squeezeback, ad suppression, caption/mute controls, safe sidecar placement and host replacement sheets. Extend `HMTheme` with custom images, rail spacing and motion timing.
 - Add a generic Partner demo with offline mixed-orientation media, fake engagement, persistent navigation and kit/custom UI switching, plus a ready-made overlay DocC guide and opt-in benchmark overlay cells.

@@ -7,7 +7,7 @@ import HotMicPlayer
 @MainActor @Observable public final class HMSocialState {
     /// Preferred sheet height in points, clamped to the available viewport.
     public private(set) var sheetHeight: CGFloat = 0
-    /// Monotonically increasing event shared by burst and rail.
+    /// Monotonically increasing positive-reaction event shared by burst and rail.
     public private(set) var fireID = 0
     /// Latest surface tap location, or the rail target for a rail activation.
     public private(set) var fireOrigin: CGPoint?
@@ -16,7 +16,16 @@ import HotMicPlayer
     /// Latest Fire action failure, suitable for displaying to the viewer.
     public private(set) var error: String?
     var fireItemID: String?
+    var fireIsPositive = false
     var errorItemID: String?
+    /// Maximum sheet height after viewport, safe-area and keyboard obstruction are accounted for.
+    public private(set) var maximumSheetHeight: CGFloat = .greatestFiniteMagnitude
+    /// Distance from the surface bottom to the sheet, including host navigation or keyboard.
+    public private(set) var sheetBottomInset: CGFloat = 0
+    @ObservationIgnored private var previewedItems: Set<String> = []
+    @ObservationIgnored private var fireTargets: [String: CGPoint] = [:]
+    func recordFireTarget(_ point: CGPoint, for itemID: String) { fireTargets[itemID] = point }
+    private var requestID = 0
     private var sheetItem: HMMediaItem?
     @ObservationIgnored private var sheetCallback: ((HMMediaItem, Bool) -> Void)?
     /// Creates this component with host-supplied data and actions.
@@ -25,11 +34,18 @@ import HotMicPlayer
     public func openComments(item: HMMediaItem, height: CGFloat, isAdActive: Bool,
                              onChange: @escaping (HMMediaItem, Bool) -> Void = { _, _ in }) {
         guard !isAdActive, sheetItem == nil else { return }
-        sheetItem = item; sheetCallback = onChange; sheetHeight = max(0, height)
+        sheetItem = item; sheetCallback = onChange; sheetHeight = min(maximumSheetHeight, max(1, height))
         onChange(item, true)
     }
     /// Updates the public squeeze target continuously while the sheet handle is dragged.
-    public func dragComments(to height: CGFloat) { guard sheetItem != nil else { return }; sheetHeight = max(1, height) }
+    public func dragComments(to height: CGFloat) { guard sheetItem != nil else { return }; sheetHeight = min(maximumSheetHeight, max(1, height)) }
+    /// Updates viewport constraints. The visible sheet and the video squeeze share this exact height.
+    public func updateSheetLayout(maximumHeight: CGFloat, bottomInset: CGFloat) {
+        maximumSheetHeight = max(1, maximumHeight)
+        sheetBottomInset = max(0, bottomInset)
+        if isSheetOpen { sheetHeight = min(sheetHeight, maximumSheetHeight) }
+    }
+    func claimPreview(for itemID: String) -> Bool { previewedItems.insert(itemID).inserted }
     /// Closes the sheet and balances its originating item callback, including cancellation.
     public func closeComments() {
         guard let item = sheetItem else { return }
@@ -44,12 +60,14 @@ import HotMicPlayer
                      onToggle: @escaping (HMMediaItem, Bool) -> Void = { _, _ in }) {
         guard !isAdActive, !isSheetOpen, data.canFire else { return }
         let reacted = addOnly || !data.content.isReacted
-        fireOrigin = point ?? fireTarget; fireID += 1; fireItemID = item.id; error = nil; errorItemID = item.id
-        let event = fireID
+        requestID += 1; fireIsPositive = reacted
+        if reacted { fireTarget = fireTargets[item.id] ?? fireTarget; fireOrigin = point ?? fireTarget; fireID += 1; fireItemID = item.id }
+        error = nil; errorItemID = item.id
+        let event = requestID
         Task {
             do { try await data.setReacted(reacted); onToggle(item, reacted) }
             catch is CancellationError { }
-            catch { if self.fireID == event { self.error = error.localizedDescription } }
+            catch { if self.requestID == event { self.error = error.localizedDescription } }
         }
     }
 }
@@ -65,6 +83,39 @@ public extension View {
     }
 }
 
+/// Stable callback storage: item identity and source capability are resolved at activation, never while building hooks.
+@MainActor @Observable private final class HMSocialPlaybackActions {
+    @ObservationIgnored var player: HMPlayer?
+    @ObservationIgnored var state: HMSocialState?
+    @ObservationIgnored var data: ((HMMediaItem) -> any HMSocialDataSource)?
+    @ObservationIgnored var callbacks = HMSocialCallbacks()
+    private(set) var canFire = true
+    @ObservationIgnored private var observing = false
+    @ObservationIgnored private var generation = 0
+    func start() { observing = true; generation += 1; observeCapabilities(generation: generation) }
+    func stop() { observing = false; generation += 1 }
+    private func observeCapabilities(generation expected: Int) {
+        guard observing, generation == expected else { return }
+        let available = withObservationTracking {
+            guard let item = player?.currentItem, let source = data?(item) else { return false }
+            return source.canFire
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeCapabilities(generation: expected) }
+        }
+        if canFire != available { canFire = available }
+    }
+    @ObservationIgnored lazy var tap: () -> Void = { [weak self] in
+        guard let self, self.state?.isSheetOpen == false else { return }
+        self.player?.togglePlayPause()
+    }
+    @ObservationIgnored lazy var fire: (CGPoint) -> Void = { [weak self] point in
+        guard let self, let player = self.player, let state = self.state,
+              !player.isFullscreen, let item = player.currentItem, let data = self.data?(item) else { return }
+        state.fire(at: point, item: item, data: data, addOnly: true,
+                   isAdActive: player.adState.isActive, onToggle: self.callbacks.fireToggled)
+    }
+}
+
 private struct HMSocialPlaybackModifier: ViewModifier {
     let player: HMPlayer
     let state: HMSocialState
@@ -72,31 +123,40 @@ private struct HMSocialPlaybackModifier: ViewModifier {
     let extendsUnderSafeArea: Bool
     let data: (HMMediaItem) -> any HMSocialDataSource
     let callbacks: HMSocialCallbacks
-    private var fireHandler: ((CGPoint) -> Void)? {
-        guard !player.isFullscreen, !state.isSheetOpen, let item = player.currentItem, data(item).canFire else { return nil }
-        return { point in
-            guard let current = player.currentItem else { return }
-            state.fire(at: point, item: current, data: data(current), addOnly: true,
-                       isAdActive: player.adState.isActive, onToggle: callbacks.fireToggled)
-        }
-    }
+    @State private var actions = HMSocialPlaybackActions()
+    @State private var keyboardTop: CGFloat?
     func body(content: Content) -> some View {
-        GeometryReader { geometry in
-            let bottom = options.hostNavigationHeight + (extendsUnderSafeArea ? geometry.safeAreaInsets.bottom : 0)
-            let height = max(0, geometry.size.height + (extendsUnderSafeArea ? geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom : 0) - bottom - state.sheetHeight)
+        actions.player = player; actions.state = state; actions.data = data; actions.callbacks = callbacks
+        return GeometryReader { geometry in
+            let safe = extendsUnderSafeArea ? geometry.safeAreaInsets : EdgeInsets()
+            let bottom = max(0, options.hostNavigationHeight) + safe.bottom
+            let fullHeight = geometry.size.height + safe.top + safe.bottom
+            let keyboard = keyboardTop.map { max(0, geometry.frame(in: .global).maxY + safe.bottom - $0) } ?? 0
+            let sheetBottom = max(bottom, keyboard)
+            let maximum = max(1, fullHeight - safe.top - sheetBottom - 24)
+            let height = max(0, fullHeight - max(bottom, state.sheetBottomInset) - state.sheetHeight)
             content
                 .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: bottom),
                     squeezeTarget: state.isSheetOpen ? CGRect(x: 0, y: 0, width: geometry.size.width, height: height) : nil))
                 .hmFullscreenVideoLayout(HMVideoLayout())
                 .hmVideoGestures(isAdPlaying: player.adState.isActive,
-                    onTap: { guard !state.isSheetOpen else { return }; player.togglePlayPause() },
-                    onDoubleTap: fireHandler)
-
+                    onTap: actions.tap, onDoubleTap: !player.isFullscreen && !state.isSheetOpen && actions.canFire ? actions.fire : nil)
+                .onChange(of: maximum, initial: true) { _, value in
+                    state.updateSheetLayout(maximumHeight: value, bottomInset: sheetBottom)
+                }
+                .onChange(of: sheetBottom) { _, value in
+                    state.updateSheetLayout(maximumHeight: maximum, bottomInset: value)
+                }
+        }
+        .ignoresSafeArea(.keyboard)
+        .onAppear { actions.start() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            keyboardTop = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY
         }
         .onChange(of: player.currentItem?.id) { _, _ in state.closeComments() }
         .onChange(of: player.adState.isActive) { _, active in if active { state.closeComments() } }
         .onChange(of: player.isFullscreen) { _, _ in state.closeComments() }
-        .onDisappear { state.closeComments() }
+        .onDisappear { actions.stop(); state.closeComments() }
     }
 }
 #endif

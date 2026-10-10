@@ -109,24 +109,42 @@ public struct HMSocialContent: Equatable, Sendable {
     /// Host text, tags and community; item engagement fills counts and comments.
     public var metadata: HMSocialContent
     /// Host controls which candidates appear; selection is independent of the sheet's loaded pages.
-    public var previewSelection: ([HMSocialComment]) -> [HMSocialComment]
+    public var previewSelection: ([HMSocialComment]) -> [HMSocialComment] { didSet { selectionRevision += 1 } }
+    /// Match the overlay theme; its primary reaction selects the backend membership and count.
+    public var theme: HMTheme
+    private var selectionRevision = 0
+    @ObservationIgnored private var mappedContent: HMSocialContent?
+    @ObservationIgnored private var mappedKey: MappingKey?
+    private struct MappingKey: Equatable {
+        var revision: Int
+        var mediaTime: TimeInterval?
+        var metadata: HMSocialContent
+        var reaction: String
+        var selection: Int
+    }
     /// Creates this component with host-supplied data and actions.
-    public init(engagement: HMEngagement, metadata: HMSocialContent,
+    public init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default,
                 previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) }) {
-        self.engagement = engagement; self.metadata = metadata; self.previewSelection = previewSelection
+        self.engagement = engagement; self.metadata = metadata; self.theme = theme; self.previewSelection = previewSelection
     }
     /// Current host-supplied social data, observed by the UI.
     public var content: HMSocialContent {
+        // Public revision is the invalidation key. The clock matters only before independent pages arrive.
+        let key = MappingKey(revision: engagement.revision,
+            mediaTime: engagement.hasLoadedComments ? nil : engagement.currentMediaTime,
+            metadata: metadata, reaction: theme.primaryReaction, selection: selectionRevision)
+        if mappedKey == key, let mappedContent { return mappedContent }
         var value = metadata
-        let summary = engagement.reactionSummary(for: "🔥")
+        let summary = engagement.reactionSummary(for: theme.primaryReaction)
         value.fireCount = summary?.count; value.isReacted = summary?.reactedByViewer ?? false
         value.commentCount = engagement.commentCount
         value.comments = engagement.comments().map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
         value.previewComments = previewSelection(value.comments)
+        mappedKey = key; mappedContent = value
         return value
     }
     /// Whether item reaction membership can be changed.
-    public var canFire: Bool { engagement.supports(.toggleReaction) && engagement.reactionSummary(for: "🔥") != nil }
+    public var canFire: Bool { engagement.supports(.toggleReaction) && engagement.reactionSummary(for: theme.primaryReaction) != nil }
     /// Whether the viewer can submit a comment.
     public var canPost: Bool { engagement.supports(.sendChat) }
     /// Whether another comment page can be requested.
@@ -134,11 +152,39 @@ public struct HMSocialContent: Equatable, Sendable {
         engagement.supports(.loadComments) && (!engagement.hasLoadedComments || engagement.olderCommentsCursor != nil)
     }
     /// Sets intended Fire membership through the backend; implementations own ordering and rollback.
-    public func setReacted(_ reacted: Bool) async throws { try await engagement.setReaction("🔥", reacted: reacted) }
+    public func setReacted(_ reacted: Bool) async throws { try await engagement.setReaction(theme.primaryReaction, reacted: reacted) }
     /// Requests the next page; implementations preserve stable IDs and their paging cursor.
     public func loadMoreComments() async throws { try await engagement.loadComments() }
     /// Submits text; throw on failure so the composer can preserve its draft.
     public func postComment(_ text: String) async throws { try await engagement.sendChat(text) }
+}
+
+/// Replacement rail inputs. Use these actions to retain the kit's Fire and sheet behavior.
+public struct HMSocialRailContext {
+    /// Current item metadata, optional counts and viewer membership.
+    public let content: HMSocialContent
+    /// Positive Fire event shared by the custom rail and surface burst.
+    public let fireEvent: Int
+    /// Whether the source can change reaction membership.
+    public let canFire: Bool
+    /// Activates the same Fire event as a surface double tap.
+    public let fire: () -> Void
+    /// Opens the interactive comment sheet.
+    public let openComments: () -> Void
+    /// Invokes the host share callback.
+    public let share: () -> Void
+    /// Report the custom Fire glyph's frame in the named hm-social-overlay coordinate space.
+    public let fireFrameChanged: (CGRect) -> Void
+}
+
+/// Replacement metadata inputs, with the kit's host navigation callbacks.
+public struct HMSocialMetadataContext {
+    /// Current title, description, community and hashtags.
+    public let content: HMSocialContent
+    /// Routes an activated hashtag to the host.
+    public let hashtagTapped: (String) -> Void
+    /// Opens the kit's expanded metadata sheet without competing with feed paging.
+    public let expand: () -> Void
 }
 
 /// Events out. Share should present native host UI; HMShareSheet is the default helper.
@@ -165,6 +211,8 @@ public struct HMSocialOptions: Equatable {
     public var showsMute = false
     /// Enables dragging the progress bar to seek; defaults to false.
     public var allowsScrubbing = false
+    /// Hides metadata and progress during ads when the host explicitly opts out; defaults to false.
+    public var hidesMetadataDuringAds = false
     /// Preferred sheet height in points, clamped to the available viewport.
     public var sheetHeight: CGFloat = 380
     /// Visible duration, followed by a hidden gap. No preview persists indefinitely.

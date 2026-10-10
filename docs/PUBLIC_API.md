@@ -1170,7 +1170,7 @@ enum Action
 @MainActor func loadMoreComments() async throws
 @MainActor func postComment(_ text: String) async throws
 @MainActor func setReacted(_ reacted: Bool) async throws
-@MainActor init(engagement: HMEngagement, metadata: HMSocialContent, previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) })
+@MainActor init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default, previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) })
 @MainActor let engagement: HMEngagement
 @MainActor var canFire: Bool { get }
 @MainActor var canLoadMore: Bool { get }
@@ -1178,15 +1178,17 @@ enum Action
 @MainActor var content: HMSocialContent { get }
 @MainActor var metadata: HMSocialContent { get set }
 @MainActor var previewSelection: ([HMSocialComment]) -> [HMSocialComment] { get set }
+@MainActor var theme: HMTheme { get set }
 ```
 
 ## HMFireBurst
 
 ```swift
-@MainActor init(event: Int, origin: CGPoint, target: CGPoint)
+@MainActor init(event: Int, origin: CGPoint, target: CGPoint, isEnabled: Bool = true)
 @MainActor struct HMFireBurst
 @MainActor var body: some View { get }
 @MainActor var event: Int
+@MainActor var isEnabled: Bool
 @MainActor var origin: CGPoint
 @MainActor var target: CGPoint
 ```
@@ -1202,6 +1204,7 @@ enum Action
 ## HMMetadataView
 
 ```swift
+@MainActor init(content: HMSocialContent, onExpand: @escaping () -> Void, onHashtag: @escaping (String) -> Void = { _ in })
 @MainActor init(content: HMSocialContent, onHashtag: @escaping (String) -> Void = { _ in })
 @MainActor struct HMMetadataView
 @MainActor var body: some View { get }
@@ -1329,6 +1332,15 @@ var title: String
 @MainActor var content: HMSocialContent { get }
 ```
 
+## HMSocialMetadataContext
+
+```swift
+let content: HMSocialContent
+let expand: () -> Void
+let hashtagTapped: (String) -> Void
+struct HMSocialMetadataContext
+```
+
 ## HMSocialModel
 
 ```swift
@@ -1352,6 +1364,7 @@ var title: String
 init()
 struct HMSocialOptions
 var allowsScrubbing: Bool
+var hidesMetadataDuringAds: Bool
 var hostNavigationHeight: CGFloat
 var previewDuration: TimeInterval
 var previewRotationInterval: TimeInterval?
@@ -1362,7 +1375,9 @@ var showsMute: Bool
 ## HMSocialOverlay
 
 ```swift
+@MainActor func actionRail<Content>(@ViewBuilder content: @escaping (HMSocialRailContext) -> Content) -> HMSocialOverlay where Content : View
 @MainActor func commentSheet<Content>(@ViewBuilder content: () -> Content) -> HMSocialOverlay where Content : View
+@MainActor func metadata<Content>(@ViewBuilder content: @escaping (HMSocialMetadataContext) -> Content) -> HMSocialOverlay where Content : View
 @MainActor func sidecar<Content>(size: CGSize, @ViewBuilder content: () -> Content) -> HMSocialOverlay where Content : View
 @MainActor init(player: HMPlayer, item: HMMediaItem, snapshot: HMPlaybackSnapshot, data: any HMSocialDataSource, state: HMSocialState, options: HMSocialOptions = .init(), callbacks: HMSocialCallbacks = .init())
 @MainActor let data: any HMSocialDataSource
@@ -1379,9 +1394,12 @@ var showsMute: Bool
 ## HMSocialPlayerView
 
 ```swift
+@MainActor func actionRail<Content>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialRailContext) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor func commentSheet<Content>(@ViewBuilder content: @escaping (HMMediaItem) -> Content) -> HMSocialPlayerView where Content : View
+@MainActor func metadata<Content>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialMetadataContext) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor func sidecar<Content>(size: CGSize, @ViewBuilder content: @escaping (HMMediaItem) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor init(player: HMPlayer, surface: HMSocialPlayerView.Surface = .feed, options: HMSocialOptions = .init(), callbacks: HMSocialCallbacks = .init(), data: @escaping (HMMediaItem) -> any HMSocialDataSource)
+@MainActor let player: HMPlayer
 @MainActor struct HMSocialPlayerView
 @MainActor var body: some View { get }
 ```
@@ -1397,10 +1415,24 @@ enum Surface
 ## HMSocialPlayerViewController
 
 ```swift
+@MainActor convenience init(player: HMPlayer, content: HMSocialPlayerView, theme: HMTheme = .default)
 @MainActor final class HMSocialPlayerViewController
-@MainActor init(player: HMPlayer, content: HMSocialPlayerView, theme: HMTheme = .default)
+@MainActor init(content: HMSocialPlayerView, theme: HMTheme = .default)
 @MainActor init(player: HMPlayer, surface: HMSocialPlayerView.Surface = .feed, options: HMSocialOptions = .init(), theme: HMTheme = .default, callbacks: HMSocialCallbacks = .init(), data: @escaping (HMMediaItem) -> any HMSocialDataSource)
 @MainActor let player: HMPlayer
+```
+
+## HMSocialRailContext
+
+```swift
+let canFire: Bool
+let content: HMSocialContent
+let fire: () -> Void
+let fireEvent: Int
+let fireFrameChanged: (CGRect) -> Void
+let openComments: () -> Void
+let share: () -> Void
+struct HMSocialRailContext
 ```
 
 ## HMSocialState
@@ -1411,12 +1443,15 @@ enum Surface
 @MainActor func dragComments(to height: CGFloat)
 @MainActor func fire(at point: CGPoint?, item: HMMediaItem, data: any HMSocialDataSource, addOnly: Bool = false, isAdActive: Bool = false, onToggle: @escaping (HMMediaItem, Bool) -> Void = { _, _ in })
 @MainActor func openComments(item: HMMediaItem, height: CGFloat, isAdActive: Bool, onChange: @escaping (HMMediaItem, Bool) -> Void = { _, _ in })
+@MainActor func updateSheetLayout(maximumHeight: CGFloat, bottomInset: CGFloat)
 @MainActor init()
 @MainActor var error: String? { get set }
 @MainActor var fireID: Int { get set }
 @MainActor var fireOrigin: CGPoint? { get set }
 @MainActor var fireTarget: CGPoint { get set }
 @MainActor var isSheetOpen: Bool { get }
+@MainActor var maximumSheetHeight: CGFloat { get set }
+@MainActor var sheetBottomInset: CGFloat { get set }
 @MainActor var sheetHeight: CGFloat { get set }
 ```
 
@@ -1437,6 +1472,7 @@ var fonts: HMTheme.Fonts
 var fullscreenSymbol: String
 var icons: HMTheme.Icons
 var messageReaction: String
+var pauseSymbol: String
 var playSymbol: String
 var primaryReaction: String { get }
 var railSpacing: CGFloat
@@ -1480,6 +1516,7 @@ case comment
 case fire
 case fullscreen
 case muted
+case pause
 case play
 case share
 case unmuted

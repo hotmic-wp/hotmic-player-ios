@@ -9,15 +9,16 @@ derived="$validation_dir/DerivedData"
 device_derived="$validation_dir/device-derived"
 docs_derived="$validation_dir/docs-derived"
 started=$SECONDS
-# Own-step budgets. Overlapped work can be slower than the wall clock; a hung
-# boot or a returned multi-minute extract still fails here.
+# A cold GitHub macOS runner is about 2.5-3x this Mac. simulator-build has
+# reached 323s there. The 540s total fails before the 10-minute job timeout.
 budget_partner_docs=60
 budget_simulator=180
-budget_simulator_build=300
-budget_device=180
-budget_docbuild=150
+budget_simulator_build=420
+budget_device=240
+budget_docbuild=240
 budget_drift=30
 budget_unit_tests=240
+budget_total=540
 simulator_id="${SIMULATOR_UDID:-}"
 created_simulator=0
 bg_pids=()
@@ -162,4 +163,9 @@ else
   finish_logged docbuild "$budget_docbuild" "$doc_pid"
 fi
 run_step public-api-drift "$budget_drift" diff -u docs/PUBLIC_API.md "$validation_dir/PUBLIC_API.md"
-echo "Release validation: $((SECONDS - started))s total"
+elapsed=$((SECONDS - started))
+echo "Release validation: ${elapsed}s total"
+if [ "$elapsed" -gt "$budget_total" ]; then
+  echo "::error::Release validation took ${elapsed}s, over the ${budget_total}s budget. Failing before the 10-minute job timeout cancels the run."
+  exit 1
+fi

@@ -3,11 +3,22 @@ import AVFoundation
 import Observation
 import HotMicPlayer
 
+private func socialCancellation(_ error: Error) -> Bool {
+    error is CancellationError || (error as? URLError)?.code == .cancelled
+}
+
 /// Host-built social chrome; this file uses only the SDK's public API.
 struct SocialLayoutScreen: View {
     @State private var useConnect = false
     @State private var host = CustomEngagementBackend()
     @State private var connect = DemoConnectInteractionSource()
+    init() {
+        let milliseconds = Int(BenchmarkOptions().values["engagement-latency-ms"] ?? "350") ?? 350
+        let latency = Duration.milliseconds(min(5_000, max(0, milliseconds)))
+        let host = CustomEngagementBackend(), connect = DemoConnectInteractionSource()
+        host.client.latency = latency; connect.client.backend.latency = latency
+        _host = State(initialValue: host); _connect = State(initialValue: connect)
+    }
     var body: some View {
         SocialEngagementScreen(source: useConnect ? connect : host, sourceName: useConnect ? "Fake Connect" : "Host backend",
             switchSource: { useConnect.toggle() }, failNext: {
@@ -40,7 +51,9 @@ private struct SocialEngagementScreen: View {
             do {
                 if let fixture = BenchmarkOptions().values["social-fixture"] {
                     let landscape = fixture == "landscape"
-                    player.replaceAll([HMMediaItem(id: "social-fixture", url: try await socialVideoFixture(landscape: landscape), title: "A moment to share", aspectRatio: landscape ? 16.0 / 9 : 9.0 / 16)])
+                    let url = try await socialVideoFixture(landscape: landscape)
+                    let ids = fixture == "feed" ? ["social-fixture", "social-fixture-next"] : ["social-fixture"]
+                    player.replaceAll(ids.map { HMMediaItem(id: $0, url: url, title: "A moment to share", aspectRatio: landscape ? 16.0 / 9 : 9.0 / 16) })
                 } else {
                     player.playlistSource = try await BenchmarkOptions().dataSource()
                 }
@@ -49,14 +62,22 @@ private struct SocialEngagementScreen: View {
                 #if DEBUG
                 if BenchmarkOptions().values["social-trace"] == "1" { await model.trace.record() }
                 #endif
-            } catch { model.error = error.localizedDescription }
+            } catch {
+                if !socialCancellation(error) { model.error = error.localizedDescription }
+            }
         }
         .task(id: player.currentItem?.id) {
+            model.error = nil
+            model.previewRotation = 0
             guard let item = player.currentItem else { return }
-            do { try await player.engagement(for: item).loadComments() }
-            catch { model.error = error.localizedDescription }
-        }
-        .task {
+            do {
+                let engagement = player.engagement(for: item)
+                if !engagement.hasLoadedComments { try await engagement.loadComments() }
+            }
+            catch {
+                if socialCancellation(error) { return }
+                model.error = error.localizedDescription
+            }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }
                 model.previewRotation += 1
@@ -87,12 +108,15 @@ private struct SocialEngagementScreen: View {
         if reduceMotion { sheetHeight = height }
         else { withAnimation(.easeInOut(duration: 0.25)) { sheetHeight = height } }
     }
-    func fire(at point: CGPoint, player: HMPlayer) {
+    func fire(at point: CGPoint, player: HMPlayer, addOnly: Bool = false) {
         guard let item = player.currentItem else { return }
         let engagement = player.engagement(for: item)
         error = nil
         Task {
-            do { try await engagement.toggleReaction("🔥") }
+            do {
+                if addOnly { try await engagement.setReaction("🔥", reacted: true) }
+                else { try await engagement.toggleReaction("🔥") }
+            }
             catch { /* The shared engagement publishes lastActionError for host chrome. */ }
         }
         fires += 1; fireLocation = point; trace.lastFire = point
@@ -120,7 +144,7 @@ private struct SocialFeed: View {
         feed
             .modifier(SocialVideoLayout(sheetHeight: model.sheetHeight, size: size, safe: safe, aspect: player.snapshot.aspectRatio))
             .hmVideoGestures(isAdPlaying: model.adPlaying, accessibilityLabel: "Social video",
-                onTap: { model.taps += 1; player.togglePlayPause() }, onDoubleTap: { model.fire(at: $0, player: player) })
+                onTap: { model.taps += 1; player.togglePlayPause() }, onDoubleTap: { model.fire(at: $0, player: player, addOnly: true) })
             // Fullscreen uses its own zero-inset layout and recomputes overlay hit areas.
             .hmFullscreenVideoLayout(HMVideoLayout())
     }
@@ -306,7 +330,7 @@ private struct SocialComments: View {
                     sending = true
                     Task {
                         defer { sending = false }
-                        do { try await engagement.sendChat(text); draft = "" } catch { }
+                        do { try await engagement.sendChat(text); if draft == text { draft = "" } } catch { }
                     }
                 }.disabled(sending || !engagement.supports(.sendChat)).accessibilityIdentifier("social-post-comment")
             }

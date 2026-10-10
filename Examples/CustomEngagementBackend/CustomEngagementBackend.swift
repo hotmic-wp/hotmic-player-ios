@@ -49,7 +49,11 @@ import HotMicPlayer
     func getComments(itemID: String, before cursor: String?) async throws -> HMCommentPage {
         try await request()
         let all = seed(itemID)
-        let end = cursor.flatMap { id in all.firstIndex { $0.id == id } } ?? all.count
+        let end: Int
+        if let cursor {
+            guard let index = all.firstIndex(where: { $0.id == cursor }) else { throw URLError(.badURL) }
+            end = index
+        } else { end = all.count }
         let start = max(0, end - 3)
         return HMCommentPage(comments: Array(all[start..<end]), olderCursor: start > 0 ? all[start].id : nil, totalCount: all.count)
     }

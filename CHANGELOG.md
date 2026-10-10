@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve `.all` as the original chat, timed reaction and poll capability mask; opt into `.toggleReaction` and `.loadComments` explicitly. Add `HMEngagement.setReaction(_:reacted:)` for add-only double taps and retain the latest rapid-tap intent with serialized follow-up requests.
+- Treat cancelled engagement loads/reactions silently, preserve known counts when pages omit totals, and bound cached source comments to 512 while retaining live refresh updates. Reset social preview selection on item changes, retain drafts edited during posting, and reject stale example paging cursors.
+
 - Add optional per-item reaction membership/counts, optimistic toggle with rollback, independent comment paging/counts and rotating preview selection on `HMEngagement`. Existing clock-indexed VOD chat and stream reactions retain their behavior; source methods have compatibility defaults.
 - Add a copyable custom engagement backend example and a shared social Sample UI switching between an in-memory host backend and a fake Connect client.
 

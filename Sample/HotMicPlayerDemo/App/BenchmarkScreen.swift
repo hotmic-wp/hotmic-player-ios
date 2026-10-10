@@ -55,6 +55,11 @@ struct BenchmarkScreen: View {
             .padding(24).background(alignment: .top) { Color.black.opacity(0.3).frame(height: runner.isRunning ? 120 : 240) }
         }
         .preferredColorScheme(.dark)
+        .task(id: runner.controller.map { "\(ObjectIdentifier($0))|\($0.currentItem?.id ?? "")" }) {
+            guard let player = runner.controller, let item = player.currentItem else { return }
+            let engagement = player.engagement(for: item)
+            if engagement.supports(.loadComments) { try? await engagement.loadComments() }
+        }
         .onChange(of: scenePhase) { _, phase in runner.controller?.isFeedVisible = phase == .active }
         .task {
             url = initialURL ?? UserDefaults.standard.string(forKey: "HMGridURL") ?? ""
@@ -75,9 +80,6 @@ private struct BenchmarkEngagementOverlay: View {
                 Text("Fire \(HMCountFormatter().string(from: fire.count))")
             }
         }.padding(.bottom, 80).foregroundStyle(.white).allowsHitTesting(false)
-        .task {
-            if engagement.supports(.loadComments) { try? await engagement.loadComments() }
-        }
     }
 }
 
@@ -89,11 +91,6 @@ private struct BenchmarkSocialSurface: View {
     var body: some View {
         HMSocialPlayerView(player: player, surface: inline ? .inline : .feed) { item in
             data.adapter(player: player, item: item)
-        }
-        .task(id: player.currentItem?.id) {
-            guard let item = player.currentItem else { return }
-            let engagement = player.engagement(for: item)
-            if engagement.supports(.loadComments) { try? await engagement.loadComments() }
         }
     }
 }

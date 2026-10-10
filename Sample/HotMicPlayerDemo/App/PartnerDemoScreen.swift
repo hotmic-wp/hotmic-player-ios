@@ -11,6 +11,8 @@ struct PartnerDemoScreen: View {
     @State private var muteControl = false
     @State private var scrubbing = false
     @State private var customSheet = false
+    @State private var customSlots = false
+    @State private var previewOnce = false
     @State private var shareURL: URL?
     @State private var sharePresented = false
     @State private var notice = ""
@@ -20,7 +22,7 @@ struct PartnerDemoScreen: View {
     private var options: HMSocialOptions {
         var options = HMSocialOptions()
         options.hostNavigationHeight = 54; options.showsMute = muteControl; options.allowsScrubbing = scrubbing
-        options.previewDuration = 3; options.previewRotationInterval = 5
+        options.previewDuration = 3; options.previewRotationInterval = previewOnce ? nil : 5
         return options
     }
     private var callbacks: HMSocialCallbacks {
@@ -48,6 +50,8 @@ struct PartnerDemoScreen: View {
                         Toggle("Show mute control", isOn: $muteControl)
                         Toggle("Allow scrubbing", isOn: $scrubbing)
                         Toggle("Replace sheet content", isOn: $customSheet)
+                        Toggle("Replace rail and metadata", isOn: $customSlots)
+                        Toggle("Preview once per item", isOn: $previewOnce)
                         Button("Landscape item") { model.player.next() }
                         Button("Ad placeholder") { model.player.jump(toID: "host-ad") }
                         Button("Vertical item") { model.player.jump(toID: "kit-vertical") }
@@ -70,6 +74,7 @@ struct PartnerDemoScreen: View {
             }
         }
         }
+        .ignoresSafeArea(.keyboard)
         .preferredColorScheme(.dark).foregroundStyle(.white)
         .sheet(isPresented: $sharePresented) { if let shareURL { HMShareSheet(items: [shareURL]) } }
         .task { await model.start() }
@@ -90,6 +95,17 @@ struct PartnerDemoScreen: View {
         if customSheet {
             view = view.commentSheet { item in
                 VStack { Text("Host sheet content"); HMCommentSheet(data: model.data(item)) }
+            }
+        }
+        if customSlots {
+            view = view.actionRail { _, context in
+                HMActionRail(content: context.content, canFire: context.canFire, fireEvent: context.fireEvent,
+                    onFire: context.fire, onComment: context.openComments, onShare: context.share,
+                    onFireFrame: context.fireFrameChanged)
+                    .padding(6).background(.indigo.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
+            }.metadata { _, context in
+                HMMetadataView(content: context.content, onExpand: context.expand, onHashtag: context.hashtagTapped)
+                    .padding(6).background(.indigo.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
             }
         }
         return view

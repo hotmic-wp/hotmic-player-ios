@@ -98,7 +98,7 @@ For an offline two-item social feed, launch with `--hm-social-layout 1 --hm-soci
 
 ## Partner demo
 
-Open **Partner demo**, or launch with `--hm-partner-demo 1`. It generates offline vertical and landscape clips, uses a fake host engagement backend, and keeps bottom navigation visible. **Demo options** switches between kit UI and custom UI on public hooks, enables mute/scrubbing, replaces sheet content, or selects landscape and host-ad placeholders. The kit shows caption controls for the bundled WebVTT track and admits a sidecar placeholder only when its complete slot is free. Share opens a native activity sheet. No environment variables or network fixtures are needed for its core gesture UI test.
+Open **Partner demo**, or launch with `--hm-partner-demo 1`. It generates offline vertical and landscape clips, uses a fake host engagement backend, and keeps bottom navigation visible. **Demo options** switches between kit UI and custom UI on public hooks, enables mute/scrubbing, replaces sheet/rail/metadata content, limits previews to once per item, or selects landscape and host-ad placeholders. The kit shows caption controls for the bundled WebVTT track and admits a sidecar placeholder only when its complete slot is free. Share opens a native activity sheet. No environment variables or network fixtures are needed for its core gesture UI test.
 
 Benchmark grid cells accept `"social-overlay": 0` or `1` in `knobs` for paired S3 MP4/HLS runs through the actual kit. Set the same `"engagement": 1` backend in both cells to isolate UI overhead.
 

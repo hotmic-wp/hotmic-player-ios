@@ -14,7 +14,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
 
     private let controller: HMPlayer
     private let transition: HMPageTransition
-    private let gravity: AVLayerVideoGravity
+    private let gravity: AVLayerVideoGravity?
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
 
     @GestureState private var isTouching = false
@@ -28,7 +28,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     public init(
         player: HMPlayer,
         transition: HMPageTransition = .none,
-        gravity: AVLayerVideoGravity = .resizeAspectFill,
+        gravity: AVLayerVideoGravity? = nil,
         @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay
     ) {
         self.controller = player
@@ -66,21 +66,26 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, requestID: controller.pageRequestID, reference: scrollReference, interaction: { controller.setPageMoving($0) }) { id, time in
+                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, isSuspended: controller.isFullscreen, requestID: controller.pageRequestID, reference: scrollReference, interaction: { controller.setPageMoving($0) }) { id, time in
                         fallbackCommit?.cancel()
                         controller.commitPage(toID: id, requestedAt: time)
                     })
                 }
+                .onChange(of: controller.isFullscreen) { _, _ in
+                    fallbackCommit?.cancel(); scrolledID = controller.currentItem?.id
+                }
+                .scrollDisabled(controller.isFullscreen)
                 .scrollTargetBehavior(.paging)
                 .scrollIndicators(.hidden)
                 .scrollPosition(id: $scrolledID)
                 .background(.black)
                 .onChange(of: scrolledID) { _, id in
                     fallbackCommit?.cancel()
+                    guard !controller.isFullscreen else { return }
                     guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
                     fallbackCommit = Task { @MainActor in
                         do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-                        guard controller.currentItem?.id == currentID, HMPagePosition.survives(old: itemIDs, new: controller.items.map(\.id), current: currentID, destination: id), scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
+                        guard !controller.isFullscreen, !scrollReference.isRestoringFullscreen, controller.currentItem?.id == currentID, HMPagePosition.survives(old: itemIDs, new: controller.items.map(\.id), current: currentID, destination: id), scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
                         let now = ProcessInfo.processInfo.systemUptime
                         if let scroll = scrollReference.scroll {
                             guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
@@ -105,32 +110,16 @@ public struct HMVerticalFeedView<Overlay: View>: View {
             .environment(\.hmFeedSafeArea, insets)
         }
         .background(.black)
+        .background(HMFullscreenPresenter(player: controller, overlay: { AnyView(overlay($0, $1)) }).frame(width: 0, height: 0))
     }
 
     @ViewBuilder
     private func cell(for item: HMMediaItem, pageHeight: Double) -> some View {
-        let node = controller.node(for: item)
-        let snapshot = controller.snapshot(for: item)
-        let displayItem = controller.displayItem(item)
         let observesWarmFrame = [-1, 1].contains { offset in
             let index = controller.activeIndex + offset
             return controller.items.indices.contains(index) && controller.items[index].id == item.id
         }
-
-        ZStack {
-            Color.black
-
-            if let posterURL = displayItem.posterURL {
-                // Poster stays underneath so the first frame cross-dissolves in
-                // rather than punching through black.
-                HMPosterView(url: posterURL)
-            }
-
-            HMVideoSurface(node: node, gravity: gravity, observesWarmFrame: observesWarmFrame)
-
-
-            overlay(displayItem, snapshot)
-        }
+        HMItemSurface(player: controller, item: item, fullscreen: false, observesWarmFrame: observesWarmFrame, gravity: gravity, overlay: overlay)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .contentShape(.rect)
@@ -181,7 +170,7 @@ public extension HMVerticalFeedView where Overlay == EmptyView {
     init(
         player: HMPlayer,
         transition: HMPageTransition = .none,
-        gravity: AVLayerVideoGravity = .resizeAspectFill
+        gravity: AVLayerVideoGravity? = nil
     ) {
         self.init(player: player, transition: transition, gravity: gravity) { _, _ in EmptyView() }
     }

@@ -6,6 +6,7 @@ import UIKit
 /// All device paths run this autopilot. XCTest only starts it and waits.
 @MainActor @Observable
 final class BenchmarkRunner {
+    private(set) var isInline = false
     private(set) var controller: HMPlayer?
     private(set) var isRunning = false
     private(set) var complete = false
@@ -57,7 +58,7 @@ final class BenchmarkRunner {
         guard isSafeID(grid.runPrefix) else { throw BenchmarkOptions.Invalid("run_prefix") }
         // Validate the entire grid before playing its first cell.
         for cell in grid.cells {
-            guard isSafeID(cell.id), (1...100).contains(cell.repeats), (0...10000).contains(cell.swipes ?? 50),
+            guard [nil, "feed", "inline"].contains(cell.scenario), isSafeID(cell.id), (1...100).contains(cell.repeats), (0...10000).contains(cell.swipes ?? 50),
                   ["binge", "normal", "watchThrough", "backAndForth", "jumpTo20"].contains(cell.script),
                   cell.dwellSeconds == nil || (cell.dwellSeconds!.isFinite && cell.dwellSeconds! >= 0) else { throw BenchmarkOptions.Invalid("cell \(cell.id)") }
             _ = try cellOptions(cell, grid: grid, base: url).configuration()
@@ -106,13 +107,15 @@ final class BenchmarkRunner {
             await HMPlayerCache.reset()
         }
         let cellOptions = try cellOptions(cell, grid: grid, base: base)
-        let configuration = try cellOptions.configuration()
+        var configuration = try cellOptions.configuration()
+        configuration.presentation = cell.presentation ?? configuration.presentation
+        isInline = cell.scenario == "inline"
         let source = try await cellOptions.dataSource()
         let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("BenchRuns/\(runID).jsonl")
         let createdSink = try HMJSONLFileSink(fileURL: file, runID: runID, configuration: configuration,
             format: cell.format, network: grid.network, script: cell.script,
             buildSHA: options.values["build-sha"] ?? (Bundle.main.object(forInfoDictionaryKey: "HMBuildSHA") as? String ?? "unknown"),
-            dimensions: ["grid_url": base.absoluteString, "cell_id": cell.id, "reset_cache": String(cell.resetCache ?? true), "paging": "in-app-settled-page", "swipes": String(cell.swipes ?? 50)])
+            dimensions: ["grid_url": base.absoluteString, "cell_id": cell.id, "reset_cache": String(cell.resetCache ?? true), "paging": isInline ? "inline-next" : "in-app-settled-page", "swipes": String(cell.swipes ?? 50)])
         sink = createdSink
         observedIDs = []; playbackError = nil; pageNumber = 0
         let hub = HMAnalyticsHub(sinks: [createdSink])
@@ -148,7 +151,8 @@ final class BenchmarkRunner {
             let backwards = cell.script == "backAndForth" && swipe % 2 == 1
             let next = created.activeIndex + (backwards ? -1 : 1)
             currentExpectedIndex = next
-            created.requestPage(at: next)
+            if isInline { backwards ? created.previous() : created.next() }
+            else { created.requestPage(at: next) }
             try await awaitPage(created, index: next)
             pageNumber += 1
         }

@@ -104,9 +104,11 @@ struct PlayerResolverTests {
         async let b = store.resolve(item, using: resolver)
         let (first, second) = try await (a, b)
         #expect(first == second); #expect(first.title == "Resolved"); #expect(await resolver.calls == 1)
-        let refreshed = HMMediaItem(id: item.id, source: item.source, title: "Latest", metadata: ["rank": "1"])
+        let refreshed = HMMediaItem(id: item.id, source: item.source, title: "Latest", metadata: ["rank": "1"], aspectRatio: 16.0/9, presentation: .fitWithBlurredBackdrop)
         #expect(try await store.resolve(refreshed, using: resolver).title == "Latest")
         #expect(store.cached(refreshed)?.metadata == ["rank": "1"])
+        #expect(store.cached(refreshed)?.aspectRatio == 16.0/9)
+        #expect(store.cached(refreshed)?.presentation == .fitWithBlurredBackdrop)
         store.retain([])
         #expect(try await store.resolve(item, using: resolver) == first); #expect(await resolver.calls == 1)
     }
@@ -184,15 +186,21 @@ struct PlayerReviewTests {
         var c = HMPlayerConfiguration.highQuality
         c.failedItemPolicy = .stay; c.removedCurrentPolicy = .finishThenAdvance
         c.lowWaterMark = 7; c.volatileSigningQueryParameters = ["token"]
+        c.presentation = .fitWithColor; c.aspectRatioTolerance = 0.2
+        c.backdropColor = HMVideoBackdropColor(red: 0.1, green: 0.2, blue: 0.3)
+        c.followsDeviceRotation = true
         let data = try JSONEncoder().encode(c.benchmarkRecord)
         let restored = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: data).configuration
         #expect(restored.fingerprint == c.fingerprint)
         var legacy = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(legacy["failedItemPolicy"] as? String == "stay")
         legacy.removeValue(forKey: "failedItemPolicy"); legacy.removeValue(forKey: "removedCurrentPolicy")
+        for key in ["presentation", "aspectRatioTolerance", "backdropColor", "followsDeviceRotation"] { legacy.removeValue(forKey: key) }
         let oldData = try JSONSerialization.data(withJSONObject: legacy)
         #expect(try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration.removedCurrentPolicy == .advanceNow)
-        #expect(try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration.failedItemPolicy == .skip)
+        let old = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration
+        #expect(old.failedItemPolicy == .skip && old.presentation == .automatic)
+        #expect(old.aspectRatioTolerance == 0.25 && !old.followsDeviceRotation)
     }
     actor RecoveringResolver: HMItemResolver {
         var calls = 0
@@ -251,9 +259,161 @@ private final class FormatProtocol: URLProtocol {
 #if canImport(AVFoundation) && !os(macOS)
 import AVFoundation
 import Network
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @Suite("Native review regressions") @MainActor
 struct PlayerNativeReviewTests {
+    @Test("Warm track detection respects camera transforms before activation", arguments: [false, true])
+    func warmDisplayAspect(rotated: Bool) async throws {
+        let url = try await videoFixture(rotated: rotated)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let node = HMPlayerNode(id: "aspect", configuration: HMPlayerConfiguration(managesAudioSession: false))
+        defer { node.release() }
+        node.warm(with: HMMediaItem(id: "camera", url: url, aspectRatio: 1)) // intentionally wrong hint
+        node.updateMetadata(HMMediaItem(id: "camera", url: url, aspectRatio: 0.75))
+        #expect(node.snapshot.aspectRatio == 0.75) // hints can change before track loading completes
+        let expected = rotated ? 9.0/16 : 16.0/9
+        let deadline = Date().addingTimeInterval(3)
+        while abs((node.snapshot.aspectRatio ?? 0) - expected) > 0.001, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!node.isActive)
+        let outputs = node.player.currentItem?.outputs.count
+        node.captureBackdropPoster() // warm capture must not consume the startup output
+        #expect(node.backdropPoster == nil && node.player.currentItem?.outputs.count == outputs)
+        let point = CGPoint(x: 1, y: 0).applying(HMBackdropImage.displayTransform(CGAffineTransform(rotationAngle: .pi / 2)))
+        #expect(abs(point.x) < 0.001 && abs(point.y + 1) < 0.001)
+        #expect(abs((node.snapshot.aspectRatio ?? 0) - expected) < 0.001)
+        node.updateMetadata(HMMediaItem(id: "camera", url: url, aspectRatio: 1))
+        #expect(abs((node.snapshot.aspectRatio ?? 0) - expected) < 0.001) // decoded size wins
+        let replacement = HMMediaItem(id: "new", url: URL(fileURLWithPath: "/missing-214.mp4"), aspectRatio: 0.75)
+        node.warm(with: replacement)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(node.snapshot.aspectRatio == 0.75) // stale loads must not overwrite a recycled node
+    }
+
+    @Test("Fullscreen and policy changes preserve the native item, activation and feed index")
+    func fullscreenContinuity() async throws {
+        let url = try await videoFixture(rotated: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var configuration = HMPlayerConfiguration(managesAudioSession: false, failedItemPolicy: .stay)
+        configuration.followsDeviceRotation = true
+        let player = HMPlayer(configuration: configuration); player.isFeedVisible = false
+        defer { player.teardown() }
+        let entry = HMMediaItem(id: "landscape", url: url, aspectRatio: 16.0/9)
+        player.replaceAll([entry, HMMediaItem(id: "next", url: url)])
+        let node = player.pool.node(for: entry, protecting: [])
+        node.activate()
+        let native = node.player.currentItem, generation = node.assignmentGeneration, activation = node.snapshot.activationID
+        player.enterFullscreen(); #expect(player.isFullscreen)
+        player.requestPage(at: 1); player.commitPage(toID: "next", requestedAt: 0)
+        #expect(player.activeIndex == 0 && player.requestedPageID == nil)
+        for policy in [HMVideoPresentation.fill, .fit, .fitWithBlurredBackdrop, .fitWithColor, .automatic] {
+            player.configuration.presentation = policy
+            #expect(node.player.currentItem === native && node.assignmentGeneration == generation)
+        }
+        let overridden = HMMediaItem(id: entry.id, url: url, aspectRatio: 16.0/9, presentation: .fill)
+        player.replaceAll([overridden, HMMediaItem(id: "next", url: url)])
+        player.configuration.presentation = .fit
+        let bounds = CGRect(x: 0, y: 0, width: 390, height: 844)
+        #expect(player.videoFrame(for: overridden, in: bounds) == bounds) // item override wins
+        #expect(node.player.currentItem === native && node.assignmentGeneration == generation)
+        player.exitFullscreen(); #expect(!player.isFullscreen)
+        player.deviceRotated(isLandscape: true); #expect(player.isFullscreen)
+        player.deviceRotated(isLandscape: false); #expect(!player.isFullscreen)
+        #expect(node.snapshot.activationID == activation && player.activeIndex == 0)
+        #expect(node.snapshot.stallCount == 0)
+        player.configuration.followsDeviceRotation = false
+        player.deviceRotated(isLandscape: true); #expect(!player.isFullscreen)
+        #if os(iOS)
+        #expect(HMFullscreenPresenterController.presentationOrientation(current: .portrait, device: .landscapeLeft,
+            landscapeItem: true, supported: .portrait) == .portrait)
+        #expect(HMFullscreenPresenterController.presentationOrientation(current: .portrait, device: .landscapeLeft,
+            landscapeItem: true, supported: [.portrait, .landscapeLeft]) == .landscapeLeft)
+        let owner = HMFullscreenPresenterController(player: player)
+        let duplicate = HMFullscreenPresenterController(player: player)
+        player.fullscreenPresenter = owner; player.enterFullscreen()
+        duplicate.stop()
+        #expect(player.isFullscreen && player.fullscreenPresenter === owner)
+        owner.stop(); #expect(!player.isFullscreen && player.fullscreenPresenter == nil)
+        #endif
+        player.attachInline(); #expect(player.isFeedVisible)
+        player.pause(); player.detachInline(); #expect(!player.isFeedVisible)
+        player.attachInline(); #expect(player.isFeedVisible && node.player.rate == 0)
+        player.detachInline()
+    }
+
+    @Test("Fullscreen failure skipping resumes on exit for inline and mounted feed", arguments: [false, true])
+    func fullscreenFailure(feed: Bool) async throws {
+        let player = HMPlayer(configuration: HMPlayerConfiguration(managesAudioSession: false))
+        player.isFeedVisible = false
+        defer { player.teardown() }
+        let a = item("failed-fullscreen"), b = item("next-fullscreen")
+        player.replaceAll([a, b])
+        if feed { player.attachFeed(); player.isFeedVisible = false }
+        player.enterFullscreen()
+        player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(player.currentItem?.id == a.id && player.requestedPageID == nil)
+        player.exitFullscreen()
+        let deadline = Date().addingTimeInterval(1)
+        while player.currentItem?.id == a.id && player.requestedPageID == nil, Date() < deadline { await Task.yield() }
+        if feed {
+            #expect(player.requestedPageID == b.id)
+            player.commitPage(toID: b.id, requestedAt: 0)
+            player.detachFeed()
+        }
+        #expect(player.currentItem?.id == b.id)
+    }
+
+    #if canImport(UIKit)
+    @Test("A real drag ends fullscreen geometry restoration immediately")
+    func quickSwipeAfterFullscreen() {
+        let reference = HMScrollViewReference()
+        var committed: String?
+        let coordinator = HMPageCommitProbe.Coordinator(commit: { id, _ in committed = id }, reference: reference, interaction: { _ in })
+        let scroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        scroll.contentSize = CGSize(width: 390, height: 1688)
+        coordinator.observe(scroll); coordinator.reconcile(items: ["a", "b"], current: "a")
+        coordinator.isSuspended = true; coordinator.isSuspended = false
+        #expect(reference.isRestoringFullscreen)
+        coordinator.scrollViewWillBeginDragging(scroll)
+        #expect(!reference.isRestoringFullscreen)
+        scroll.contentOffset.y = 844
+        coordinator.scrollViewDidEndDragging(scroll, willDecelerate: false)
+        #expect(committed == "b")
+        coordinator.fallback?.cancel()
+    }
+    #endif
+
+    /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
+    private func videoFixture(rotated: Bool) async throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-aspect-\(UUID()).mp4")
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 90])
+        if rotated { input.transform = CGAffineTransform(rotationAngle: .pi / 2) }
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 160, kCVPixelBufferHeightKey as String: 90])
+        writer.add(input)
+        try #require(writer.startWriting())
+        writer.startSession(atSourceTime: .zero)
+        var buffer: CVPixelBuffer?
+        try #require(CVPixelBufferCreate(kCFAllocatorDefault, 160, 90, kCVPixelFormatType_32BGRA, nil, &buffer) == kCVReturnSuccess)
+        let pixels = try #require(buffer)
+        CVPixelBufferLockBaseAddress(pixels, [])
+        memset(try #require(CVPixelBufferGetBaseAddress(pixels)), 64, CVPixelBufferGetDataSize(pixels))
+        CVPixelBufferUnlockBaseAddress(pixels, [])
+        let deadline = Date().addingTimeInterval(2)
+        while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(adaptor.append(pixels, withPresentationTime: .zero))
+        writer.endSession(atSourceTime: CMTime(seconds: 1, preferredTimescale: 600))
+        input.markAsFinished()
+        await writer.finishWriting()
+        try #require(writer.status == .completed)
+        return url
+    }
+
     private func item(_ id: String, path: String? = nil) -> HMMediaItem {
         HMMediaItem(id: id, url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-review-\(path ?? id).mp4"))
     }

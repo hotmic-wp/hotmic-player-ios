@@ -1,8 +1,24 @@
 #if canImport(AVFoundation) && !os(macOS)
 import AVFoundation
+import CoreImage
 import Foundation
 import Observation
 import QuartzCore
+
+/// Precompute a tiny blurred image once, avoiding a full-page SwiftUI blur pass.
+enum HMBackdropImage {
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+    static func displayTransform(_ transform: CGAffineTransform) -> CGAffineTransform {
+        let flip = CGAffineTransform(scaleX: 1, y: -1)
+        return flip.concatenating(transform).concatenating(flip)
+    }
+    static func make(_ image: CIImage) -> CGImage? {
+        let scale = min(1, 160 / max(image.extent.width, image.extent.height))
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let blurred = small.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 6]).cropped(to: small.extent)
+        return context.createCGImage(blurred, from: small.extent)
+    }
+}
 
 /// One recycled playback engine: an `AVPlayer` plus the `AVPlayerLayer` that
 /// renders it.
@@ -18,6 +34,36 @@ final class HMPlayerNode: Identifiable {
     @ObservationIgnored let player: AVPlayer
     @ObservationIgnored let playerLayer: AVPlayerLayer
 
+    private(set) var backdropPoster: CGImage?
+    @ObservationIgnored private var backdropAttempts = 0
+    /// Bounded capture after startup, using only the active item's existing decoder.
+    func captureBackdropPoster() {
+        guard backdropPoster == nil, hasReportedFirstFrame, isActive,
+              player.timeControlStatus == .playing, backdropAttempts < 12 else { return }
+        backdropAttempts += 1
+        if videoOutput == nil, let playerItem = player.currentItem {
+            let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+            videoOutput = output; playerItem.add(output)
+        }
+        if let output = videoOutput,
+           let buffer = output.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
+            let image = CIImage(cvPixelBuffer: buffer)
+            // Track transforms use y-down coordinates; CIImage uses y-up. Conjugate
+            // with a vertical reflection (translation is normalized by the extent).
+            let display = image.transformed(by: HMBackdropImage.displayTransform(backdropTransform))
+            backdropPoster = HMBackdropImage.make(display)
+        }
+        if backdropPoster != nil || backdropAttempts >= 12 { discardBackdropOutput() }
+    }
+    var needsBackdropCapture: Bool {
+        backdropPoster == nil && backdropAttempts < 12 && hasReportedFirstFrame && isActive && player.timeControlStatus == .playing
+    }
+    func discardBackdropOutput() {
+        guard hasReportedFirstFrame, let output = videoOutput else { return }
+        player.currentItem?.remove(output); videoOutput = nil
+    }
+    @ObservationIgnored private var hasConfirmedAspect = false
+    @ObservationIgnored private var backdropTransform = CGAffineTransform.identity
     private(set) var item: HMMediaItem?
     private(set) var snapshot = HMPlaybackSnapshot()
     /// A seek invalidates visible-frame continuity even when the layer stays ready.
@@ -34,6 +80,7 @@ final class HMPlayerNode: Identifiable {
 
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     @ObservationIgnored var onBufferChanged: (() -> Void)?
+    @ObservationIgnored private var aspectTask: Task<Void, Never>?
     @ObservationIgnored private var durationTask: Task<Void, Never>?
     @ObservationIgnored private var summaryTask: Task<Void, Never>?
     @ObservationIgnored private var activationID = ""
@@ -96,6 +143,7 @@ final class HMPlayerNode: Identifiable {
     func updateMetadata(_ updated: HMMediaItem) {
         guard item?.hasSameMedia(as: updated, ignoring: configuration.volatileSigningQueryParameters) == true else { return }
         item = updated
+        if !hasConfirmedAspect { snapshot.aspectRatio = updated.aspectRatio }
     }
     var playbackSnapshot: HMPlaybackSnapshot {
         var value = snapshot
@@ -121,11 +169,13 @@ final class HMPlayerNode: Identifiable {
         setLayerVisible(false)
         isActive = false
         teardownItemObservers()
+        backdropPoster = nil; backdropAttempts = 0; backdropTransform = .identity; hasConfirmedAspect = false
         item = newItem
         assignmentGeneration += 1; hasReachedEnd = false
         displayRevision += 1; isSeekingFrame = false
         snapshot = HMPlaybackSnapshot()
         snapshot.isMuted = player.isMuted
+        snapshot.aspectRatio = newItem.aspectRatio
         snapshot.state = .loading
         hasReportedFirstFrame = false
         didLiftStartupCap = false
@@ -152,6 +202,7 @@ final class HMPlayerNode: Identifiable {
         installItemObservers(for: playerItem)
         player.replaceCurrentItem(with: playerItem)
         loadDuration(from: asset, for: newItem.id)
+        loadAspect(from: asset, playerItem: playerItem)
 
         if let recycledFrom {
             emit(.playerRecycled, item: newItem, properties: ["from_item": recycledFrom.id])
@@ -255,6 +306,7 @@ final class HMPlayerNode: Identifiable {
         setLayerVisible(false)
         player.replaceCurrentItem(with: nil)
         videoOutput = nil
+        backdropPoster = nil
         item = nil
         displayRevision += 1; isSeekingFrame = false
         isActive = false
@@ -398,7 +450,35 @@ final class HMPlayerNode: Identifiable {
         })
     }
 
+    private func loadAspect(from asset: AVAsset, playerItem: AVPlayerItem) {
+        aspectTask?.cancel()
+        aspectTask = Task { [weak self, weak playerItem] in
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let size = try? await track.load(.naturalSize),
+                  let transform = try? await track.load(.preferredTransform),
+                  !Task.isCancelled, let self, self.player.currentItem === playerItem else { return }
+            // Applying the transform handles 90-degree camera tracks and mirrored media.
+            self.backdropTransform = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: 0, ty: 0)
+            if let ratio = HMVideoAspect.ratio(size.applying(transform)) {
+                self.snapshot.aspectRatio = ratio; self.hasConfirmedAspect = true
+            }
+            self.syncPresentationSize()
+        }
+    }
+
+    private func syncPresentationSize() {
+        if let ratio = HMVideoAspect.ratio(player.currentItem?.presentationSize ?? .zero) {
+            snapshot.aspectRatio = ratio; hasConfirmedAspect = true
+        }
+    }
+
     private func installItemObservers(for playerItem: AVPlayerItem) {
+        observations.append(playerItem.observe(\.presentationSize, options: [.initial, .new]) { [weak self, weak playerItem] _, _ in
+            Task { @MainActor [weak self, weak playerItem] in
+                guard let self, self.player.currentItem === playerItem else { return }
+                self.syncPresentationSize()
+            }
+        })
         observations.append(playerItem.observe(\.status, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.syncItemStatus() }
         })
@@ -445,6 +525,7 @@ final class HMPlayerNode: Identifiable {
     }
 
     private func teardownItemObservers() {
+        aspectTask?.cancel(); aspectTask = nil
         // Keep the player-level observation, drop everything item-scoped.
         observations.removeAll()
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
@@ -637,8 +718,14 @@ final class HMPlayerNode: Identifiable {
             let replacement = AVPlayerItem(asset: asset)
             replacement.preferredPeakBitRate = didLiftStartupCap ? configuration.steadyPeakBitRate : configuration.startupPeakBitRate
             replacement.preferredForwardBufferDuration = isActive ? configuration.steadyBufferDuration : configuration.prefetch.warmBufferDuration
+            videoOutput = nil
+            if !hasReportedFirstFrame {
+                let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+                videoOutput = output; replacement.add(output)
+            }
             installItemObservers(for: replacement); player.replaceCurrentItem(with: replacement)
-            videoOutput = nil; didPreroll = false; prerollComplete = false; snapshot.state = .loading
+            loadAspect(from: asset, playerItem: replacement)
+            didPreroll = false; prerollComplete = false; snapshot.state = .loading
             displayRevision += 1; isSeekingFrame = false; snapshot.isFrameReady = false
             loadDuration(from: asset, for: item.id)
             if position > 0 { seekForDisplay(to: CMTime(seconds: position, preferredTimescale: 600)) }
@@ -671,6 +758,10 @@ final class HMPlayerNode: Identifiable {
         occurredAt: TimeInterval? = nil
     ) {
         var props = properties
+        if let aspect = snapshot.aspectRatio {
+            props["video_orientation"] = aspect > 1 ? "landscape" : aspect < 1 ? "portrait" : "square"
+            props["video_aspect_ratio"] = String(aspect)
+        }
         props["player_key"] = id
         if isActive || kind == .viewEnd { props["activation_id"] = activationID; props["activation_reason"] = activationReason }
         onEvent?(

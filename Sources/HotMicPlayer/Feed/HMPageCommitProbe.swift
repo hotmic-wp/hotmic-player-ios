@@ -6,6 +6,7 @@ import UIKit
 /// identify the settled page. Forward other delegate messages to SwiftUI.
 @MainActor final class HMScrollViewReference {
     weak var scroll: UIScrollView?
+    var isRestoringFullscreen = false
     var lastMotionAt: TimeInterval = 0
 }
 
@@ -13,6 +14,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
     var itemIDs: [String]
     var currentID: String?
     var targetIndex: Int?
+    var isSuspended = false
     var requestID: UUID
     var reference: HMScrollViewReference? = nil
     var interaction: (Bool) -> Void = { _ in }
@@ -24,6 +26,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
     }
     func updateUIView(_ view: Probe, context: Context) {
         let coordinator = context.coordinator
+        coordinator.isSuspended = isSuspended
         coordinator.commit = commit
         coordinator.interaction = interaction
         coordinator.reconcile(items: itemIDs, current: currentID)
@@ -77,6 +80,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
             }
         }
         private func motionChanged() {
+            guard !isSuspended else { return }
             interaction(true)
             lastMotionAt = ProcessInfo.processInfo.systemUptime
             reference?.lastMotionAt = lastMotionAt
@@ -105,6 +109,24 @@ struct HMPageCommitProbe: UIViewRepresentable {
         private var anchor: Int = 0
         private var needsReconcile = false
         private var suppressCommit = false
+        private var restoringFullscreen = false
+        private var pageSize: CGSize?
+        private func observePageSize(_ scroll: UIScrollView) {
+            guard scroll.bounds.width > 0, scroll.bounds.height > 0 else { return }
+            defer { pageSize = scroll.bounds.size }
+            guard let pageSize, pageSize != scroll.bounds.size else { return }
+            // A host rotation/resize changes the offset-to-page mapping without a swipe.
+            // Keep the active-ID anchor through that geometry change as on fullscreen exit.
+            restoringFullscreen = true; reference?.isRestoringFullscreen = true
+            lastMotionAt = ProcessInfo.processInfo.systemUptime
+            fallback?.cancel(); fallback = nil
+        }
+        var isSuspended = false {
+            didSet {
+                if isSuspended { restoringFullscreen = true; reference?.isRestoringFullscreen = true; fallback?.cancel(); fallback = nil; interaction(false) }
+                else if oldValue { lastMotionAt = ProcessInfo.processInfo.systemUptime }
+            }
+        }
         func reconcile(items: [String], current: String?) {
             if !itemIDs.isEmpty, items != itemIDs {
                 let destination: String?
@@ -128,6 +150,17 @@ struct HMPageCommitProbe: UIViewRepresentable {
         var requestID: UUID?
         private var handledRequest: UUID?
         func pageIfRequested() {
+            guard !isSuspended else { return }
+            if let scroll { observePageSize(scroll) }
+            if restoringFullscreen, let scroll, scroll.window != nil, scroll.bounds.height > 0 {
+                needsReconcile = false // the latest active-ID anchor also incorporates playlist edits
+                // Fullscreen changes the window geometry while SwiftUI's scrollPosition is suspended.
+                // Restore by active ID, and suppress commits until the returning geometry is quiet.
+                let y = Double(anchor) * scroll.bounds.height - scroll.adjustedContentInset.top
+                if abs(scroll.contentOffset.y - y) > 0.5 { scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: false) }
+                scheduleFallback(after: 0.5)
+                return
+            }
             if needsReconcile, let scroll, scroll.bounds.height > 0 {
                 needsReconcile = false; suppressCommit = true
                 fallback?.cancel(); fallback = nil
@@ -149,6 +182,9 @@ struct HMPageCommitProbe: UIViewRepresentable {
             self.commit = commit; self.reference = reference; self.interaction = interaction
         }
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            restoringFullscreen = false; reference?.isRestoringFullscreen = false
+            pageSize = scrollView.bounds.size
+            fallback?.cancel(); fallback = nil
             interaction(true)
             original?.scrollViewWillBeginDragging?(scrollView)
         }
@@ -169,7 +205,19 @@ struct HMPageCommitProbe: UIViewRepresentable {
         }
         private func settled(_ scroll: UIScrollView, time: TimeInterval) {
             fallback?.cancel(); fallback = nil
-            guard !suppressCommit, !needsReconcile, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
+            observePageSize(scroll)
+            guard !isSuspended, !suppressCommit, !needsReconcile, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
+            if restoringFullscreen {
+                let y = Double(anchor) * scroll.bounds.height - scroll.adjustedContentInset.top
+                if abs(scroll.contentOffset.y - y) > 0.5 {
+                    scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: false)
+                    lastMotionAt = ProcessInfo.processInfo.systemUptime
+                }
+                let quiet = ProcessInfo.processInfo.systemUptime - lastMotionAt
+                if quiet < 0.5 { scheduleFallback(after: 0.5 - quiet); return }
+                restoringFullscreen = false; reference?.isRestoringFullscreen = false; interaction(false)
+                return
+            }
             defer { interaction(false) }
             let index = max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded()))
             guard itemIDs.indices.contains(index) else { return }

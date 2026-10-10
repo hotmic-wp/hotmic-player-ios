@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Harden fullscreen for portrait-only hosts, open sheets and duplicate presenters; follow rotation from a portrait feed, preserve quick swipes after exit, and resume failed-item skipping on exit.
+- Reuse partner overlays in fullscreen (including a UIKit `fullscreenOverlay:` initializer), pause detached inline views, and preblur bounded decoded/poster backdrops without consuming startup measurement frames. Fix rotated still orientation and fallback video-output retention.
+- Add per-item aspect hints and warm-track/decoded presentation-size detection, exposed on playback snapshots. **Behavior change:** the default feed policy is now `.automatic`; landscape and other mismatched media letterbox instead of cropping to the vertical container. Matching vertical media still fills, and explicit `gravity:` calls retain their behavior.
+- Add configuration and per-item presentation policies (`automatic`, `fill`, `fit`, `fitWithBlurredBackdrop`, `fitWithColor`), configurable tolerance/color, and page-coordinate `videoFrame` in overlay snapshots. Blurred backdrops use a poster or a small still from the existing decoded output, with no extra decode.
+- Add `enterFullscreen()` / `exitFullscreen()`, observable `isFullscreen` and opt-in landscape device rotation. Fullscreen reuses the current node/layer without seeking, buffering again or resetting TTFF, and disables feed paging until exit.
+- Add non-paging `HMPlayerView` (SwiftUI, default inline 16:9) and `HMPlayerViewController` (UIKit, host-sized), sharing HMPlayer's cache, prefetch, loops, mute, seek and playlist navigation.
+- Add a mixed MP4/HLS orientation Sample, horizontal benchmark grid/inline scenario, orientation manifests and per-orientation analysis. Document host orientation setup and the still-poster backdrop behavior.
+
 ## 1.0.0-rc.4
 
 - Move the canonical public player repository to [hotmic-wp/hotmic-player-ios](https://github.com/hotmic-wp/hotmic-player-ios) and update installation and documentation links. Rename the optional HotMicCore adapter package to [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect-ios), with `HotMicItemResolver`, `HotMicPlaylistSource` and `HotMicInteractionSource`.

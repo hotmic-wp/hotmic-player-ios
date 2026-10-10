@@ -55,6 +55,14 @@ Operations run atomically on the main actor and return `Bool`; invalid edits emi
 
 Paging and opaque content IDs use `HMPlaylistSource` and `HMItemResolver`. See [playlist management](Sources/HotMicPlayer/HotMicPlayer.docc/PlaylistManagement.md) and [event/lifecycle contracts](docs/INTEGRATION.md).
 
+## Horizontal video and inline playback
+
+The feed now defaults to `.automatic`: matching vertical media fills, while landscape clips and pre-rolls fit without cropping. Supply `HMMediaItem(aspectRatio: 16.0 / 9.0)` as a first-paint hint; decoded track/presentation size takes precedence. Select `.fill`, `.fit`, `.fitWithBlurredBackdrop` or `.fitWithColor` through `configuration.presentation` or an item override. Overlay snapshots expose `videoFrame` in page coordinates.
+
+Use `HMPlayerView(player:)` for a non-paging 16:9 inline player, or embed `HMPlayerViewController(player:)` in UIKit and constrain its view. Both share the feed engine, cache and playlist controls. Call `enterFullscreen()` / `exitFullscreen()` and observe `isFullscreen`; fullscreen moves the same video layer and disables feed swipes. Opt into landscape device rotation with `configuration.followsDeviceRotation = true`. Landscape fullscreen requires the host app to allow landscape orientations; portrait-only apps safely expand fullscreen in portrait. Overlay closures also render fullscreen. Inline players pause when removed and resume on appearance unless explicitly paused.
+
+See [Horizontal video](Sources/HotMicPlayer/HotMicPlayer.docc/HorizontalVideo.md) for policies, UIKit integration and host orientation setup, and [the Sample](Sample/HotMicPlayerDemo/App/HorizontalLabScreen.swift) for a mixed feed and inline example.
+
 ## 2. Player + UI + your interaction source
 
 `MemorySource` below is your `HMInteractionSource`; [the compiled Example](Examples/PlayerWithUI/PlayerWithUI/MemorySource.swift) includes a complete in-memory implementation with chat, reactions and a poll.

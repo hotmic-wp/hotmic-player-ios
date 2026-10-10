@@ -21,6 +21,9 @@ printf '{"preset":"%s","smoke_seconds":"%s"}\n' "${ENCODE_PRESET:-veryfast}" "${
 [ -z "${CLIP_LIST:-}" ] || "$py" "$here/encode_manifest.py" verify "$source_dir" "$CLIP_LIST"
 # Every clip is normalised to 30 fps so the GOP (key*30 frames) is identical for every clip and variant.
 export out gop=$((key * 30))
+# Landscape sources use the same ladder: a 16:9 source at >=720 short-side produces
+# 1280x720 MP4 faststart and 2s HLS (720/540/360), without upscaling.
+# encode_manifest.py also publishes mixed-orientation and inline-landscape manifests.
 # Rungs are named by the short side and capped at the source's short side: never upscale, never pad.
 # 1080/720 are the MP4 sizes; 720/540/360 are the HLS ladder. Each HLS rung remuxes the MP4 of that rung.
 encode_clip() {

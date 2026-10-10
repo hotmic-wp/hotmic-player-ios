@@ -1,0 +1,87 @@
+{
+  "run_prefix": "horizontal-smoke",
+  "results_url": "http://127.0.0.1:18491/runs",
+  "network": "lan",
+  "cells": [
+    {
+      "id": "S0-mixed-binge",
+      "strategy": "S0",
+      "format": "mixed-mp4-hls",
+      "playlist_url": "/mixed-orientation.json",
+      "script": "binge",
+      "repeats": 1,
+      "swipes": 12,
+      "reset_cache": true,
+      "require_frame": true,
+      "knobs": {},
+      "presentation": "fitWithBlurredBackdrop"
+    },
+    {
+      "id": "S0-mixed-normal",
+      "strategy": "S0",
+      "format": "mixed-mp4-hls",
+      "playlist_url": "/mixed-orientation.json",
+      "script": "normal",
+      "repeats": 1,
+      "swipes": 12,
+      "reset_cache": true,
+      "require_frame": true,
+      "knobs": {},
+      "presentation": "fitWithBlurredBackdrop"
+    },
+    {
+      "id": "S3-mixed-binge",
+      "strategy": "S3",
+      "format": "mixed-mp4-hls",
+      "playlist_url": "/mixed-orientation.json",
+      "script": "binge",
+      "repeats": 1,
+      "swipes": 12,
+      "reset_cache": true,
+      "require_frame": true,
+      "knobs": {},
+      "presentation": "fitWithBlurredBackdrop"
+    },
+    {
+      "id": "S3-mixed-normal",
+      "strategy": "S3",
+      "format": "mixed-mp4-hls",
+      "playlist_url": "/mixed-orientation.json",
+      "script": "normal",
+      "repeats": 1,
+      "swipes": 12,
+      "reset_cache": true,
+      "require_frame": true,
+      "knobs": {},
+      "presentation": "fitWithBlurredBackdrop"
+    },
+    {
+      "id": "S0-inline-normal",
+      "scenario": "inline",
+      "strategy": "S0",
+      "format": "landscape-mp4-hls",
+      "playlist_url": "/inline-landscape.json",
+      "script": "normal",
+      "repeats": 1,
+      "swipes": 6,
+      "reset_cache": true,
+      "require_frame": true,
+      "knobs": {},
+      "presentation": "fitWithBlurredBackdrop"
+    },
+    {
+      "id": "S3-inline-normal",
+      "scenario": "inline",
+      "strategy": "S3",
+      "format": "landscape-mp4-hls",
+      "playlist_url": "/inline-landscape.json",
+      "script": "normal",
+      "repeats": 1,
+      "swipes": 6,
+      "reset_cache": true,
+      "require_frame": true,
+      "knobs": {},
+      "presentation": "fitWithBlurredBackdrop"
+    }
+  ]
+}

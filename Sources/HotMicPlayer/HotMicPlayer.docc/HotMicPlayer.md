@@ -20,6 +20,7 @@ All player, timeline, source, and engagement access is isolated to the main acto
 
 ### Integration guides
 - <doc:GettingStarted>
+- <doc:HorizontalVideo>
 - <doc:HotMicIntegration>
 - <doc:PlaylistManagement>
 - <doc:PrefetchAndPerformance>
@@ -29,6 +30,10 @@ All player, timeline, source, and engagement access is isolated to the main acto
 ### Playback and playlists
 - ``HMPlayer``
 - ``HMVerticalFeedView``
+- ``HMPlayerView``
+- ``HMPlayerViewController``
+- ``HMVideoPresentation``
+- ``HMVideoBackdropColor``
 - ``HMMediaItem``
 - ``HMPlayerConfiguration``
 - ``HMPlaybackSnapshot``

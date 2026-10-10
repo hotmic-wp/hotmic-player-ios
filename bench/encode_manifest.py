@@ -243,9 +243,32 @@ def build(out, base, key, clip_list, copy):
             continue  # 540/360 MP4s are HLS rung sources; a sub-720 clip's top one is in the -top playlists
         pairs.sort(key=lambda cv: cv[0]['id'])
         items = [dict(id=f'{n + 1:03d}-{c["id"]}', url=f'{base}/{v["path"]}', poster=f'{base}/{c["poster"]}', format=variant,
-                      duration=v['duration']) for n in range(80) for c, v in [pairs[n % len(pairs)]]]
+                      duration=v['duration'], aspectRatio=int(v['resolution'].split('x')[0]) / int(v['resolution'].split('x')[1])) for n in range(80) for c, v in [pairs[n % len(pairs)]]]
         (out / f'{variant}.json').write_text(json.dumps(items, indent=2) + '\n')
         published[variant] = len(pairs)
+
+    # Interleave orientation AND transport for the horizontal feed smoke. Keep distinct URLs/IDs.
+    mixed = []
+    for orientation in ('portrait', 'landscape'):
+        for c in clips:
+            for kind in ('mp4-faststart-top', 'hls-2s'):
+                for entry, v in by_variant.get(kind, []):
+                    if entry['id'] != c['id']: continue
+                    w, h = map(int, v['resolution'].split('x'))
+                    if (w > h) != (orientation == 'landscape'): continue
+                    mixed.append(dict(id=c['id'], url=f'{base}/{v["path"]}', poster=f'{base}/{c["poster"]}',
+                                      format=kind, duration=v['duration'], aspectRatio=w/h))
+    # Alternate orientations, with MP4 then HLS for each source.
+    portraits = [e for e in mixed if e['aspectRatio'] <= 1]
+    landscapes = [e for e in mixed if e['aspectRatio'] > 1]
+    if portraits and landscapes:
+        ordered = [entry for n in range(max(len(portraits), len(landscapes)))
+                   for entry in (portraits[n % len(portraits)], landscapes[n % len(landscapes)])]
+        (out / 'mixed-orientation.json').write_text(json.dumps([
+            dict(e, id=f'{n+1:03d}-{e["id"]}') for n in range(80) for e in [ordered[n % len(ordered)]]], indent=2)+'\n')
+    if landscapes:
+        (out / 'inline-landscape.json').write_text(json.dumps([
+            dict(e, id=f'{n+1:03d}-{e["id"]}') for n in range(80) for e in [landscapes[n % len(landscapes)]]], indent=2)+'\n')
 
     settings_file = out / '.timings' / 'settings.json'
     settings = json.loads(settings_file.read_text()) if settings_file.exists() else {}

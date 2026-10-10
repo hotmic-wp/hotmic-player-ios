@@ -114,6 +114,14 @@ public enum HMRemovedCurrentPolicy: String, Sendable, Equatable {
 ///
 /// Use from any task; mutate only an exclusively owned value.
 public struct HMPlayerConfiguration: Sendable {
+    /// Rendering default. Automatic preserves fill for matching vertical media and fits landscape media.
+    public var presentation: HMVideoPresentation = .automatic
+    /// Relative aspect difference permitted by automatic fill; default 25% accommodates safe-area differences.
+    public var aspectRatioTolerance: Double = 0.25
+    /// Bar color for fitWithColor.
+    public var backdropColor: HMVideoBackdropColor = .black
+    /// Opt in to entering landscape fullscreen and returning inline on portrait device rotation.
+    public var followsDeviceRotation: Bool = false
     /// Ask the playlist source for more when this many entries remain after current.
     @_spi(Benchmark) public var lowWaterMark: Int = 3
     /// Memory-only HLS playlist freshness, in seconds.
@@ -257,6 +265,10 @@ public struct HMPlayerConfiguration: Sendable {
 
     /// Complete experimental configuration serialization, excluded from partner imports.
     struct BenchmarkRecord: Codable, Sendable {
+        private let presentation: HMVideoPresentation?
+        private let aspectRatioTolerance: Double?
+        private let backdropColor: HMVideoBackdropColor?
+        private let followsDeviceRotation: Bool?
         private let failedItemPolicy: FailedItemPolicyRecord?
         private let removedCurrentPolicy: String?
         private let adaptive: Bool
@@ -280,6 +292,8 @@ public struct HMPlayerConfiguration: Sendable {
         private let managesAudioSession: Bool
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
+            presentation = c.presentation; aspectRatioTolerance = c.aspectRatioTolerance
+            backdropColor = c.backdropColor; followsDeviceRotation = c.followsDeviceRotation
             failedItemPolicy = c.failedItemPolicy == .skip ? .skip : .stay
             removedCurrentPolicy = c.removedCurrentPolicy.rawValue
             adaptive = c.adaptive; adaptiveThresholds = c.adaptiveThresholds
@@ -300,6 +314,8 @@ public struct HMPlayerConfiguration: Sendable {
                 startupBitRateWindow: startupBitRateWindow, loops: loops, startsMuted: startsMuted,
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
+            c.presentation = presentation ?? .automatic; c.aspectRatioTolerance = aspectRatioTolerance ?? 0.25
+            c.backdropColor = backdropColor ?? .black; c.followsDeviceRotation = followsDeviceRotation ?? false
             c.failedItemPolicy = failedItemPolicy == .stay ? .stay : .skip
             c.removedCurrentPolicy = removedCurrentPolicy.flatMap(HMRemovedCurrentPolicy.init(rawValue:)) ?? .advanceNow
             c.adaptive = adaptive; c.adaptiveThresholds = adaptiveThresholds

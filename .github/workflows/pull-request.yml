@@ -1,5 +1,7 @@
 name: Partner release checks
 
+# pull_request plus push to main. A main run seeds actions/cache; pull requests
+# restore that default-branch cache. Each job has its own runner.
 on:
   pull_request:
   push:
@@ -13,47 +15,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
+  unit-tests:
     runs-on: macos-26
     timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Require Xcode 26.6 for reproducible API exports
-        run: |
-          if [[ ! -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ]]; then
-            echo "::error::Xcode 26.6 is required but is missing at $DEVELOPER_DIR. Install it on the runner before running the API drift check."
-            exit 1
-          fi
-          version=$(xcodebuild -version)
-          if [[ "${version%%$'\n'*}" != 'Xcode 26.6' ]]; then
-            echo "::error::Expected Xcode 26.6 at $DEVELOPER_DIR; found $version. The API inventory must use the pinned toolchain."
-            exit 1
-          fi
-          printf '%s\n' "$version"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require Xcode 26.6 for reproducible API exports
+        run: bash .github/scripts/require-xcode-26.6.sh
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
-            .bench/release/DerivedData/SourcePackages
-            .bench/release/DerivedData/ModuleCache.noindex
-            .bench/release/device-derived/SourcePackages
-            .bench/release/device-derived/ModuleCache.noindex
-            .bench/release/docs-derived/SourcePackages
-            .bench/release/docs-derived/ModuleCache.noindex
-          key: swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
+            .bench/unit/DerivedData/SourcePackages
+            .bench/unit/DerivedData/ModuleCache.noindex
+          key: swiftpm-unit-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
           restore-keys: |
-            swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-
-      - name: Check partner docs and API; build products and run the unit suite once
-        env:
-          PARTNER_DOCS_DENYLIST: ${{ secrets.PARTNER_DOCS_DENYLIST }}
-        run: bash .github/scripts/validate-release.sh
-      - name: Upload validation evidence on failure
+            swiftpm-unit-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-
+            swiftpm-unit-
+      - name: Build and run the package unit tests
+        run: bash .github/scripts/ci-unit-tests.sh
+      - name: Upload unit-test evidence on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: player-validation-failure
+          name: player-unit-tests-failure
           path: |
-            .bench/release/*.log
-            .bench/release/UnitTests.xcresult
+            .bench/unit/*.log
+            .bench/unit/UnitTests.xcresult
+          retention-days: 7
+
+  apps:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require Xcode 26.6 for reproducible API exports
+        run: bash .github/scripts/require-xcode-26.6.sh
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .bench/apps/DerivedData/SourcePackages
+            .bench/apps/DerivedData/ModuleCache.noindex
+          key: swiftpm-apps-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
+          restore-keys: |
+            swiftpm-apps-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-
+            swiftpm-apps-
+      - name: Compile Sample and Examples for the simulator
+        run: bash .github/scripts/ci-apps.sh
+      - name: Upload app-build evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: player-apps-failure
+          path: .bench/apps/*.log
+          retention-days: 7
+
+  checks:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require Xcode 26.6 for reproducible API exports
+        run: bash .github/scripts/require-xcode-26.6.sh
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            .bench/checks/DerivedData/SourcePackages
+            .bench/checks/DerivedData/ModuleCache.noindex
+          key: swiftpm-checks-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
+          restore-keys: |
+            swiftpm-checks-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-
+            swiftpm-checks-
+      - name: Check partner docs, device libraries, DocC, and API drift
+        env:
+          PARTNER_DOCS_DENYLIST: ${{ secrets.PARTNER_DOCS_DENYLIST }}
+        run: bash .github/scripts/ci-checks.sh
+      - name: Upload check evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: player-checks-failure
+          path: .bench/checks/*.log
           retention-days: 7

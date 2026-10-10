@@ -8,6 +8,9 @@ import HotMicPlayerUI
 struct PartnerDemoScreen: View {
     @State private var model = PartnerDemoModel()
     @State private var customUI = false
+    @State private var useConnect = false
+    @State private var selectedTab = 0
+    @State private var sheetOpen = false
     @State private var muteControl = false
     @State private var scrubbing = false
     @State private var customSheet = false
@@ -21,7 +24,7 @@ struct PartnerDemoScreen: View {
     @Environment(\.dynamicTypeSize) private var dynamicType
     private var options: HMSocialOptions {
         var options = HMSocialOptions()
-        options.hostNavigationHeight = 54; options.showsMute = muteControl; options.allowsScrubbing = scrubbing
+        options.hostNavigationHeight = 0; options.showsMute = muteControl; options.allowsScrubbing = scrubbing
         options.previewDuration = 3; options.previewRotationInterval = previewOnce ? nil : 5
         return options
     }
@@ -30,54 +33,78 @@ struct PartnerDemoScreen: View {
         callbacks.hashtagTapped = { notice = "Hashtag: \($0)" }
         callbacks.share = { shareURL = $0.url; sharePresented = true }
         callbacks.commentPosted = { _, _ in notice = "Comment posted" }
-        callbacks.sheetChanged = { _, opened in notice = opened ? "Comments opened" : "Comments closed" }
+        callbacks.sheetChanged = { _, opened in sheetOpen = opened; notice = opened ? "Comments opened" : "Comments closed" }
         return callbacks
     }
     var body: some View {
+        TabView(selection: $selectedTab) {
         GeometryReader { geometry in
         ZStack {
             if customUI {
-                PartnerCustomSurface(player: model.player, data: model.data, navHeight: 54)
+                PartnerCustomSurface(player: model.player, data: model.data, navHeight: 0)
             } else {
                 kit.hmExcludedHitAreas([CGRect(x: 0, y: 0, width: geometry.size.width, height: geometry.safeAreaInsets.top + 100)])
             }
             VStack {
+                if !sheetOpen {
                 HStack {
-                    Button("Close") { dismiss() }.frame(minHeight: 44)
+                    Button { dismiss() } label: { Image(systemName: "xmark").font(.system(size: 20)).frame(width: 44, height: 44) }.accessibilityLabel("Close")
                     Spacer()
-                    Menu("Demo options") {
+                    Menu {
                         Toggle("Custom UI on hooks", isOn: $customUI)
+                        Toggle("Fake Connect source", isOn: $useConnect)
+                        Button("Toggle captions") { model.player.captionsEnabled.toggle() }
+                        Button("Refresh ranking") { model.refreshRanking() }
+                        Button("URL pre-roll") { model.player.jump(toID: "url-ad") }
                         Toggle("Show mute control", isOn: $muteControl)
                         Toggle("Allow scrubbing", isOn: $scrubbing)
                         Toggle("Replace sheet content", isOn: $customSheet)
                         Toggle("Replace rail and metadata", isOn: $customSlots)
                         Toggle("Preview once per item", isOn: $previewOnce)
-                        Button("Landscape item") { model.player.next() }
-                        Button("Ad placeholder") { model.player.jump(toID: "host-ad") }
+                        Button("Landscape item") { model.player.jump(toID: "kit-horizontal") }
+                        Button("HLS item") { model.player.jump(toID: "hls") }
+                        Button("Host-played break") { model.player.jump(toID: "host-ad") }
                         Button("Vertical item") { model.player.jump(toID: "kit-vertical") }
-                    }.accessibilityIdentifier("partner-options").frame(minHeight: 44)
+                    } label: {
+                        Image(systemName: "ellipsis.circle").font(.system(size: 22)).frame(width: 44, height: 44)
+                    }.accessibilityLabel("Demo options").accessibilityIdentifier("partner-options")
                 }
                 .padding(.horizontal, 16).background(.black.opacity(0.7))
-                Text(customUI ? "Custom UI on hooks" : "Partner demo · Kit UI").font(.caption)
-                if !notice.isEmpty { Text(notice).font(.caption).accessibilityIdentifier("partner-notice") }
+                Text(customUI ? "Custom UI on hooks" : "Partner demo · Kit UI").font(.caption).lineLimit(1)
+                if !notice.isEmpty { Text(notice).font(.caption).lineLimit(1).accessibilityIdentifier("partner-notice") }
+                }
                 if model.player.adState.isActive {
-                    Button("Skip ad") { model.player.skipAd() }.accessibilityIdentifier("partner-skip-ad")
+                    Button("Skip ad") { model.player.skipAd() }.frame(minHeight: 44).accessibilityIdentifier("partner-skip-ad")
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red) }
                 Spacer()
-                HStack {
-                    Label("Home", systemImage: "house.fill")
-                    Spacer(); Label("Following", systemImage: "person.2")
-                    Spacer(); Label("Profile", systemImage: "person.crop.circle")
-                }.font(.caption).padding(.horizontal, 20).frame(height: 54)
-                    .background(.black).accessibilityIdentifier("partner-bottom-nav")
             }
         }
         }
+        .id(ObjectIdentifier(model.player))
+        .tabItem { Label("Feed", systemImage: "play.rectangle.fill") }.tag(0)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Integration walkthrough").font(.title)
+                Text("Choose ready-made or custom overlay in Demo options. Both share playback and fake services.")
+                ForEach(["Swipe portrait, landscape and HLS; refresh ranking.",
+                    "Tap to pause, double tap to add Fire; rail toggles it.",
+                    "Open comments, load older rows, type and post with the software keyboard.",
+                    "Toggle captions and mute. Enter fullscreen on landscape and return.",
+                    "Run URL pre-roll and host-played break; skip, swipe away and revisit.",
+                    "Switch fake host / Connect source; simulated Connect capabilities exceed current backend availability.",
+                    "Try replacement rail, metadata, sheet and safe sidecar.",
+                    "Check largest text, Reduce Motion, background / foreground; use the audio lab for simulated interruptions."], id: \.self) { Text($0) }
+            }.padding()
+        }.tabItem { Label("Guide", systemImage: "checklist") }.tag(1)
+        }
+        .tint(.white)
         .ignoresSafeArea(.keyboard)
         .preferredColorScheme(.dark).foregroundStyle(.white)
         .sheet(isPresented: $sharePresented) { if let shareURL { HMShareSheet(items: [shareURL]) } }
         .task { await model.start() }
+        .task(id: useConnect) { await model.selectSource(connect: useConnect) }
+        .onChange(of: selectedTab) { _, tab in model.player.isFeedVisible = tab == 0 }
         #if DEBUG
         .task(id: "\(reduceMotion)|\(dynamicType)") {
             guard BenchmarkOptions().values["partner-trace"] == "1" else { return }
@@ -113,35 +140,58 @@ struct PartnerDemoScreen: View {
 }
 
 @MainActor @Observable private final class PartnerDemoModel {
-    let player: HMPlayer
-    private let source = CustomEngagementBackend()
+    var player: HMPlayer
+    private var connect = false
+    private var started = false
     @ObservationIgnored private var adapters: [String: HMEngagementSocialAdapter] = [:]
     var error: String?
-    init() { player = HMPlayer(configuration: HMPlayerConfiguration(), interactions: source) }
+    init() { player = HMPlayer(interactions: CustomEngagementBackend()) }
+    func selectSource(connect: Bool) async {
+        guard connect != self.connect else { return }
+        self.connect = connect; error = nil
+        player.teardown(); adapters.removeAll(); started = false
+        player = HMPlayer(interactions: connect ? DemoConnectInteractionSource() : CustomEngagementBackend())
+        await start()
+    }
+    func refreshRanking() {
+        guard let current = player.currentItem else { return }
+        player.reconcile([current] + player.items.filter { $0.id != current.id }.reversed())
+    }
     func data(_ item: HMMediaItem) -> any HMSocialDataSource {
-        if let adapter = adapters[item.id] { return adapter }
-        let adapter = HMEngagementSocialAdapter(engagement: player.engagement(for: item), metadata: HMSocialContent(
+        let engagement = player.engagement(for: item)
+        if let adapter = adapters[item.id], adapter.engagement === engagement { return adapter }
+        let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: HMSocialContent(
             title: item.title ?? "The moment everyone is talking about",
             description: "Every play has a story. Join the conversation and share your view of this moment with the community. Watch again to catch every detail of the action.",
             hashtags: ["Highlights", "GameDay"], community: "Courtside community"))
         adapters[item.id] = adapter; return adapter
     }
     func start() async {
-        guard player.items.isEmpty else { return }
+        guard !started else { return }
+        started = true
+        let activePlayer = player
         do {
             let vertical = try await socialVideoFixture(landscape: false, name: "kit-vertical", seconds: 12)
             let horizontal = try await socialVideoFixture(landscape: true, name: "kit-horizontal", seconds: 12)
             let captions = Bundle.main.url(forResource: "bench.en", withExtension: "vtt").map { ["en": $0] } ?? [:]
+            guard activePlayer === player else { return }
+            let hlsURL = BenchmarkOptions().values["partner-hls-url"].flatMap(URL.init(string:))
+                ?? URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!
             player.adBreakProvider = DemoAdProvider(preRollURL: horizontal)
             player.replaceAll([
                 HMMediaItem(id: "kit-vertical", url: vertical, title: "A moment to share", aspectRatio: 9.0 / 16, captionSources: captions),
                 HMMediaItem(id: "kit-horizontal", url: horizontal, title: "The whole field, in view", aspectRatio: 16.0 / 9, captionSources: captions),
+                HMMediaItem(id: "hls", url: hlsURL, format: .hls, title: "HLS match replay", aspectRatio: 16.0 / 9),
+                HMMediaItem(id: "url-ad", url: vertical, title: "After URL pre-roll", aspectRatio: 9.0 / 16, captionSources: captions),
                 HMMediaItem(id: "host-ad", url: vertical, title: "Back to the action", aspectRatio: 9.0 / 16)
             ])
             await player.start()
-            for item in player.items { try await data(item).loadMoreComments() }
+            for item in activePlayer.items {
+                guard activePlayer === player else { return }
+                try await data(item).loadMoreComments()
+            }
         } catch is CancellationError { }
-        catch { self.error = error.localizedDescription }
+        catch { if activePlayer === player { self.error = error.localizedDescription } }
     }
     #if DEBUG
     /// Opt-in local diagnostics use public UIKit accessibility and player APIs only.

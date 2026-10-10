@@ -42,6 +42,7 @@ final class PartnerDemoUITests: XCTestCase {
         let input = app.descendants(matching: .any)["hm-comment-input"].firstMatch
         XCTAssertTrue(input.exists)
         input.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         let focused = XCTAttachment(screenshot: app.screenshot())
         focused.name = "comment-composer-layout"; focused.lifetime = .keepAlways; add(focused)
         XCTAssertLessThanOrEqual(surface.frame.maxY, handle.frame.minY + 24)
@@ -56,7 +57,8 @@ final class PartnerDemoUITests: XCTestCase {
         expectValue(surface, contains: "Playing")
         overlay.buttons["hm-share"].tap()
         XCTAssertTrue(app.otherElements["ActivityListView"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.cells["Copy"].firstMatch.exists)
+        // Native share actions can be buttons or cells depending on the iOS version.
+        XCTAssertTrue(app.descendants(matching: .any)["Copy"].firstMatch.waitForExistence(timeout: 5))
         app.buttons["header.closeButton"].firstMatch.tap()
         // Metadata has no nested vertical scroller: this drag must page the feed.
         let metadata = overlay.buttons["Hashtag Highlights"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))

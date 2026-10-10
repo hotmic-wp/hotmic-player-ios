@@ -75,6 +75,10 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public let durationHint: TimeInterval?
+    /// Optional display width / height, used until the decoded video size is known.
+    public let aspectRatio: Double?
+    /// Per-item rendering override; nil inherits the player's configuration.
+    public let presentation: HMVideoPresentation?
     /// App metadata forwarded to analytics.
     ///
     /// Use from any task; mutate only an exclusively owned value.
@@ -96,16 +100,31 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     /// Use from any task; mutate only an exclusively owned value.
     public init(id: String, source: Source, posterURL: URL? = nil, title: String? = nil,
                 author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String: String] = [:]) {
+        self.init(id: id, source: source, posterURL: posterURL, title: title, author: author,
+                  durationHint: durationHint, metadata: metadata, aspectRatio: nil, presentation: nil)
+    }
+    /// Creates a VOD entry with optional display metadata. Use from any task.
+    public init(id: String, source: Source, posterURL: URL? = nil, title: String? = nil,
+                author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String: String] = [:],
+                aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil) {
         self.id = id; self.source = source; self.posterURL = posterURL; self.title = title
         self.author = author; self.durationHint = durationHint; self.metadata = metadata
+        self.aspectRatio = HMVideoAspect.valid(aspectRatio); self.presentation = presentation
     }
     /// Creates a direct VOD entry.
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public init(id: String, url: URL, format: Format = .auto, posterURL: URL? = nil, title: String? = nil,
                 author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String: String] = [:]) {
+        self.init(id: id, url: url, format: format, posterURL: posterURL, title: title, author: author,
+                  durationHint: durationHint, metadata: metadata, aspectRatio: nil, presentation: nil)
+    }
+    /// Creates a direct VOD entry with optional display metadata. Use from any task.
+    public init(id: String, url: URL, format: Format = .auto, posterURL: URL? = nil, title: String? = nil,
+                author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String: String] = [:],
+                aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil) {
         self.init(id: id, source: .url(url, format: format), posterURL: posterURL, title: title,
-                  author: author, durationHint: durationHint, metadata: metadata)
+                  author: author, durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation)
     }
     /// Creates a URL entry. Supply an app ID when the same URL can occur twice; otherwise its absolute URL is the ID.
     ///
@@ -134,9 +153,9 @@ public struct HMMediaItem: Identifiable, Hashable, Sendable {
     }
     func resolved(_ result: HMResolvedItem) -> Self {
         Self(id: id, url: result.url, format: result.format, posterURL: posterURL ?? result.poster,
-             title: title ?? result.title, author: author, durationHint: durationHint ?? result.duration, metadata: metadata)
+             title: title ?? result.title, author: author, durationHint: durationHint ?? result.duration, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation)
     }
     func identified(_ id: String) -> Self {
-        Self(id: id, source: source, posterURL: posterURL, title: title, author: author, durationHint: durationHint, metadata: metadata)
+        Self(id: id, source: source, posterURL: posterURL, title: title, author: author, durationHint: durationHint, metadata: metadata, aspectRatio: aspectRatio, presentation: presentation)
     }
 }

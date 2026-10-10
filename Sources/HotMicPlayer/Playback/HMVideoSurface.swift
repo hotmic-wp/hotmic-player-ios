@@ -18,20 +18,23 @@ struct HMVideoSurface: UIViewRepresentable {
     private let activationID: String?
     private let displayRevision: Int?
     private let observesWarmFrame: Bool
+    private let capturesBackdrop: Bool
 
-    init(node: HMPlayerNode?, gravity: AVLayerVideoGravity = .resizeAspectFill, observesWarmFrame: Bool = false) {
+    init(node: HMPlayerNode?, gravity: AVLayerVideoGravity = .resizeAspectFill, observesWarmFrame: Bool = false, capturesBackdrop: Bool = false) {
         self.node = node
         self.gravity = gravity
         self.active = node?.isActive ?? false
         self.activationID = node?.snapshot.activationID
         self.displayRevision = node?.displayRevision
         self.observesWarmFrame = observesWarmFrame
+        self.capturesBackdrop = capturesBackdrop
     }
 
     func makeUIView(context: Context) -> HMVideoSurfaceView {
         let view = HMVideoSurfaceView()
         view.backgroundColor = .clear
         view.isPlaybackVisible = scenePhase == .active
+        view.capturesBackdrop = capturesBackdrop
         view.observesWarmFrame = observesWarmFrame
         view.attach(node, gravity: gravity)
         return view
@@ -39,6 +42,7 @@ struct HMVideoSurface: UIViewRepresentable {
 
     func updateUIView(_ uiView: HMVideoSurfaceView, context: Context) {
         uiView.isPlaybackVisible = scenePhase == .active
+        uiView.capturesBackdrop = capturesBackdrop
         uiView.observesWarmFrame = observesWarmFrame
         uiView.attach(node, gravity: gravity)
     }
@@ -53,6 +57,7 @@ final class HMVideoSurfaceView: UIView {
     private var readyItem: HMMediaItem?
     private var readyRevision: Int?
     var isPlaybackVisible = true { didSet { refreshDisplayLink() } }
+    var capturesBackdrop = false { didSet { refreshDisplayLink() } }
     var observesWarmFrame = false { didSet { refreshDisplayLink() } }
 
     func attach(_ node: HMPlayerNode?, gravity: AVLayerVideoGravity) {
@@ -76,7 +81,7 @@ final class HMVideoSurfaceView: UIView {
     private func refreshDisplayLink() {
         if !isPlaybackVisible || isHidden || node == nil || window == nil ||
             (node?.isActive != true && !observesWarmFrame) ||
-            (node?.isActive == true && node?.snapshot.timeToFirstFrame != nil) {
+            (node?.isActive == true && node?.snapshot.timeToFirstFrame != nil && (!capturesBackdrop || node?.backdropPoster != nil)) {
             displayLink?.invalidate(); displayLink = nil; readyItem = nil
         } else if displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(displayBoundary))
@@ -104,9 +109,14 @@ final class HMVideoSurfaceView: UIView {
         guard readyItem == node.item, readyRevision == node.displayRevision else {
             readyItem = node.item; readyRevision = node.displayRevision; return
         }
+        if node.isActive { node.didDisplayFrame(activation: activation, at: ProcessInfo.processInfo.systemUptime) }
+        if capturesBackdrop { node.captureBackdropPoster() }
         guard node.isActive else { return }
-        node.didDisplayFrame(activation: activation, at: ProcessInfo.processInfo.systemUptime)
-        displayLink?.invalidate(); displayLink = nil
+        // First-frame metrics may already have copied this output frame. Wait for
+        // the next decoded frame if the still is unavailable; do not decode again.
+        if !capturesBackdrop || node.backdropPoster != nil {
+            displayLink?.invalidate(); displayLink = nil
+        }
     }
 
     override func didMoveToWindow() {

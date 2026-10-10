@@ -26,10 +26,31 @@ import Observation
     ///
     /// Access on the main actor.
     public var currentItem: HMMediaItem? { failureIdle ? nil : playlist.current }
+    /// Fullscreen changes rendering ownership only; it never activates or seeks the node.
+    public private(set) var isFullscreen = false
+    /// Enters fullscreen for the active item, canceling any pending page request. Access on the main actor.
+    public func enterFullscreen() {
+        guard !ended, currentItem != nil else { return }
+        requestedPageID = nil
+        isFullscreen = true
+    }
+    /// Returns to the same inline item and feed page. Access on the main actor.
+    public func exitFullscreen() { isFullscreen = false }
+    /// Host rotation adapters call this only for valid portrait / landscape device orientations.
+    func deviceRotated(isLandscape: Bool) {
+        guard configuration.followsDeviceRotation else { return }
+        if isLandscape, (snapshot.aspectRatio ?? currentItem?.aspectRatio ?? 0) > 1 { enterFullscreen() }
+        else if !isLandscape { exitFullscreen() }
+    }
+    /// Visible video area in the host page's coordinate system.
+    public func videoFrame(for item: HMMediaItem, in bounds: CGRect) -> CGRect {
+        (item.presentation ?? configuration.presentation).videoFrame(aspectRatio: snapshot(for: item).aspectRatio,
+            in: bounds, tolerance: configuration.aspectRatioTolerance)
+    }
     /// Current playback state, observed by SwiftUI through the underlying snapshot.
     ///
     /// Access on the main actor.
-    public var snapshot: HMPlaybackSnapshot { currentNode?.snapshot ?? pendingSnapshot }
+    public var snapshot: HMPlaybackSnapshot { currentItem.map { snapshot(for: $0) } ?? pendingSnapshot }
     /// True while requesting a page from the optional playlist source.
     ///
     /// Access on the main actor.
@@ -380,10 +401,11 @@ import Observation
     }
     /// Requests a view-driven animated page move; activation waits until scrolling settles.
     @_spi(Benchmark) public func requestPage(at index: Int) {
-        guard items.indices.contains(index), index != currentIndex else { return }
+        guard !isFullscreen, items.indices.contains(index), index != currentIndex else { return }
         requestedPageID = items[index].id; pageRequestID = UUID()
     }
     func commitPage(toID id: String, requestedAt: TimeInterval) {
+        guard !isFullscreen else { return }
         // Removing the last upcoming entry may leave history visible in the scroll view.
         // Layout settling must not turn that retained history into a new playback visit.
         guard currentItem != nil || requestedPageID == id || failurePageID == id else { return }
@@ -794,7 +816,12 @@ import Observation
     /// Read-only playback snapshot for an entry. Unprepared entries report idle.
     ///
     /// Access on the main actor.
-    public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot { resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.playbackSnapshot ?? (currentItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true ? pendingSnapshot : HMPlaybackSnapshot()) }
+    public func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot {
+        var value = resolutions.cached(item).flatMap { pool.existingNode(for: $0) }?.playbackSnapshot ??
+            (currentItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true ? pendingSnapshot : HMPlaybackSnapshot())
+        if value.aspectRatio == nil { value.aspectRatio = item.aspectRatio }
+        return value
+    }
     /// Clock-indexed overlay data. Network session lifecycle belongs to the interaction hooks, not this accessor.
     ///
     /// Access on the main actor.
@@ -872,6 +899,7 @@ import Observation
     /// Ends a benchmark session, drains transport accounting and emits runEnd. The player is terminal afterwards.
     @_spi(Benchmark) public func finishRun() async {
         guard !ended else { return }
+        isFullscreen = false
         ended = true; stopWork()
         let item = currentItem
         for node in pool.nodes { node.release() }
@@ -884,6 +912,7 @@ import Observation
     ///
     /// Access on the main actor.
     public func teardown() {
+        isFullscreen = false
         ended = true; stopWork()
         if let proxy { Task { _ = await proxy.finish() } }
         for node in pool.nodes { analytics.detach(playerKey: node.id) }; pool.releaseAll()

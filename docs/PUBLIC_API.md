@@ -229,12 +229,16 @@ protocol HMItemResolver : Sendable
 
 ```swift
 init(id: String, source: HMMediaItem.Source, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:])
+init(id: String, source: HMMediaItem.Source, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:], aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil)
 init(id: String, url: URL, format: HMMediaItem.Format = .auto, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:])
+init(id: String, url: URL, format: HMMediaItem.Format = .auto, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:], aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil)
+let aspectRatio: Double?
 let author: String?
 let durationHint: TimeInterval?
 let id: String
 let metadata: [String : String]
 let posterURL: URL?
+let presentation: HMVideoPresentation?
 let source: HMMediaItem.Source
 let title: String?
 static func reference(_ namespace: String, id: String, playlistID: String? = nil) -> HMMediaItem
@@ -397,6 +401,7 @@ var rawValue: String { get }
 ```swift
 init()
 struct HMPlaybackSnapshot
+var aspectRatio: Double? { get }
 var bufferedAhead: TimeInterval { get }
 var currentTime: TimeInterval { get }
 var duration: TimeInterval { get }
@@ -412,6 +417,7 @@ var stallCount: Int { get }
 var state: HMPlaybackState { get }
 var timeToFirstFrame: TimeInterval? { get }
 var totalStallDuration: TimeInterval { get }
+var videoFrame: CGRect { get }
 var wasPreloaded: Bool { get }
 ```
 
@@ -435,6 +441,8 @@ enum HMPlaybackState
 @MainActor func beginInteraction()
 @MainActor func endInteraction()
 @MainActor func engagement(for item: HMMediaItem) -> HMEngagement
+@MainActor func enterFullscreen()
+@MainActor func exitFullscreen()
 @MainActor func jump(toID id: String)
 @MainActor func loadNextPage() async
 @MainActor func next()
@@ -449,6 +457,7 @@ enum HMPlaybackState
 @MainActor func timeline(for item: HMMediaItem) -> any HMStreamTimeline
 @MainActor func toggleMute()
 @MainActor func togglePlayPause()
+@MainActor func videoFrame(for item: HMMediaItem, in bounds: CGRect) -> CGRect
 @MainActor init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil)
 @MainActor let analytics: HMAnalyticsHub
 @MainActor var activeIndex: Int { get }
@@ -458,6 +467,7 @@ enum HMPlaybackState
 @MainActor var events: AsyncStream<HMPlayerEvent> { get }
 @MainActor var hasMoreContent: Bool { get set }
 @MainActor var isFeedVisible: Bool { get set }
+@MainActor var isFullscreen: Bool { get set }
 @MainActor var isInteracting: Bool { get }
 @MainActor var isLoadingPage: Bool { get set }
 @MainActor var isMuted: Bool { get set }
@@ -487,14 +497,18 @@ static let highQuality: HMPlayerConfiguration
 static let instantStart: HMPlayerConfiguration
 struct HMPlayerConfiguration
 var adaptive: Bool
+var aspectRatioTolerance: Double
+var backdropColor: HMVideoBackdropColor
 var cacheCapacityBytes: Int
 var failedItemPolicy: HMFailedItemPolicy
+var followsDeviceRotation: Bool
 var loops: Bool
 var managesAudioSession: Bool
 var maxPrefetchConcurrency: Int
 var playlistTTL: TimeInterval
 var poolSize: Int
 var prefetch: HMPrefetchPolicy
+var presentation: HMVideoPresentation
 var removedCurrentPolicy: HMRemovedCurrentPolicy
 var resolveAhead: Int
 var startsMuted: Bool
@@ -529,6 +543,23 @@ case sourcePageDuplicates(ids: [String])
 case stallEnded(HMMediaItem)
 case stallStarted(HMMediaItem)
 enum HMPlayerEvent
+```
+
+## HMPlayerView
+
+```swift
+@MainActor init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9)
+@MainActor init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9, @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay)
+@MainActor struct HMPlayerView<Overlay> where Overlay : View
+@MainActor var body: some View { get }
+```
+
+## HMPlayerViewController
+
+```swift
+@MainActor final class HMPlayerViewController
+@MainActor init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9)
+@MainActor let player: HMPlayer
 ```
 
 ## HMPlaylistChange
@@ -755,10 +786,35 @@ struct HMTimelineMarker
 ## HMVerticalFeedView
 
 ```swift
-@MainActor init(player: HMPlayer, transition: HMPageTransition = .none, gravity: AVLayerVideoGravity = .resizeAspectFill)
-@MainActor init(player: HMPlayer, transition: HMPageTransition = .none, gravity: AVLayerVideoGravity = .resizeAspectFill, @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay)
+@MainActor init(player: HMPlayer, transition: HMPageTransition = .none, gravity: AVLayerVideoGravity? = nil)
+@MainActor init(player: HMPlayer, transition: HMPageTransition = .none, gravity: AVLayerVideoGravity? = nil, @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay)
 @MainActor struct HMVerticalFeedView<Overlay> where Overlay : View
 @MainActor var body: some View { get }
+```
+
+## HMVideoBackdropColor
+
+```swift
+init(red: Double, green: Double, blue: Double, alpha: Double = 1)
+static let black: HMVideoBackdropColor
+struct HMVideoBackdropColor
+var alpha: Double
+var blue: Double
+var green: Double
+var red: Double
+```
+
+## HMVideoPresentation
+
+```swift
+case automatic
+case fill
+case fit
+case fitWithBlurredBackdrop
+case fitWithColor
+enum HMVideoPresentation
+func resolved(aspectRatio: Double?, container: CGSize, tolerance: Double = 0.25) -> HMVideoPresentation
+func videoFrame(aspectRatio: Double?, in bounds: CGRect, tolerance: Double = 0.25) -> CGRect
 ```
 
 ## HotMicPlayer

@@ -38,6 +38,11 @@ public enum HMPlaybackState: String, Sendable {
 ///
 /// Use from any task; mutate only an exclusively owned value.
 public struct HMPlaybackSnapshot: Sendable, Equatable {
+    /// Display width / height from the video track or presentation size, falling back to the item hint.
+    public internal(set) var aspectRatio: Double?
+    /// Visible video rect in page coordinates. Populated for view overlay snapshots.
+    /// For custom hosts, use `HMPlayer.videoFrame(for:in:)` with the actual host bounds.
+    public internal(set) var videoFrame: CGRect = .zero
     /// Coarse playback lifecycle state.
     ///
     /// Use from any task; mutate only an exclusively owned value.

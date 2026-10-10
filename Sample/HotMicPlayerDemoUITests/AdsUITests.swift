@@ -1,0 +1,33 @@
+import XCTest
+
+/// Offline integration contract across the shared surfaces; no network SDK calls.
+final class AdsUITests: XCTestCase {
+    func testAdsInFeedAndStandalone() {
+        continueAfterFailure = false
+        for inline in [false, true] {
+            let app = XCUIApplication()
+            app.launchArguments = ["--hm-ads-lab", "1"] + (inline ? ["--hm-ads-inline", "1"] : [])
+            app.launch()
+            let active = app.staticTexts["ads-active"], comments = app.buttons["ads-comments"]
+            XCTAssertTrue(active.waitForExistence(timeout: 15))
+            XCTAssertFalse(comments.exists)
+            XCTAssertFalse(app.staticTexts["ads-preview"].exists)
+            XCTAssertFalse(app.buttons["ads-squeeze"].exists)
+            let video = app.otherElements["Video"]
+            XCTAssertFalse(video.exists) // video's accessibility actions are suppressed automatically
+            if inline { app.buttons["ads-skip"].tap() }
+            else { XCTAssertTrue(comments.waitForExistence(timeout: 9)) } // real media-end notification
+            XCTAssertTrue(comments.waitForExistence(timeout: 5))
+            app.buttons["ads-next"].tap()
+            XCTAssertTrue(active.waitForExistence(timeout: 5))
+            XCTAssertFalse(comments.exists)
+            let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = inline ? "standalone-host-ad" : "feed-host-ad"; shot.lifetime = .keepAlways; add(shot)
+            if inline { app.buttons["ads-skip"].tap() }
+            else { app.swipeUp() } // default swipe-away cancellation while the host break plays
+            if inline { app.buttons["ads-next"].tap() }
+            XCTAssertTrue(comments.waitForExistence(timeout: 7)) // slow provider times out to content
+            XCTAssertTrue(app.staticTexts["ads-status"].label.contains("slow-ad"))
+            app.terminate()
+        }
+    }
+}

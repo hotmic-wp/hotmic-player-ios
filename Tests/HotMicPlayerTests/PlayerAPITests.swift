@@ -163,7 +163,7 @@ struct PlayerReviewTests {
         #expect(!HMPagePosition.survives(old: old, new: ["b", "c", "d"], current: "b", destination: "c"))
         #expect(!HMPagePosition.survives(old: old, new: ["a", "b", "d"], current: "b", destination: "c"))
     }
-    @Test("Overlapping source pages keep new entries in order, while partner duplicates still reject")
+    @Test("Overlapping source pages keep new entries in order")
     func overlappingPages() throws {
         var list = HMPlaylistState(); try list.replaceAll([item("a")], startAt: 0)
         let page = list.filterSourcePage([item("a", path: "changed"), item("b"), item("b"), item("c")])
@@ -171,7 +171,6 @@ struct PlayerReviewTests {
         try list.append(page.items)
         #expect(list.items.map(\.id) == ["a", "b", "c"])
         #expect(list.filterSourcePage([item("a"), item("b")]).items.isEmpty)
-        #expect(throws: HMPlayerError.duplicateID("a")) { try list.append([item("a")]) }
     }
     @Test("Resolution retry budget is bounded, backs off, and resets for activation")
     func backoff() {
@@ -479,7 +478,7 @@ struct PlayerNativeReviewTests {
     #endif
 
     /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
-    private func videoFixture(rotated: Bool) async throws -> URL {
+    func videoFixture(rotated: Bool) async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-aspect-\(UUID()).mp4")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 90])

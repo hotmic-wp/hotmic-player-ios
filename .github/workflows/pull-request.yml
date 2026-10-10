@@ -23,16 +23,21 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Require Xcode 26.6 for reproducible API exports
-        run: bash .github/scripts/require-xcode-26.6.sh
+        id: xcode
+        run: |
+          bash .github/scripts/require-xcode-26.6.sh
+          echo "build=$(xcodebuild -version | awk 'END { print $NF }')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             .bench/unit/DerivedData/SourcePackages
             .bench/unit/DerivedData/ModuleCache.noindex
-          key: swiftpm-unit-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
+            .bench/unit/DerivedData/Build
+          # Exact key is the sources. The prefix restores the latest products for
+          # this Xcode build and package resolution; either change is a miss.
+          key: derived-unit-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**') }}
           restore-keys: |
-            swiftpm-unit-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-
-            swiftpm-unit-
+            derived-unit-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-
       - name: Build and run the package unit tests
         run: bash .github/scripts/ci-unit-tests.sh
       - name: Upload unit-test evidence on failure

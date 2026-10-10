@@ -1,0 +1,45 @@
+import Foundation
+import UIKit
+import HotMicPlayer
+
+/// Fake existing host stack: no network, beacons or SDK dependencies.
+@MainActor final class DemoAdProvider: HMAdBreakProvider {
+    let preRollURL: URL
+    let everyVisit: Bool
+    private var task: Task<Void, Never>?
+    init(preRollURL: URL, everyVisit: Bool = false) { self.preRollURL = preRollURL; self.everyVisit = everyVisit }
+    func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
+        if everyVisit || item.id == "url-ad" {
+            return .preRoll(HMMediaItem(id: "local-preroll", url: preRollURL, format: .mp4, aspectRatio: 16.0 / 9, presentation: .fit))
+        }
+        if item.id == "slow-ad" {
+            try await Task.sleep(for: .seconds(5))
+            return .none
+        }
+        guard item.id == "host-ad" else { return .none }
+        return .hostPlayed(HMHostAdBreak(start: { [weak self] context in
+            let label = UILabel()
+            label.textColor = .white; label.textAlignment = .center; label.numberOfLines = 0
+            label.font = .boldSystemFont(ofSize: 24)
+            label.backgroundColor = .systemIndigo
+            context.container.addSubview(label); label.translatesAutoresizingMaskIntoConstraints = false
+            // The fake SDK renders its landscape creative with aspect fit in the supplied safe area.
+            let width = label.widthAnchor.constraint(equalTo: context.container.widthAnchor)
+            width.priority = .defaultHigh
+            NSLayoutConstraint.activate([width, label.widthAnchor.constraint(lessThanOrEqualTo: context.container.widthAnchor),
+                label.heightAnchor.constraint(lessThanOrEqualTo: context.container.heightAnchor), label.centerXAnchor.constraint(equalTo: context.container.centerXAnchor),
+                label.centerYAnchor.constraint(equalTo: context.container.centerYAnchor),
+                label.heightAnchor.constraint(equalTo: label.widthAnchor, multiplier: 9.0 / 16)])
+            self?.task = Task { @MainActor in
+                for tick in 0..<30 {
+                    guard !Task.isCancelled else { return }
+                    let elapsed = Double(tick) / 5
+                    label.text = "Host ad · \(Int(ceil(6 - elapsed)))s\nExisting skip/countdown UI"
+                    context.updateProgress(HMAdProgress(elapsed: elapsed, duration: 6))
+                    do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                }
+                context.complete()
+            }
+        }, stop: { [weak self] _ in self?.task?.cancel(); self?.task = nil }))
+    }
+}

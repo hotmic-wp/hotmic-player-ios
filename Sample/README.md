@@ -60,3 +60,9 @@ The Debug-only Documents control file `horizontal-command.txt` accepts `action|u
 ## Host-built social layout
 
 Open **Social layout** or launch with `--hm-social-layout 1`. This screen uses public HotMicPlayer API for persistent bottom nav, full-bleed video, metadata, rail, Fire at a tap location and an interactive comment sheet. Tap empty video to pause/resume, double tap to Fire, tap Comments and drag the sheet handle. Debug-only `--hm-social-trace 1` enables `social-layout.jsonl` in Documents with public analytics identity, first frames, stalls and playhead. Recording is off by default. Use `--hm-social-fixture 1` for generated offline media and the always-runnable gesture UI test. See [Building your own overlay](../Sources/HotMicPlayer/HotMicPlayer.docc/BuildingYourOwnOverlay.md).
+
+## Ads lab
+
+Open **Ads lab** or launch with `--hm-ads-lab 1`. All media are generated offline. The four entries demonstrate a six-second landscape URL pre-roll, a six-second colored host-played break with countdown, a slow decision that times out after one second, and content without an ad. The host overlay hides Comments, its preview and the squeezeback trigger while `adState.isActive`; Skip ad calls `skipAd()`.
+
+Use `--hm-ads-inline 1` for standalone, `--hm-start-index 1` to start with the host break, or `--hm-ads-block-swipe 1` to disable pre-roll paging. The Feed/Standalone switch keeps the same player. Debug-only Documents diagnostics are `ads-events.jsonl`, `ads-state.json` and `ads-command.txt` (`action|unique-nonce`, actions: `swipe`, `next`, `skip`, `pause`, `play`, `feed`, `standalone`). The state records content's zero playhead and retained assignments during ads, plus content readiness and TTFF afterwards. See [Ads](../Sources/HotMicPlayer/HotMicPlayer.docc/Ads.md) for integration ownership and timeout details.

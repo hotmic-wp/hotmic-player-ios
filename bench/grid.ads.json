@@ -1,0 +1,12 @@
+{
+  "run_prefix": "ads-smoke",
+  "results_url": "http://127.0.0.1:18425/runs",
+  "network": "local-lan",
+  "cells": [
+    {"id":"S3-mp4-binge","strategy":"S3","format":"mp4","playlist_url":"fast-mp4.json","script":"binge","repeats":1,"swipes":6,"reset_cache":true,"require_frame":true},
+    {"id":"S3-hls-binge","strategy":"S3","format":"hls","playlist_url":"fast-hls.json","script":"binge","repeats":1,"swipes":6,"reset_cache":true,"require_frame":true},
+    {"id":"S3-ad-mp4-binge","scenario":"ads","strategy":"S3","format":"mp4","playlist_url":"fast-mp4.json","script":"binge","repeats":1,"swipes":6,"reset_cache":true,"require_frame":true},
+    {"id":"S3-ad-hls-binge","scenario":"ads","strategy":"S3","format":"hls","playlist_url":"fast-hls.json","script":"binge","repeats":1,"swipes":6,"reset_cache":true,"require_frame":true},
+    {"id":"S3-ad-inline","scenario":"ads-inline","strategy":"S3","format":"mp4","playlist_url":"fast-mp4.json","script":"binge","repeats":1,"swipes":6,"reset_cache":true,"require_frame":true}
+  ]
+}

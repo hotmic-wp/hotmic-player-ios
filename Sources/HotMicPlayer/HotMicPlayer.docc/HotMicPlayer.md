@@ -21,6 +21,9 @@ All player, timeline, source, and engagement access is isolated to the main acto
 ### Integration guides
 - <doc:GettingStarted>
 - <doc:HorizontalVideo>
+- <doc:Captions>
+- <doc:AudioAndInterruptions>
+- <doc:Accessibility>
 - <doc:HotMicIntegration>
 - <doc:PlaylistManagement>
 - <doc:PrefetchAndPerformance>

@@ -25,6 +25,14 @@ var hmFeedSafeArea: EdgeInsets { get set }
 var hmReservedRegions: [CGRect] { get set }
 ```
 
+## HMAccessibility
+
+```swift
+enum HMAccessibility
+static func seekTarget(position: TimeInterval, start: TimeInterval, duration: TimeInterval, increment: Bool) -> TimeInterval
+static let seekStep: TimeInterval
+```
+
 ## HMAdBreak
 
 ```swift
@@ -109,6 +117,18 @@ struct HMAdaptivePrefetchPolicy
 @MainActor func videoChange(playerKey: String, item: HMMediaItem)
 @MainActor protocol HMAnalyticsSink : AnyObject
 @MainActor var sinkName: String { get }
+```
+
+## HMAudioSessionEvent
+
+```swift
+case enteredBackground
+case enteredForeground(resumed: Bool)
+case interruptionBegan
+case interruptionEnded(shouldResume: Bool, resumed: Bool)
+case mediaServicesReset
+case routeChanged(reason: UInt)
+enum HMAudioSessionEvent
 ```
 
 ## HMChatMessage
@@ -326,11 +346,14 @@ protocol HMItemResolver : Sendable
 
 ```swift
 init(id: String, source: HMMediaItem.Source, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:])
-init(id: String, source: HMMediaItem.Source, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:], aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil)
+init(id: String, source: HMMediaItem.Source, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:], aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil, captionSources: [String : URL] = [:])
+init(id: String, source: HMMediaItem.Source, posterURL: URL?, title: String?, author: String?, durationHint: TimeInterval?, metadata: [String : String], aspectRatio: Double?, presentation: HMVideoPresentation?)
 init(id: String, url: URL, format: HMMediaItem.Format = .auto, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:])
-init(id: String, url: URL, format: HMMediaItem.Format = .auto, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:], aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil)
+init(id: String, url: URL, format: HMMediaItem.Format = .auto, posterURL: URL? = nil, title: String? = nil, author: String? = nil, durationHint: TimeInterval? = nil, metadata: [String : String] = [:], aspectRatio: Double? = nil, presentation: HMVideoPresentation? = nil, captionSources: [String : URL] = [:])
+init(id: String, url: URL, format: HMMediaItem.Format, posterURL: URL?, title: String?, author: String?, durationHint: TimeInterval?, metadata: [String : String], aspectRatio: Double?, presentation: HMVideoPresentation?)
 let aspectRatio: Double?
 let author: String?
+let captionSources: [String : URL]
 let durationHint: TimeInterval?
 let id: String
 let metadata: [String : String]
@@ -560,6 +583,7 @@ enum HMPlaybackState
 @MainActor func previous()
 @MainActor func seek(to seconds: TimeInterval)
 @MainActor func seek(toProgress progress: Double)
+@MainActor func selectCaption(_ language: String?)
 @MainActor func skipAd()
 @MainActor func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot
 @MainActor func start() async
@@ -574,6 +598,9 @@ enum HMPlaybackState
 @MainActor var adBreakProvider: (any HMAdBreakProvider)?
 @MainActor var adProgress: HMAdProgress { get set }
 @MainActor var adState: HMAdState { get set }
+@MainActor var availableCaptionLanguages: [String] { get }
+@MainActor var captionPreference: Bool? { get set }
+@MainActor var captionsEnabled: Bool { get set }
 @MainActor var configuration: HMPlayerConfiguration { get set }
 @MainActor var currentIndex: Int? { get }
 @MainActor var currentItem: HMMediaItem? { get }
@@ -593,6 +620,7 @@ enum HMPlaybackState
 @MainActor var playlistSource: (any HMPlaylistSource)? { get set }
 @MainActor var prefetchPlan: HMPrefetchPlan? { get set }
 @MainActor var prefetchPolicy: any HMPrefetchPolicyProviding { get set }
+@MainActor var selectedCaptionLanguage: String? { get set }
 @MainActor var snapshot: HMPlaybackSnapshot { get }
 @discardableResult @MainActor func append(_ items: [HMMediaItem]) -> Bool
 @discardableResult @MainActor func insertNext(_ items: [HMMediaItem]) -> Bool
@@ -615,6 +643,7 @@ var adDecisionTimeout: TimeInterval
 var adLoadTimeout: TimeInterval
 var adNoProgressTimeout: TimeInterval
 var adaptive: Bool
+var allowsBackgroundAudio: Bool
 var allowsSwipeDuringAds: Bool
 var aspectRatioTolerance: Double
 var backdropColor: HMVideoBackdropColor
@@ -655,6 +684,8 @@ var errorDescription: String? { get }
 case adBreakEnded(item: HMMediaItem, outcome: HMAdOutcome)
 case adPrefetchChanged(paused: Bool)
 case adStateChanged(item: HMMediaItem, state: HMAdState)
+case audioSession(HMAudioSessionEvent)
+case captionsChanged(enabled: Bool, language: String?)
 case currentItemChanged(HMMediaItem?)
 case error(item: HMMediaItem?, kind: HMPlayerError)
 case firstFrame(HMMediaItem, ttff: TimeInterval, readiness: HMReadinessTier)
@@ -684,6 +715,7 @@ enum HMPlayerEvent
 @MainActor init<Content>(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9, @ViewBuilder fullscreenOverlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Content) where Content : View
 @MainActor let player: HMPlayer
 @MainActor override func viewDidLayoutSubviews()
+@MainActor var captionInsets: HMVideoInsets { get set }
 @MainActor var excludedHitAreas: [CGRect] { get set }
 @MainActor var extendsUnderSafeArea: Bool { get set }
 @MainActor var fullscreenVideoLayout: HMVideoLayout? { get set }
@@ -984,6 +1016,8 @@ static let version: String
 ## View
 
 ```swift
+@MainActor func hmCaptionInsets(_ insets: HMVideoInsets) -> some View
+
 @MainActor func hmExcludedHitArea() -> some View
 
 @MainActor func hmExcludedHitAreas(_ regions: [CGRect]) -> some View

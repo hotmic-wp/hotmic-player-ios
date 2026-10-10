@@ -1272,8 +1272,8 @@ var showsScrubber: Bool
 ## HMShareSheet
 
 ```swift
-@MainActor func makeUIViewController(context: HMShareSheet.Context) -> UIActivityViewController
-@MainActor func updateUIViewController(_ controller: UIActivityViewController, context: HMShareSheet.Context)
+@MainActor func makeUIViewController(context: UIViewControllerRepresentableContext<HMShareSheet>) -> UIActivityViewController
+@MainActor func updateUIViewController(_ controller: UIActivityViewController, context: UIViewControllerRepresentableContext<HMShareSheet>)
 @MainActor init(items: [Any])
 @MainActor static func present(items: [Any], from presenter: UIViewController, sourceView: UIView? = nil)
 @MainActor struct HMShareSheet

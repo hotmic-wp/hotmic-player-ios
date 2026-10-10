@@ -75,11 +75,11 @@ public struct HMShareSheet: UIViewControllerRepresentable {
     /// Creates this component with host-supplied data and actions.
     public init(items: [Any]) { self.items = items }
     /// Creates the native activity controller for these items.
-    public func makeUIViewController(context: Context) -> UIActivityViewController {
+    public func makeUIViewController(context: UIViewControllerRepresentableContext<HMShareSheet>) -> UIActivityViewController {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     /// Keeps the presented native activity controller stable during SwiftUI updates.
-    public func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+    public func updateUIViewController(_ controller: UIActivityViewController, context: UIViewControllerRepresentableContext<HMShareSheet>) {}
     /// Anchors iPad popovers to the supplied source view (or the presenter view).
     @MainActor public static func present(items: [Any], from presenter: UIViewController, sourceView: UIView? = nil) {
         let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)

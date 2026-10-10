@@ -261,6 +261,7 @@ import AVFoundation
 import Network
 #if canImport(UIKit)
 import UIKit
+import SwiftUI
 #endif
 
 @Suite("Native review regressions") @MainActor
@@ -385,6 +386,95 @@ struct PlayerNativeReviewTests {
         coordinator.scrollViewDidEndDragging(scroll, willDecelerate: false)
         #expect(committed == "b")
         coordinator.fallback?.cancel()
+    }
+    #endif
+
+    #if canImport(UIKit)
+    @Test("Repeated UIKit squeeze updates retain node, native item, surface and layer; custom actions respect the ad gate")
+    func squeezeIdentityAndAccessibility() async throws {
+        let player = HMPlayer(configuration: HMPlayerConfiguration(managesAudioSession: false, failedItemPolicy: .stay))
+        player.isFeedVisible = false
+        defer { player.teardown() }
+        let url = try await videoFixture(rotated: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let item = HMMediaItem(id: "identity", url: url, aspectRatio: 9.0/16)
+        player.replaceAll([item])
+        let node = player.pool.node(for: item, protecting: [])
+        node.activate()
+        let native = node.player.currentItem, generation = node.assignmentGeneration, activation = node.snapshot.activationID
+        let controller = HMPlayerViewController(player: player, aspectRatio: nil)
+        #expect(!controller.extendsUnderSafeArea)
+        controller.extendsUnderSafeArea = true
+        var reportedFrames: [CGRect] = []
+        controller.onVideoFrameChange = { reportedFrames.append($0) }
+        let inlineHooks = HMSurfaceHooks(layout: HMVideoLayout(contentInsets: HMVideoInsets(bottom: 88), squeezeTarget: CGRect(x: 0, y: 60, width: 390, height: 200)), excludedRegions: [CGRect(x: 0, y: 0, width: 100, height: 100)])
+        #expect(inlineHooks.forFullscreen.layout == HMVideoLayout())
+        #expect(inlineHooks.forFullscreen.excludedRegions.isEmpty)
+        var customHooks = inlineHooks
+        customHooks.fullscreenLayout = HMVideoLayout(contentInsets: HMVideoInsets(top: 20))
+        #expect(customHooks.forFullscreen.layout.contentInsets.top == 20)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = controller; window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        var fires: [CGPoint] = [], taps = 0
+        controller.onTap = { taps += 1 }
+        controller.onDoubleTap = { fires.append($0) }
+        func descendants<T: UIView>(_ view: UIView, _ type: T.Type) -> [T] {
+            (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants($0, type) }
+        }
+        func settle() async throws { controller.view.setNeedsLayout(); controller.view.layoutIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        try await settle()
+        let deadline = Date().addingTimeInterval(3)
+        while !node.snapshot.isFrameReady, Date() < deadline { try await settle() }
+        try #require(node.snapshot.isFrameReady)
+        // The unhosted unit runner has no visible app scene; rendered first-frame continuity
+        // is verified in the Sample walkthrough. Preserve whatever metric exists here.
+        let firstFrame = node.snapshot.timeToFirstFrame
+        let surface = try #require(descendants(controller.view, HMVideoSurfaceView.self).first)
+        controller.videoLayout = HMVideoLayout(contentInsets: HMVideoInsets(bottom: 88))
+        for height in stride(from: 700, through: 200, by: -100) {
+            controller.videoLayout.squeezeTarget = CGRect(x: 0, y: 60, width: 390, height: height)
+            try await settle()
+            #expect(descendants(controller.view, HMVideoSurfaceView.self).first === surface)
+            #expect(node.player.currentItem === native && node.assignmentGeneration == generation)
+            #expect(node.snapshot.activationID == activation && node.snapshot.timeToFirstFrame == firstFrame)
+            #expect(node.snapshot.stallCount == 0)
+            #expect(node.playerLayer.superlayer === surface.layer)
+            let frame = controller.videoFrame
+            #expect(frame.height > 0)
+            #expect(frame.maxY <= CGFloat(height + 60) + 0.01) // UIKit coordinate conversion can round subpixel bounds.
+        }
+        player.configuration.presentation = .fit; try await settle()
+        let gesture = try #require(descendants(controller.view, HMVideoGestureView.self).first)
+        #expect(!gesture.acceptsTap(at: CGPoint(x: 20, y: 100), isDoubleTap: false))
+        #expect(gesture.acceptsTap(at: CGPoint(x: 20, y: 100), isDoubleTap: true))
+        #expect(gesture.accessibilityLabel == "Video" && gesture.accessibilityValue != nil)
+        #expect(gesture.accessibilityCustomActions?.map(\.name).contains("Fire") == true)
+        let cachedActions = gesture.accessibilityCustomActions ?? []
+        controller.videoLayout.squeezeTarget?.origin.y += 1
+        try await settle()
+        #expect(zip(cachedActions, gesture.accessibilityCustomActions ?? []).allSatisfy { $0 === $1 })
+        #expect(reportedFrames.last == controller.videoFrame && reportedFrames.count >= 6)
+        #expect(gesture.accessibilityActivate() && taps == 1 && fires.isEmpty)
+        let action = try #require(gesture.accessibilityCustomActions?.first { $0.name == "Fire" })
+        #expect(action.actionHandler?(action) == true)
+        #expect(fires == [CGPoint(x: gesture.videoFrame.midX, y: gesture.videoFrame.midY)])
+        controller.excludedHitAreas = [CGRect(x: 0, y: 60, width: 100, height: 100)]
+        try await settle()
+        #expect(!gesture.point(inside: CGPoint(x: 50, y: 100), with: nil))
+        #expect(!gesture.acceptsTap(at: CGPoint(x: 50, y: 100), isDoubleTap: true))
+        player.pause(); try await settle()
+        let playAction = try #require(gesture.accessibilityCustomActions?.first { $0.name == "Play" })
+        #expect(playAction.actionHandler?(playAction) == true)
+        #expect(taps == 1) // Play/Pause remains reachable even with a host tap override.
+        controller.isAdPlaying = true
+        try await settle()
+        #expect(!gesture.isAccessibilityElement && gesture.accessibilityCustomActions?.isEmpty == true)
+        #expect(!gesture.singleTap.isEnabled && !gesture.doubleTap.isEnabled && !gesture.accessibilityActivate())
+        controller.isAdPlaying = false; controller.videoLayout.squeezeTarget = nil
+        try await settle()
+        #expect(gesture.singleTap.isEnabled && gesture.doubleTap.isEnabled)
+        #expect(node.player.currentItem === native && node.assignmentGeneration == generation)
     }
     #endif
 

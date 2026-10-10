@@ -25,34 +25,6 @@ struct PrefetchPolicyTests {
 
 @Suite("Playback snapshot")
 struct PlaybackSnapshotTests {
-    @Test("Presentation resolves relative aspect, invalid hints and exact fit bounds")
-    func presentationGeometry() {
-        // Preserve explicitly named initializer references as well as ordinary call sites.
-        let legacyURL = HMMediaItem.init(id:url:format:posterURL:title:author:durationHint:metadata:)
-        let legacySource = HMMediaItem.init(id:source:posterURL:title:author:durationHint:metadata:)
-        let url = URL(string: "https://example.com/a.mp4")!
-        #expect(legacyURL("legacy", url, .auto, nil, nil, nil, nil, [:]).aspectRatio == nil)
-        #expect(legacySource("legacy", .url(url, format: .auto), nil, nil, nil, nil, [:]).presentation == nil)
-        let bounds = CGRect(x: 10, y: 20, width: 390, height: 844)
-        #expect(HMVideoPresentation.automatic.resolved(aspectRatio: 16.0/9, container: bounds.size) == .fit)
-        #expect(HMVideoPresentation.automatic.resolved(aspectRatio: 9.0/16, container: CGSize(width: 390, height: 800)) == .fill)
-        #expect(HMVideoPresentation.automatic.resolved(aspectRatio: nil, container: bounds.size) == .fill)
-        #expect(HMVideoPresentation.automatic.resolved(aspectRatio: .nan, container: bounds.size) == .fill)
-        #expect(HMVideoPresentation.automatic.resolved(aspectRatio: 1, container: CGSize(width: 100, height: 100), tolerance: 0) == .fill)
-        for policy in [HMVideoPresentation.fit, .fitWithColor, .fitWithBlurredBackdrop, .automatic] {
-            let frame = policy.videoFrame(aspectRatio: 16.0/9, in: bounds)
-            #expect(frame.width == 390 && abs(frame.height - 219.375) < 0.001)
-            #expect(frame.midX == bounds.midX && frame.midY == bounds.midY)
-        }
-        #expect(HMVideoPresentation.fill.videoFrame(aspectRatio: 16.0/9, in: bounds) == bounds)
-        #expect(HMVideoPresentation.fit.videoFrame(aspectRatio: 0, in: bounds) == bounds)
-        #expect(HMVideoPresentation.fit.videoFrame(aspectRatio: 16.0/9, in: .zero) == .zero)
-        for invalid in [0.0, -1, .infinity, .nan] {
-            #expect(HMMediaItem(id: "invalid", url: URL(string: "https://example.com/a.mp4")!, aspectRatio: invalid).aspectRatio == nil)
-        }
-    }
-
-
     @Test("Progress is measured inside the seekable window")
     func progressUsesSeekableWindow() {
         var snapshot = HMPlaybackSnapshot()

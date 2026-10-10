@@ -11,6 +11,7 @@ struct DemoRootView: View {
     @State private var controller: HMPlayer?
 
     private let benchmark = BenchmarkOptions()
+    @State private var showsSocial = false
     @State private var showsBenchmark = false
     @State private var showsLab = BenchmarkOptions().values["playlist-lab"] == "1"
     @State private var fileSink: HMJSONLFileSink?
@@ -19,7 +20,9 @@ struct DemoRootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if benchmark.values["horizontal-lab"] == "1" {
+        if benchmark.values["social-layout"] == "1" {
+            SocialLayoutScreen()
+        } else if benchmark.values["horizontal-lab"] == "1" {
             HorizontalLabScreen()
         } else if benchmark.values["reference-lab"] == "1" {
             ReferenceLabScreen()
@@ -65,6 +68,7 @@ struct DemoRootView: View {
         }
         .overlay(alignment: .bottom) {
             HStack {
+            Button("Social layout") { showsSocial = true }
             Button("Playlist lab") { showsLab = true }.accessibilityIdentifier("playlist-lab")
             Button("Benchmark mode") {
                 controller?.teardown()
@@ -75,6 +79,7 @@ struct DemoRootView: View {
                 .accessibilityIdentifier("benchmark-mode").padding(12)
             }
         }
+        .fullScreenCover(isPresented: $showsSocial) { SocialLayoutScreen() }
         .fullScreenCover(isPresented: $showsLab) { PlaylistLabScreen { showsLab = false } }
         .fullScreenCover(isPresented: $showsBenchmark, onDismiss: {
             Task { await bootstrapIfNeeded() }

@@ -72,7 +72,7 @@ final class PartnerDemoUITests: XCTestCase {
         // Exercise the host-owned sheet as part of this same flow, including the software keyboard.
         app.buttons["partner-options"].tap()
         app.descendants(matching: .any)["Custom UI on hooks"].firstMatch.tap()
-        let customComments = app.buttons["partner-custom-comments"].firstMatch
+        let customComments = app.buttons["Comments"].firstMatch
         XCTAssertTrue(customComments.waitForExistence(timeout: 5))
         customComments.tap()
         let customClose = app.buttons["Close comments"]

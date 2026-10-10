@@ -14,13 +14,13 @@ Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.doc
 
 ## Install
 
-For the complete draft delivery, add the reviewed checkout as an Xcode local package; both new starters already do this. The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
+For the complete draft delivery, pin a reviewed commit revision from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
 
 ```swift
 .package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Use the local checkout for that path and subsequent fixes. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
+`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Pin a reviewed commit revision for that path and subsequent fixes, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -41,8 +41,9 @@ import HotMicPlayer
     let mp4URL: URL, hlsURL: URL
     var body: some View {
         HMVerticalFeedView(player: player)
-            .task { player.replaceAll([.init(id: "mp4", url: mp4URL), .init(id: "hls", url: hlsURL)]) }
-            .onDisappear { player.teardown() }
+            .task { guard player.items.isEmpty else { return }; player.replaceAll([.init(id: "mp4", url: mp4URL), .init(id: "hls", url: hlsURL)]) }
+            .onAppear { player.isFeedVisible = true }
+            .onDisappear { player.isFeedVisible = false }
     }
 }
 ```
@@ -105,7 +106,7 @@ import HotMicPlayerUI
 }
 ```
 
-Retain and tear down the player with the screen as in level 1. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
+Retain the player with the screen as in level 1; hide it with `isFeedVisible` and call terminal `teardown()` only when its owner is permanently dismissed. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
 
 ## Requirements and performance
 

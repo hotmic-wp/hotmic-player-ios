@@ -10,7 +10,7 @@ Add `https://github.com/hotmic-wp/hotmic-player-ios` in Xcode's Package Dependen
 .package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the reviewed local checkout until the next stable tag; see <doc:PartnerIntegrationGuide> for the draft delivery and version policy.
+`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the reviewed commit revision until the next stable tag; see <doc:PartnerIntegrationGuide> for the draft delivery and version policy.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -36,12 +36,14 @@ import HotMicPlayer
             Text(item.title ?? "Video").foregroundStyle(.white)
         }
         .task {
+            guard player.items.isEmpty else { return }
             player.replaceAll([
                 HMMediaItem(id: "intro", url: mp4URL, format: .mp4),
                 HMMediaItem(id: "replay", url: hlsURL, format: .hls)
             ])
         }
-        .onDisappear { player.teardown() }
+        .onAppear { player.isFeedVisible = true }
+        .onDisappear { player.isFeedVisible = false }
     }
 }
 ```

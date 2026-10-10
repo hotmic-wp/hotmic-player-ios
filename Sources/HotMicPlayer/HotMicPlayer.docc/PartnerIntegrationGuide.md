@@ -13,10 +13,10 @@ Both paths share playback, caching, captions, fullscreen and engagement. You can
 
 ## Install
 
-Repository URL: `https://github.com/hotmic-wp/hotmic-player-ios`. **1.1.0 is a draft, not a release tag.** Use the supplied reviewed checkout as an Xcode **local package** to evaluate the complete delivery, including the ready-made overlay and its replacement slots. Both starters already reference this checkout locally. In a package manifest:
+Repository URL: `https://github.com/hotmic-wp/hotmic-player-ios`. **1.1.0 is a draft, not a release tag.** Until it is tagged, pin a reviewed commit containing the complete delivery (including the ready-made overlay) using SwiftPM's revision requirement. Replace `REVIEWED_COMMIT_SHA` with its full 40-character commit SHA and keep that pin in source control for reproducible CI builds:
 
 ```swift
-.package(path: "../hotmic-player-ios")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", revision: "REVIEWED_COMMIT_SHA")
 ```
 
 The published `1.1.0-alpha.1` tag contains the core layout, ads, captions and engagement APIs, but **does not contain the ready-made social overlay**. The older `1.0.0-rc.4` tag is the basic playback baseline. If evaluating only that published core API set, pin:
@@ -51,17 +51,19 @@ import HotMicPlayer
     var body: some View {
         HMVerticalFeedView(player: player)
             .task {
+                guard player.items.isEmpty else { return }
                 player.replaceAll([
                     .init(id: "portrait", url: mp4URL, format: .mp4, aspectRatio: 9.0 / 16),
                     .init(id: "landscape", url: hlsURL, format: .hls, aspectRatio: 16.0 / 9)
                 ])
             }
-            .onDisappear { player.teardown() }
+            .onAppear { player.isFeedVisible = true }
+            .onDisappear { player.isFeedVisible = false }
     }
 }
 ```
 
-The surface starts playback automatically. `teardown()` is terminal; create a fresh player when a dismissed screen is presented again. All player/source/UI access is on the main actor. See <doc:GettingStarted> for lifecycle and events.
+The surface starts playback automatically. Visibility changes (tabs, navigation pushes) pause/resume the retained player through `isFeedVisible`. `teardown()` is terminal: call it from the owning controller’s permanent dismissal or a main-actor owner’s deinitializer, and create a fresh player for a new lifetime. All player/source/UI access is on the main actor. See <doc:GettingStarted> for lifecycle and events.
 
 ## Playlist and ranked-feed refresh
 
@@ -127,7 +129,7 @@ callbacks.sheetChanged = { item, opened in commentsChanged(item, opened) }
 let screen = HMSocialPlayerView(player: player, options: options, callbacks: callbacks) { item in socialData(item) }
 ```
 
-Retain an observable `HMSocialDataSource` per item. Use `HMSocialModel` for direct host data, or `HMEngagementSocialAdapter` for a source implementing `HMInteractionSource`. Share presentation and backend requests belong to the host. [Ready-made overlay details](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sources/HotMicPlayerUI/HotMicPlayerUI.docc/ReadyMadeSocialOverlay.md) cover theming, slots and UIKit embedding.
+Retain an observable `HMSocialDataSource` per item. A cached `HMEngagementSocialAdapter` must also match the current engagement identity: the player can evict and rebuild engagements. Resolve `let engagement = player.engagement(for: item)` and reuse a cached adapter only when `adapter.engagement === engagement`; otherwise replace it. The kit activates timed replay only for the visible current adapter; custom consumers call `setReplayActive(true)` while visible and `false` when hidden. Use `HMSocialModel` for direct host data, or `HMEngagementSocialAdapter` for a source implementing `HMInteractionSource`. Share presentation and backend requests belong to the host. [Ready-made overlay details](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sources/HotMicPlayerUI/HotMicPlayerUI.docc/ReadyMadeSocialOverlay.md) cover theming, slots and UIKit embedding.
 
 For custom UI, use `snapshot.state`, `snapshot.videoFrame`, `hmVideoLayout`, `hmVideoGestures`, hit areas, `hmReservedRegions`, `HMOverlayRegions.isFree`, `squeezeTarget`, `adState`, captions and `HMCountFormatter`. The custom starter has its own SwiftUI rail, metadata and comment sheet and imports no kit components. Observe progress in a small leaf view; avoid rebuilding all chrome from every playhead tick. At accessibility text sizes, the kit condenses resting metadata and opens full details separately; its ephemeral preview is omitted to keep controls reachable without competing with vertical paging.
 
@@ -241,6 +243,8 @@ Use the [benchmark workflow](https://github.com/hotmic-wp/hotmic-player-ios/blob
 ## Walk through the Partner demo
 
 Open `Sample/HotMicPlayerDemo.xcodeproj`. Add `--hm-partner-demo 1` to launch arguments. The **Feed** tab retains bottom navigation; **Guide** provides the capability walkthrough. In **Demo options**, switch ready-made/custom overlays, fake host/Connect source, mute, captions and replacement slots. Jump to portrait, landscape, URL pre-roll and host SDK break; refresh the ranking; open comments and type with the software keyboard. Source switching constructs a new player lifetime. The demo is credential-free, uses generated MP4 and optionally a host-supplied HLS fixture URL (`--hm-partner-hls-url URL`). Without that argument its HLS entry uses a public sample stream and requires network; local MP4 and fake ads/engagement remain available offline.
+
+The images below render in DocC. On GitHub, open the [ready-made image](Resources/partner-ready.png) or [custom image](Resources/partner-custom.png).
 
 ![Ready-made overlay with host navigation](partner-ready.png)
 ![Custom overlay on core hooks](partner-custom.png)

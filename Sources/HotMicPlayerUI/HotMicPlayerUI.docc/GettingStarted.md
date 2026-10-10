@@ -17,8 +17,9 @@ import HotMicPlayerUI
     var body: some View {
         HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
             .hmTheme(.default)
-            .task { player.replaceAll(items) }
-            .onDisappear { player.teardown() }
+            .task { guard player.items.isEmpty else { return }; player.replaceAll(items) }
+            .onAppear { player.isFeedVisible = true }
+            .onDisappear { player.isFeedVisible = false }
     }
 }
 ```

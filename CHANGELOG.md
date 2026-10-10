@@ -7,22 +7,23 @@
 - Add a Partner integration guide, capability matrix, integration checklist and ad SDK adapter recipe. Give ready-made and custom overlays equal starting paths with two small buildable example apps.
 - Consolidate the Partner demo with persistent tabs, mixed MP4/HLS and orientations, source/overlay selection, captions, URL and host-played ads, ranked refresh and a sidecar.
 - Compile README/DocC Swift snippets in the examples job; the third-party ad SDK recipe is explicitly pseudocode and adds no dependency.
-- Keep sidecar placement keyed to geometry/reservations and publish engagement adapter changes only when mapped data changes. Compact resting chrome at accessibility text sizes while retaining full metadata expansion and 44-point auxiliary controls.
+- Compute sidecar placement synchronously, cached by geometry/reservations; map engagement lazily and sample replay only for the current visible adapter. Compact resting chrome at accessibility text sizes while retaining full metadata expansion and 44-point auxiliary controls.
 
 ### Migration from 1.0
 
-- Feed presentation now defaults to `.automatic`: landscape/mismatched media fits instead of cropping. Set `.fill` explicitly to preserve a cropped design. Supply aspect hints for first paint.
+- `HMVerticalFeedView(gravity:)` now takes `AVLayerVideoGravity?`, defaulting to `nil` so automatic presentation can fit landscape/mismatched media. An explicit `gravity: .resizeAspectFill` preserves the 1.0 crop. Supply aspect hints for first paint.
 - Single-tap video play/pause is on by default. An explicit tap callback replaces it; call `togglePlayPause()` if that is still wanted. Fire remains opt-in on custom surfaces.
 - Fullscreen uses independent zero-inset layout and recomputed reservations; inline/nav squeeze is not inherited. Landscape still requires host orientation permissions.
 - Audio defaults to on with the managed playback/moviePlayback session. Background audio is opt-in and also requires host configuration. Explicit user pause/output-route removal prevents automatic interruption resume; caption preference defaults to following system settings.
 - Update switches over `HMPlayerEvent` for `audioSession`, `captionsChanged`, `adStateChanged`, `adBreakEnded` and `adPrefetchChanged`; `HMPlaybackEvent.Kind` adds `adStateChanged`, `adBreakEnded` and `adPrefetchChanged`. Use `@unknown default` for future non-frozen enum cases. `HMAdState.playing(kind:)` has progress separately on `adProgress`.
 - Existing `HMInteractionSource` implementations remain compatible. `.all` retains the original capability mask; explicitly add `.toggleReaction` and `.loadComments` only when implemented. Item membership/counts differ from timed stream reaction totals.
-- The engagement social adapter coalesces source changes on the next main-actor turn and publishes only changed mapped content; observe its content rather than synchronously reading it immediately after a source mutation.
 - `teardown()` remains terminal. Hosts adopting the kit retain per-item data sources, supply share/backend callbacks and nav height, and hide custom comment entry points while `adState.isActive`.
+- VoiceOver adjustable playback position now moves in ten-second steps instead of 5% steps. Video surfaces expose their own “Video” accessibility element with Play/Pause actions; hosts should remove duplicate video accessibility elements.
 
 ### Changes
 
-
+- Bundle a privacy manifest for SystemBootTime elapsed timing and app-container FileTimestamp APIs.
+- The new engagement social adapter maps backend changes synchronously on demand; inactive cached adapters do no replay work. Hosts must replace cached adapters when their engagement identity changes.
 - Preserve social overlay identity across swipes, isolate timed UI work, and stabilize gesture callbacks. Prevent Fire burst replay; clamp keyboard/sheet squeeze together; keep metadata during ads; add rail/metadata replacement slots and theme-selected engagement reactions.
 
 - Add optional `HMSocialPlayerView`, `HMSocialOverlay` and a UIKit host for themeable social playback on public hooks, with standalone metadata, preview, Fire burst, progress, pause and comment-sheet components. Extend the existing action rail without changing its original initializer.
@@ -51,8 +52,6 @@
 - Add rendering-only content insets and interactive squeeze targets for feed, inline and fullscreen, preserving native playback identity.
 - Add host tap/Fire hooks, automatic and explicit hit-area exclusions, free overlay rectangles, ad gesture gating, VoiceOver actions and Reduce Motion support.
 - Add locale-aware `HMCountFormatter` and a public-API social layout Sample plus “Building your own overlay” DocC guide.
-
-
 - Harden fullscreen for portrait-only hosts, open sheets and duplicate presenters; follow rotation from a portrait feed, preserve quick swipes after exit, and resume failed-item skipping on exit.
 - Reuse partner overlays in fullscreen (including a UIKit `fullscreenOverlay:` initializer), pause detached inline views, and preblur bounded decoded/poster backdrops without consuming startup measurement frames. Fix rotated still orientation and fallback video-output retention.
 - Add per-item aspect hints and warm-track/decoded presentation-size detection, exposed on playback snapshots. **Behavior change:** the default feed policy is now `.automatic`; landscape and other mismatched media letterbox instead of cropping to the vertical container. Matching vertical media still fills, and explicit `gravity:` calls retain their behavior.
@@ -60,6 +59,11 @@
 - Add `enterFullscreen()` / `exitFullscreen()`, observable `isFullscreen` and opt-in landscape device rotation. Fullscreen reuses the current node/layer without seeking, buffering again or resetting TTFF, and disables feed paging until exit.
 - Add non-paging `HMPlayerView` (SwiftUI, default inline 16:9) and `HMPlayerViewController` (UIKit, host-sized), sharing HMPlayer's cache, prefetch, loops, mute, seek and playlist navigation.
 - Add a mixed MP4/HLS orientation Sample, horizontal benchmark grid/inline scenario, orientation manifests and per-orientation analysis. Document host orientation setup and the still-poster backdrop behavior.
+
+## 1.1.0-alpha.1
+
+- Prerelease core baseline containing layout/squeezeback, horizontal/fullscreen, ads, captions, audio and engagement APIs.
+- Does not contain the ready-made social overlay, replacement slots, partner guide or the two overlay starters added in the draft above.
 
 ## 1.0.0-rc.4
 

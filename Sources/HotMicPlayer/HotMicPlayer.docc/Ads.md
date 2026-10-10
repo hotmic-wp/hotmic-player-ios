@@ -24,7 +24,9 @@ The default decision timeout is **1 second**, configured with `adDecisionTimeout
 
 Return `.hostPlayed(HMHostAdBreak(start:stop:))`. `start` receives an `HMHostAdContext` containing `container`, a UIKit view mounted above content and below the host's overlay, inset to the page's safe area. It may not yet be in a window when `start` runs; use normal view layout callbacks. Attach your SDK's view, use aspect fit, and retain your existing skip/countdown UI. The container follows feed, standalone and fullscreen rendering ownership. Content stays paused at zero and prerolled underneath; the existing decoded frame is reused on completion when ready.
 
-```swift
+The following is **non-compiled pseudocode** for your existing third-party SDK wrapper; no ad SDK is linked by HotMicPlayer.
+
+```text
 return .hostPlayed(HMHostAdBreak(start: { context in
     sdk.render(in: context.container, aspectFit: true)
     sdk.setPlaybackAllowed(context.isPlaybackAllowed)
@@ -69,3 +71,46 @@ The Sample's **Ads lab** demonstrates both modes offline, with a generated lands
 ## Source compatibility
 
 Ad integration adds cases to `HMPlayerEvent` and `HMPlaybackEvent.Kind`. Update exhaustive switches to handle the ad events when upgrading, and use `@unknown default` when ignoring future SDK enum cases. `HMAdState.playing(kind:)` describes a phase; progress lives in `HMPlayer.adProgress`.
+
+## Ad SDK adapter recipe (for example, Google IMA)
+
+Keep a host adapter for each accepted visit. Your app owns the third-party dependency and an app-scoped loader. The adapter translates SDK delegates into the context contract. See [Google's iOS IMA setup](https://developers.google.com/interactive-media-ads/docs/sdks/ios/client-side/get-started) for loader, request, display container and manager wiring.
+
+The following is **non-compiled pseudocode**, intentionally written against a host `IMAVisit` facade. Implement that facade with your SDK version; no Google package dependency is added here.
+
+```text
+@MainActor final class HostAds: HMAdBreakProvider {
+    let loader: AppScopedIMALoader
+    func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
+        // Make the bounded decision here. Return .none for no fill/frequency cap.
+        guard shouldServe(item) else { return .none }
+        let visit = IMAVisit(loader: loader, tag: hostAdTag(item))
+        return .hostPlayed(HMHostAdBreak(start: { context in
+            // Create IMAAdDisplayContainer with context.container and your presenter.
+            // Wait for mounting/layout if your SDK requires a window before requesting.
+            visit.onLoaded = { manager in
+                // Set IMAAdsManagerDelegate, initialize rendering settings;
+                // start on LOADED only if context.isPlaybackAllowed.
+                manager.initialize()
+            }
+            visit.setPlaybackAllowed(context.isPlaybackAllowed)
+            context.onPlaybackAllowedChange = { visit.setPlaybackAllowed($0) }
+            visit.onProgress = { seconds, duration in
+                context.updateProgress(HMAdProgress(elapsed: seconds, duration: duration))
+            }
+            visit.onAllAdsCompleted = { context.complete() }
+            visit.onUserSkipped = { context.skip() }
+            visit.onRequestOrPlaybackError = { context.fail() }
+            visit.request(in: context.container, presenter: hostPresenter)
+        }, stop: { outcome in
+            visit.cancelPendingRequest() // late loader callbacks must be ignored
+            visit.destroyManagerAndRemoveViews()
+            visit.clearCallbacks() // release context and permission listener
+        }))
+    }
+}
+```
+
+Map your SDK's terminal **break** completion rather than the end of the first creative in a pod. Marshal all callbacks to the main actor and guard stale visit IDs, including manager callbacks arriving after `stop`. Honor initial playback permission and subsequent changes, including during a load. Keep SDK skip/countdown and tracking in the host; never call skip before it is eligible. For Google IMA, loader failures and manager errors fail the context, manager progress updates the watchdog, and all-ads-completed ends the break. Normal content pause/resume delegates must not bypass HotMicPlayer's ad state machine.
+
+Request time inside `start` is bounded by the no-progress watchdog (10 seconds by default) and the accepted break wall-clock cap (120 seconds). Decision work before returning the break uses `adDecisionTimeout` (1 second). URL startup instead uses `adLoadTimeout` (5 seconds). Configure these on `HMPlayerConfiguration` before constructing the player. On timeout/cancellation, `stop` releases SDK resources; ignored late callbacks cannot restart content or ads. Hosts without an SDK can use the compiled URL provider above and retain their own skip/countdown UI.

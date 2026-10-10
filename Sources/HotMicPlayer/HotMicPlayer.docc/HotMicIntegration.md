@@ -12,11 +12,10 @@ With adapters created according to that package's instructions, the player wirin
 import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
-import HotMicPlayerConnect
 
-@MainActor func hotMicFeed(resolver: HotMicItemResolver,
-                          playlistSource: HotMicPlaylistSource,
-                          interactionSource: HotMicInteractionSource) -> some View {
+@MainActor func hotMicFeed(resolver: any HMItemResolver,
+                          playlistSource: any HMPlaylistSource,
+                          interactionSource: any HMInteractionSource) -> some View {
     let player = HMPlayer(resolver: resolver, interactions: interactionSource)
     player.playlistSource = playlistSource
     // The feed loads the first page automatically.

@@ -7,10 +7,10 @@ Turn MP4 and HLS VOD URLs into a vertical feed.
 Add `https://github.com/hotmic-wp/hotmic-player-ios` in Xcode's Package Dependencies, then link the **HotMicPlayer** product to your app target. In a package manifest:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0-rc.4")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-The `1.0.0-rc.4` requirement resolves after its tag is published; `from: "1.0.0"` is for the final stable tag once published.
+`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the reviewed local checkout until the next stable tag; see <doc:PartnerIntegrationGuide> for the draft delivery and version policy.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 

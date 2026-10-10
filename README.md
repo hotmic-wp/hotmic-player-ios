@@ -1,4 +1,4 @@
-# HotMicPlayer 1.0 release candidate
+# HotMicPlayer
 
 A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in your app. `HMPlayer` owns playback, five atomic playlist operations, bounded adaptive prefetch and events. Add only the integration layers you need.
 
@@ -10,15 +10,17 @@ A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in
 
 See [Engagement from your backend or HotMic](Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) and the [custom backend adapter](Examples/CustomEngagementBackend) for host-built comments and fire UI.
 
+Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md), [capability matrix](Sources/HotMicPlayer/HotMicPlayer.docc/CapabilityMatrix.md) and [integration checklist](Sources/HotMicPlayer/HotMicPlayer.docc/IntegrationChecklist.md). Choose either [ReadyMadeOverlay](Examples/ReadyMadeOverlay) or [CustomOverlay](Examples/CustomOverlay); both starters build in examples CI. The 1.1.0 changelog is a draft.
+
 ## Install
 
-In Xcode, add `https://github.com/hotmic-wp/hotmic-player-ios` as a Package Dependency. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For a Swift package:
+For the complete draft delivery, add the reviewed checkout as an Xcode local package; both new starters already do this. The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0-rc.4")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
 ```
 
-This branch is `1.0.0-rc.4`. The requirement above resolves after its tag is published. Use `from: "1.0.0"` for the final stable release once that tag is published.
+`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Use the local checkout for that path and subsequent fixes. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -94,10 +96,9 @@ Install [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect
 import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
-import HotMicPlayerConnect
-@MainActor func hotMicFeed(resolver: HotMicItemResolver,
-                          source: HotMicPlaylistSource,
-                          interactions: HotMicInteractionSource) -> some View {
+@MainActor func hotMicFeed(resolver: any HMItemResolver,
+                          source: any HMPlaylistSource,
+                          interactions: any HMInteractionSource) -> some View {
     let player = HMPlayer(resolver: resolver, interactions: interactions)
     player.playlistSource = source
     return HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)

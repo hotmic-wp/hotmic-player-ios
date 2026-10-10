@@ -21,18 +21,20 @@ Going live is two steps.
 Copy `MuxDataBridge.swift.txt` into your app as `MuxDataBridge.swift`, then:
 
 ```swift
-let sink = HMMuxAnalyticsSink(
-    environment: HMMuxEnvironment(
-        environmentKey: Secrets.muxEnvironmentKey,
-        playerName: "HotMicVerticalFeed",
-        viewerUserID: session.userID
-    ),
-    bridge: MuxDataBridge()          // instead of HMLoggingMuxBridge()
-)
-analytics.add(sink)
+import HotMicPlayer
+
+@MainActor func installMux(bridge: any HMMuxBridge, environmentKey: String,
+                          viewerUserID: String?, analytics: HMAnalyticsHub) {
+    let sink = HMMuxAnalyticsSink(environment: HMMuxEnvironment(
+        environmentKey: environmentKey, playerName: "HotMicVerticalFeed", viewerUserID: viewerUserID),
+        bridge: bridge)
+    analytics.add(sink)
+}
 ```
 
-Nothing else changes. `HMFeedController` already calls
+Call this with your `MuxDataBridge()` and host-owned environment/session values.
+
+Nothing else changes. `HMPlayer` already calls
 `attach` / `videoChange` / `detach` at the right moments.
 
 ## Why the bridge exists at all

@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (draft — unreleased)
+
+### Partner delivery
+
+- Add a Partner integration guide, capability matrix, integration checklist and ad SDK adapter recipe. Give ready-made and custom overlays equal starting paths with two small buildable example apps.
+- Consolidate the Partner demo with persistent tabs, mixed MP4/HLS and orientations, source/overlay selection, captions, URL and host-played ads, ranked refresh and a sidecar.
+- Compile README/DocC Swift snippets in the examples job; the third-party ad SDK recipe is explicitly pseudocode and adds no dependency.
+- Keep sidecar placement keyed to geometry/reservations and publish engagement adapter changes only when mapped data changes. Compact resting chrome at accessibility text sizes while retaining full metadata expansion and 44-point auxiliary controls.
+
+### Migration from 1.0
+
+- Feed presentation now defaults to `.automatic`: landscape/mismatched media fits instead of cropping. Set `.fill` explicitly to preserve a cropped design. Supply aspect hints for first paint.
+- Single-tap video play/pause is on by default. An explicit tap callback replaces it; call `togglePlayPause()` if that is still wanted. Fire remains opt-in on custom surfaces.
+- Fullscreen uses independent zero-inset layout and recomputed reservations; inline/nav squeeze is not inherited. Landscape still requires host orientation permissions.
+- Audio defaults to on with the managed playback/moviePlayback session. Background audio is opt-in and also requires host configuration. Explicit user pause/output-route removal prevents automatic interruption resume; caption preference defaults to following system settings.
+- Update switches over `HMPlayerEvent` for `audioSession`, `captionsChanged`, `adStateChanged`, `adBreakEnded` and `adPrefetchChanged`; `HMPlaybackEvent.Kind` adds `adStateChanged`, `adBreakEnded` and `adPrefetchChanged`. Use `@unknown default` for future non-frozen enum cases. `HMAdState.playing(kind:)` has progress separately on `adProgress`.
+- Existing `HMInteractionSource` implementations remain compatible. `.all` retains the original capability mask; explicitly add `.toggleReaction` and `.loadComments` only when implemented. Item membership/counts differ from timed stream reaction totals.
+- The engagement social adapter coalesces source changes on the next main-actor turn and publishes only changed mapped content; observe its content rather than synchronously reading it immediately after a source mutation.
+- `teardown()` remains terminal. Hosts adopting the kit retain per-item data sources, supply share/backend callbacks and nav height, and hide custom comment entry points while `adState.isActive`.
+
+### Changes
+
 
 - Preserve social overlay identity across swipes, isolate timed UI work, and stabilize gesture callbacks. Prevent Fire burst replay; clamp keyboard/sheet squeeze together; keep metadata during ads; add rail/metadata replacement slots and theme-selected engagement reactions.
 

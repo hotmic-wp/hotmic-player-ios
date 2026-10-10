@@ -19,6 +19,9 @@ All player, timeline, source, and engagement access is isolated to the main acto
 ## Topics
 
 ### Integration guides
+- <doc:PartnerIntegrationGuide>
+- <doc:CapabilityMatrix>
+- <doc:IntegrationChecklist>
 - <doc:GettingStarted>
 - <doc:HorizontalVideo>
 - <doc:Captions>

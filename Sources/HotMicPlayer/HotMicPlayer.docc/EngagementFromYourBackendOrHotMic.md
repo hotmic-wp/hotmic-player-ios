@@ -7,7 +7,7 @@ Drive your own social interface from the same observable state, whichever backen
 | Engagement owner | Source | Host responsibilities |
 | --- | --- | --- |
 | Your service | Implement ``HMInteractionSource`` | Map item IDs, authentication, REST/socket transport, membership totals and comment paging. |
-| HotMic | `HotMicInteractionSource` from the separate HotMicPlayerConnect package | Configure Connect and map content IDs. Item membership/paging requires a Connect version implementing the optional methods below. |
+| HotMic | `HotMicInteractionSource` from the separate HotMicPlayerConnect package | Configure Connect and map content IDs. Per-stream reactions and paged comment history are not yet available from the HotMic backend. A host backend can implement the full feature set. |
 | Offline demo | The Sample's host adapter or fake Connect client | No credentials or network; choose a source in Social layout. |
 
 Pass the selected source to `HMPlayer(interactions:)`. Obtain ``HMEngagement`` using `player.engagement(for: item)`. Both paths render from the same state; the host screen does not branch on provider when displaying data or sending actions. Switching providers means creating a player with the selected source; the Sample starts a new screen lifetime.

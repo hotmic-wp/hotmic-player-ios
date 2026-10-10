@@ -19,7 +19,9 @@ struct DemoRootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if benchmark.values["reference-lab"] == "1" {
+        if benchmark.values["horizontal-lab"] == "1" {
+            HorizontalLabScreen()
+        } else if benchmark.values["reference-lab"] == "1" {
             ReferenceLabScreen()
         } else if let url = benchmark.values["grid-url"] {
             BenchmarkScreen(initialURL: url, autoStart: true)

@@ -12,8 +12,11 @@ struct BenchmarkScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let controller = runner.controller {
-                HMVerticalFeedView(player: controller)
-                    .id(ObjectIdentifier(controller))
+                if runner.isInline {
+                    HMPlayerView(player: controller).id(ObjectIdentifier(controller))
+                } else {
+                    HMVerticalFeedView(player: controller).id(ObjectIdentifier(controller))
+                }
             }
             VStack(spacing: 12) {
                 if !runner.isRunning {

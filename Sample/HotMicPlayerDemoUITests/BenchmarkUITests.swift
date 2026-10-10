@@ -45,4 +45,97 @@ final class BenchmarkUITests: XCTestCase {
         }
         XCTFail("Grid timeout: \(app.staticTexts["benchmark-grid-progress"].label)")
     }
+    /// Opt-in simulator walkthrough; unit coverage remains in the existing native/snapshot suites.
+    func testHorizontalFullscreenContinuity() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let manifest = env["HM_HORIZONTAL_MANIFEST"] else { throw XCTSkip("Set HM_HORIZONTAL_MANIFEST for the local horizontal walkthrough") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--hm-horizontal-lab", "1", "--hm-manifest-url", manifest, "--hm-start-index", "1"]
+        XCUIDevice.shared.orientation = .portrait
+        app.launch()
+        let status = app.staticTexts["horizontal-status"], evidence = app.staticTexts["horizontal-evidence"]
+        XCTAssertTrue(status.waitForExistence(timeout: 15))
+        let displayed = NSPredicate(format: "label MATCHES %@", ".*\\|[1-9][0-9]*\\|0$")
+        expectation(for: displayed, evaluatedWith: evidence)
+        expectation(for: NSPredicate(format: "NOT label CONTAINS 'pending'"), evaluatedWith: app.staticTexts["horizontal-ttff"])
+        waitForExpectations(timeout: 20)
+        let original = evidence.label
+        func shot(_ name: String) throws {
+            // Wait for UIKit's rotation animation, then capture the whole display.
+            // app.screenshot() can crop to the old portrait app bounds during rotation.
+            Thread.sleep(forTimeInterval: 0.8)
+            if name.contains("fullscreen") {
+                // Detect presentation inheriting the host's intermediate portrait transform.
+                XCTAssertGreaterThan(app.frame.width, app.frame.height)
+                let exitFrame = app.buttons["hm-exit-fullscreen"].frame
+                XCTAssertGreaterThan(exitFrame.midX, app.frame.midX)
+                XCTAssertLessThan(exitFrame.midY, app.frame.midY)
+            }
+            let screenshot = XCUIScreen.main.screenshot()
+            let attachment = XCTAttachment(screenshot: screenshot); attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+            if let path = env["HM_HORIZONTAL_SHOTS"] {
+                let directory = URL(fileURLWithPath: path)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try screenshot.pngRepresentation.write(to: directory.appendingPathComponent(name + ".png"))
+            }
+        }
+        try shot("feed-landscape-mp4")
+        app.buttons["horizontal-fullscreen"].tap()
+        let exit = app.buttons["hm-exit-fullscreen"]
+        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        try shot("feed-fullscreen-api")
+        app.swipeUp() // fullscreen must not page the feed
+        exit.tap()
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(evidence.label, original)
+        try shot("feed-return-api")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        try shot("feed-fullscreen-rotation")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(evidence.label, original)
+        try shot("feed-return-rotation")
+        app.buttons["horizontal-inline"].tap()
+        XCTAssertTrue(app.staticTexts["Inline 16:9 player"].waitForExistence(timeout: 5))
+        try shot("standalone-inline")
+        app.buttons["horizontal-fullscreen"].tap()
+        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        try shot("standalone-fullscreen")
+        exit.tap()
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(evidence.label, original)
+        try shot("standalone-return")
+        // HLS landscape and vertical rotation behavior use the same rendering route.
+        app.buttons["horizontal-inline"].tap()
+        let frames = Int(original.split(separator: "|")[2])!
+        app.buttons["Next"].tap()
+        expectation(for: NSPredicate(format: "label MATCHES %@", ".*\\|\(frames + 1)\\|0$"), evaluatedWith: evidence)
+        waitForExpectations(timeout: 15)
+        app.buttons["Next"].tap()
+        expectation(for: NSPredicate(format: "label CONTAINS '004-landscape'"), evaluatedWith: status)
+        waitForExpectations(timeout: 10)
+        expectation(for: NSPredicate(format: "label MATCHES %@", ".*\\|\(frames + 2)\\|0$"), evaluatedWith: evidence)
+        waitForExpectations(timeout: 15)
+        let hls = evidence.label
+        try shot("feed-landscape-hls")
+        XCUIDevice.shared.orientation = .landscapeRight
+        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        try shot("feed-hls-fullscreen-rotation")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertEqual(evidence.label, hls)
+        app.buttons["Previous"].tap()
+        expectation(for: NSPredicate(format: "label CONTAINS '003-portrait'"), evaluatedWith: status)
+        expectation(for: NSPredicate(format: "label MATCHES %@", ".*\\|\(frames + 3)\\|0$"), evaluatedWith: evidence)
+        waitForExpectations(timeout: 10)
+        let portrait = evidence.label
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertFalse(exit.waitForExistence(timeout: 2))
+        XCUIDevice.shared.orientation = .portrait
+        try shot("feed-portrait-hls")
+        XCTAssertEqual(evidence.label, portrait) // resizing a portrait feed must not page either
+    }
+
 }

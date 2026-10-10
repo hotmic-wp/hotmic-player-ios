@@ -519,3 +519,25 @@ stalls, bytes and sampled memory. Each threshold percentage divides by all
 activations of that kind, including views that never displayed a frame. The
 first-video population is one play activation per grid repeat; three repeats
 therefore provide only three first-video observations per cell.
+
+## Horizontal / mixed-orientation smoke
+
+Landscape source clips follow the same short-side ladder as portrait sources. A 1280×720 (or larger 16:9) source produces 1280×720 `mp4-faststart-720.mp4` plus 2-second HLS at 720/540/360, with the same GOP, bitrate, faststart verification and no-upscale rules. Keep both portrait and landscape MP4 sources in your source directory. `encode.sh` publishes `aspectRatio` hints in all playback manifests, `mixed-orientation.json` alternating portrait/landscape and MP4/HLS, and `inline-landscape.json` for the non-paging scenario. With only one orientation, only applicable manifests are generated.
+
+```bash
+bench/encode.sh YOUR_SOURCES bench/generated/horizontal http://127.0.0.1:18490 2
+cp bench/grid.horizontal.json bench/generated/horizontal/
+python3 bench/origin.py --root bench/generated/horizontal --port 18490
+# In a second terminal:
+python3 bench/results_receiver.py --port 18491 --output bench/results/horizontal/received
+# Build/install the Sample on a dedicated simulator, then:
+xcrun simctl launch SIM_UDID com.hotmic.HotMicPlayerDemo \
+  --hm-grid-url http://127.0.0.1:18490/grid.horizontal.json
+python3 bench/analyze.py bench/results/horizontal/received --output bench/results/horizontal/summary
+```
+
+The committed grid runs S0 versus S3, binge (1 s) and normal (5 s) mixed-feed cells with 12 settled swipes, plus S0/S3 inline cells with six next-item transitions. Increase repeats/swipes for device measurements. `scenario: "inline"` renders `HMPlayerView` at its default 16:9 and calls `next()` / `previous()` instead of paging; the JSONL dimension `paging` distinguishes `inline-next` from `in-app-settled-page`. Inline transitions appear in first/navigation TTFF columns, not swipe columns. Each cell can set `presentation` to an `HMVideoPresentation` raw value; the horizontal grid explicitly uses `"fitWithBlurredBackdrop"`. Omitting it uses the preset's presentation. Cache reset / displayed-frame requirements match feed smoke.
+
+Analysis includes `orientation` (`portrait`, `landscape`, `square`, `unknown`, and aggregate `all`), determined from decoded first-frame/summary metadata so cold arrivals without hints are classified after decode. Orientation is the media's display orientation, independent of the device orientation. Censored activations retain their hint or stay unknown. Per-orientation startup/stall and item-attributable transfer counters accompany TTFF. Use `all` rows for run-level totals (including wasted prefetch bytes); do not sum `all` and orientation rows together. Old JSONL without aspect metadata is reported as unknown.
+
+For visual/continuity proof launch the horizontal lab (Sample README), capture each policy and inline/fullscreen with `simctl io SIM_UDID screenshot`, and save under gitignored `bench/results/horizontal/`. Compare the state's native assignment and activation ID and the JSONL first-frame count before/after fullscreen; the playhead must continue, with no new first-frame or stall event. Check API entry/exit, physical simulator rotation, and disabled feed swipe while fullscreen. Run only against an owned dedicated simulator. Simulator output must remain labeled **simulator smoke run — not benchmark numbers**; it cannot establish physical-device latency targets.

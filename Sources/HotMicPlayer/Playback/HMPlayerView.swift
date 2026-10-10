@@ -1,5 +1,6 @@
 #if canImport(UIKit) && !os(watchOS)
 import AVFoundation
+import CoreImage
 import SwiftUI
 import Observation
 import UIKit
@@ -11,11 +12,17 @@ public struct HMPlayerView<Overlay: View>: View {
     private let player: HMPlayer
     private let aspectRatio: CGFloat?
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
+    private var fullscreenOverlay: ((HMMediaItem, HMPlaybackSnapshot) -> AnyView)?
 
     /// Creates an inline surface and partner overlay, with 16:9 default layout. Access on the main actor.
     public init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9,
                 @ViewBuilder overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay) {
         self.player = player; self.aspectRatio = aspectRatio; self.overlay = overlay
+    }
+
+    init(player: HMPlayer, aspectRatio: CGFloat?, fullscreenOverlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> AnyView, overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Overlay) {
+        self.player = player; self.aspectRatio = aspectRatio
+        self.overlay = overlay; self.fullscreenOverlay = fullscreenOverlay
     }
 
     /// Renders the active item without feed paging. Access on the main actor.
@@ -28,7 +35,9 @@ public struct HMPlayerView<Overlay: View>: View {
         }
         .aspectRatio(aspectRatio, contentMode: .fit)
         .clipped()
-        .background(HMFullscreenPresenter(player: player).frame(width: 0, height: 0))
+        .background(HMFullscreenPresenter(player: player, overlay: fullscreenOverlay ?? { AnyView(overlay($0, $1)) }).frame(width: 0, height: 0))
+        .onAppear { player.attachInline() }
+        .onDisappear { player.detachInline() }
         .task { await player.start() }
     }
 }
@@ -50,6 +59,13 @@ public final class HMPlayerViewController: UIHostingController<HMPlayerView<Empt
     public init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9) {
         self.player = player
         super.init(rootView: HMPlayerView(player: player, aspectRatio: aspectRatio))
+    }
+    /// Creates a UIKit surface with captions or controls rendered in fullscreen. Access on the main actor.
+    public init<Content: View>(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9,
+                              @ViewBuilder fullscreenOverlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Content) {
+        self.player = player
+        super.init(rootView: HMPlayerView(player: player, aspectRatio: aspectRatio,
+            fullscreenOverlay: { AnyView(fullscreenOverlay($0, $1)) }, overlay: { _, _ in EmptyView() }))
     }
     @available(*, unavailable)
     required dynamic init?(coder aDecoder: NSCoder) { fatalError("Use init(player:)") }
@@ -79,11 +95,11 @@ struct HMItemSurface<Overlay: View>: View {
                 Color(red: component(color.red), green: component(color.green), blue: component(color.blue), opacity: component(color.alpha))
                 if resolved == .fitWithBlurredBackdrop {
                     if let poster = display.posterURL {
-                        HMPosterView(url: poster).blur(radius: 24).overlay(Color.black.opacity(0.5))
+                        HMBlurredPosterView(url: poster).overlay(Color.black.opacity(0.5))
                     } else if let poster = player.node(for: item)?.backdropPoster {
                         Color.clear.overlay {
                             Image(decorative: poster, scale: 1).resizable().scaledToFill()
-                        }.clipped().blur(radius: 24).overlay(Color.black.opacity(0.5))
+                        }.clipped().overlay(Color.black.opacity(0.5))
                     }
                 }
                 if let poster = display.posterURL {
@@ -108,8 +124,10 @@ struct HMItemSurface<Overlay: View>: View {
 /// A zero-size child controller presents fullscreen from the host's actual window scene.
 struct HMFullscreenPresenter: UIViewControllerRepresentable {
     let player: HMPlayer
-    func makeUIViewController(context: Context) -> HMFullscreenPresenterController { HMFullscreenPresenterController(player: player) }
+    var overlay: (HMMediaItem, HMPlaybackSnapshot) -> AnyView = { _, _ in AnyView(EmptyView()) }
+    func makeUIViewController(context: Context) -> HMFullscreenPresenterController { HMFullscreenPresenterController(player: player, overlay: overlay) }
     func updateUIViewController(_ controller: HMFullscreenPresenterController, context: Context) {
+        controller.overlay = overlay
         controller.synchronize(fullscreen: player.isFullscreen, itemID: player.currentItem?.id)
     }
     static func dismantleUIViewController(_ controller: HMFullscreenPresenterController, coordinator: ()) { controller.stop() }
@@ -117,17 +135,19 @@ struct HMFullscreenPresenter: UIViewControllerRepresentable {
 
 final class HMFullscreenPresenterController: UIViewController {
     let player: HMPlayer
-    private var fullscreenController: UIViewController?
+    private(set) var fullscreenController: UIViewController?
+    var overlay: (HMMediaItem, HMPlaybackSnapshot) -> AnyView
+    private var presentationCheck: Task<Void, Never>?
     private var rotationToken: NSObjectProtocol?
     private var rotationTask: Task<Void, Never>?
-    private var transitioning = false
+    private(set) var transitioning = false
     private var stopped = false
     private weak var windowScene: UIWindowScene?
     #if os(iOS)
     private var previousOrientation: UIInterfaceOrientation = .portrait
     #endif
-    init(player: HMPlayer) {
-        self.player = player
+    init(player: HMPlayer, overlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> AnyView = { _, _ in AnyView(EmptyView()) }) {
+        self.player = player; self.overlay = overlay
         super.init(nibName: nil, bundle: nil)
         #if os(iOS)
         UIDevice.current.beginGeneratingDeviceOrientationNotifications()
@@ -149,11 +169,10 @@ final class HMFullscreenPresenterController: UIViewController {
                 guard let self, !self.stopped else { return }
                 let orientation = UIDevice.current.orientation
                 guard orientation.isLandscape || orientation.isPortrait else { return }
-                // UIKit rotates the host independently of device notifications. Presenting
-                // during that turn can leave an overFullScreen controller in portrait bounds.
-                let sceneMatches = self.view.window?.windowScene?.interfaceOrientation.isLandscape == orientation.isLandscape
+                // Wait for any host transition, but do not require the feed scene to
+                // rotate: a portrait feed can present an independently rotating fullscreen.
                 let coordinator = self.fullscreenController?.transitionCoordinator ?? self.transitionCoordinator ?? self.view.window?.rootViewController?.transitionCoordinator
-                settledChecks = sceneMatches && coordinator == nil ? settledChecks + 1 : 0
+                settledChecks = coordinator == nil ? settledChecks + 1 : 0
                 if settledChecks >= 2 {
                     self.player.deviceRotated(isLandscape: orientation.isLandscape)
                     return
@@ -185,29 +204,42 @@ final class HMFullscreenPresenterController: UIViewController {
     func synchronize(fullscreen: Bool, itemID: String?) {
         guard !stopped, !transitioning else { return }
         if fullscreen, itemID == nil { player.exitFullscreen(); return }
-        if fullscreen, fullscreenController == nil, view.window != nil {
-            let controller = HMFullscreenController(rootView: HMFullscreenContent(player: player))
+        if fullscreen, fullscreenController == nil, let window = view.window {
+            // Duplicate mounted surfaces must neither compete nor dismiss the owner's controller.
+            guard player.fullscreenPresenter == nil || player.fullscreenPresenter === self else { return }
+            player.fullscreenPresenter = self
+            var presenter = window.rootViewController ?? self
+            while let presented = presenter.presentedViewController { presenter = presented }
+            guard presenter.presentedViewController == nil, !presenter.isBeingDismissed,
+                  !presenter.isBeingPresented, presenter.view.window != nil,
+                  presenter.transitionCoordinator == nil else { presentationFailed(); return }
+            let controller = HMFullscreenController(rootView: HMFullscreenContent(player: player, overlay: overlay))
             controller.modalPresentationStyle = .overFullScreen
-            windowScene = view.window?.windowScene
+            windowScene = window.windowScene
             #if os(iOS)
-            // UIHostingController otherwise prefers portrait on presentation, even when
-            // the host has just rotated to landscape. Avoid a portrait/landscape round trip.
-            controller.presentationOrientation = windowScene?.interfaceOrientation ?? .portrait
-            if (player.snapshot.aspectRatio ?? 0) > 1 {
-                controller.presentationOrientation = UIDevice.current.orientation == .landscapeRight ? .landscapeLeft : .landscapeRight
-            }
+            let current = windowScene?.interfaceOrientation ?? .portrait
+            previousOrientation = current
+            let supported = UIApplication.shared.supportedInterfaceOrientations(for: window)
+            controller.orientationMask = supported
+            controller.presentationOrientation = Self.presentationOrientation(current: current,
+                device: UIDevice.current.orientation, landscapeItem: (player.snapshot.aspectRatio ?? 0) > 1, supported: supported)
             #endif
             fullscreenController = controller; transitioning = true
-            #if os(iOS)
-            previousOrientation = view.window?.windowScene?.interfaceOrientation ?? .portrait
-            #endif
-            present(controller, animated: false) { [weak self] in
-                guard let self else { return }
+            presenter.present(controller, animated: false) { [weak self, weak controller] in
+                guard let self, let controller, self.fullscreenController === controller else { return }
+                guard controller.presentingViewController != nil else { self.presentationFailed(); return }
+                self.presentationCheck?.cancel(); self.presentationCheck = nil
                 self.transitioning = false
                 #if os(iOS)
                 if (self.player.snapshot.aspectRatio ?? 0) > 1 { self.requestOrientation(.landscape) }
                 #endif
                 self.synchronize(fullscreen: self.player.isFullscreen, itemID: self.player.currentItem?.id)
+            }
+            // UIKit does not call completion when it refuses a presentation.
+            presentationCheck = Task { @MainActor [weak self, weak controller] in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let self, let controller, self.fullscreenController === controller else { return }
+                if controller.presentingViewController == nil || controller.view.window == nil { self.presentationFailed() }
             }
         } else if !fullscreen, let controller = fullscreenController {
             transitioning = true
@@ -217,44 +249,70 @@ final class HMFullscreenPresenterController: UIViewController {
                 #if os(iOS)
                 self.requestOrientation(UIDevice.current.orientation.isPortrait ? .portrait : UIInterfaceOrientationMask(rawValue: 1 << self.previousOrientation.rawValue))
                 #endif
+                if self.player.fullscreenPresenter === self { self.player.fullscreenPresenter = nil }
                 self.synchronize(fullscreen: self.player.isFullscreen, itemID: self.player.currentItem?.id)
             }
         }
     }
+    private func presentationFailed() {
+        presentationCheck?.cancel(); presentationCheck = nil
+        fullscreenController?.dismiss(animated: false)
+        fullscreenController = nil; transitioning = false
+        if player.fullscreenPresenter === self {
+            player.fullscreenPresenter = nil
+            player.exitFullscreen()
+        }
+    }
     #if os(iOS)
+    static func presentationOrientation(current: UIInterfaceOrientation, device: UIDeviceOrientation,
+                                        landscapeItem: Bool, supported: UIInterfaceOrientationMask) -> UIInterfaceOrientation {
+        guard landscapeItem, !supported.intersection(.landscape).isEmpty else { return current }
+        let desired: UIInterfaceOrientation = device == .landscapeRight ? .landscapeLeft : .landscapeRight
+        return supported.contains(UIInterfaceOrientationMask(rawValue: 1 << desired.rawValue)) ? desired :
+            (supported.contains(.landscapeLeft) ? .landscapeLeft : .landscapeRight)
+    }
     private func requestOrientation(_ orientations: UIInterfaceOrientationMask) {
-        (fullscreenController?.view.window?.windowScene ?? view.window?.windowScene ?? windowScene)?.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { _ in }
+        let window = fullscreenController?.view.window ?? view.window
+        let allowed = orientations.intersection(UIApplication.shared.supportedInterfaceOrientations(for: window))
+        guard !allowed.isEmpty else { return }
+        (window?.windowScene ?? windowScene)?.requestGeometryUpdate(.iOS(interfaceOrientations: allowed)) { _ in }
     }
     #endif
     func stop() {
         guard !stopped else { return }
         stopped = true
         rotationTask?.cancel(); rotationTask = nil
+        presentationCheck?.cancel(); presentationCheck = nil
         if let rotationToken { NotificationCenter.default.removeObserver(rotationToken); self.rotationToken = nil }
         #if os(iOS)
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
         #endif
         fullscreenController?.dismiss(animated: false); fullscreenController = nil
-        player.exitFullscreen()
+        if player.fullscreenPresenter === self {
+            player.fullscreenPresenter = nil
+            player.exitFullscreen()
+        }
     }
 }
 
 private final class HMFullscreenController: UIHostingController<HMFullscreenContent> {
     #if os(iOS)
     var presentationOrientation: UIInterfaceOrientation = .portrait
+    var orientationMask: UIInterfaceOrientationMask = .allButUpsideDown
     override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { presentationOrientation }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .allButUpsideDown }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { orientationMask }
     override var prefersStatusBarHidden: Bool { true }
     #endif
 }
 
 private struct HMFullscreenContent: View {
     let player: HMPlayer
+    let overlay: (HMMediaItem, HMPlaybackSnapshot) -> AnyView
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
             if let item = player.currentItem {
-                HMItemSurface(player: player, item: item, fullscreen: true, observesWarmFrame: false, gravity: nil) { _, _ in EmptyView() }
+                HMItemSurface(player: player, item: item, fullscreen: true, observesWarmFrame: false, gravity: nil, overlay: overlay)
                     .ignoresSafeArea()
             }
             Button { player.exitFullscreen() } label: {
@@ -262,6 +320,24 @@ private struct HMFullscreenContent: View {
             }
             .accessibilityIdentifier("hm-exit-fullscreen")
             .padding().tint(.white)
+        }
+    }
+}
+/// Partner posters use the same small, preblurred still path as decoded frames.
+private struct HMBlurredPosterView: View {
+    let url: URL
+    @State private var poster: CGImage?
+    var body: some View {
+        Color.clear.overlay {
+            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+        }.clipped().allowsHitTesting(false).task(id: url) {
+            poster = nil
+            guard let (data, _) = try? await URLSession.shared.data(from: url) else { return }
+            let image = await Task.detached(priority: .utility) { () -> CGImage? in
+                guard let image = CIImage(data: data) else { return nil }
+                return HMBackdropImage.make(image.oriented(forExifOrientation: image.properties[kCGImagePropertyOrientation as String] as? Int32 ?? 1))
+            }.value
+            if !Task.isCancelled { poster = image }
         }
     }
 }

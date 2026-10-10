@@ -559,6 +559,7 @@ enum HMPlayerEvent
 ```swift
 @MainActor final class HMPlayerViewController
 @MainActor init(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9)
+@MainActor init<Content>(player: HMPlayer, aspectRatio: CGFloat? = 16 / 9, @ViewBuilder fullscreenOverlay: @escaping (HMMediaItem, HMPlaybackSnapshot) -> Content) where Content : View
 @MainActor let player: HMPlayer
 ```
 

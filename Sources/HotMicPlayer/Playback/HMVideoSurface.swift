@@ -17,6 +17,10 @@ struct HMVideoSurface: UIViewRepresentable {
     private let active: Bool
     private let activationID: String?
     private let displayRevision: Int?
+    // Explicit representable inputs wake the bounded watcher after KVO changes.
+    private let frameReady: Bool
+    private let isPlaying: Bool
+    private let isPaused: Bool
     private let observesWarmFrame: Bool
     private let capturesBackdrop: Bool
 
@@ -26,6 +30,9 @@ struct HMVideoSurface: UIViewRepresentable {
         self.active = node?.isActive ?? false
         self.activationID = node?.snapshot.activationID
         self.displayRevision = node?.displayRevision
+        self.frameReady = node?.snapshot.isFrameReady ?? false
+        self.isPlaying = node?.snapshot.state == .playing
+        self.isPaused = node?.snapshot.state == .paused
         self.observesWarmFrame = observesWarmFrame
         self.capturesBackdrop = capturesBackdrop
     }
@@ -56,6 +63,7 @@ final class HMVideoSurfaceView: UIView {
     private var displayLink: CADisplayLink?
     private var readyItem: HMMediaItem?
     private var readyRevision: Int?
+    private var captureBoundaries = 0
     var isPlaybackVisible = true { didSet { refreshDisplayLink() } }
     var capturesBackdrop = false { didSet { refreshDisplayLink() } }
     var observesWarmFrame = false { didSet { refreshDisplayLink() } }
@@ -63,12 +71,13 @@ final class HMVideoSurfaceView: UIView {
     func attach(_ node: HMPlayerNode?, gravity: AVLayerVideoGravity) {
         let layer = node?.playerLayer
         if hostedLayer !== layer {
+            self.node?.discardBackdropOutput()
             // A recycled layer may already belong to another surface.
             if hostedLayer?.superlayer === self.layer { hostedLayer?.removeFromSuperlayer() }
             hostedLayer = layer; self.node = node
             layer?.removeFromSuperlayer()
             if let layer { self.layer.addSublayer(layer) }
-            readyItem = nil
+            readyItem = nil; captureBoundaries = 0
             setNeedsLayout()
         }
         if layer?.videoGravity != gravity { layer?.videoGravity = gravity }
@@ -80,8 +89,10 @@ final class HMVideoSurfaceView: UIView {
 
     private func refreshDisplayLink() {
         if !isPlaybackVisible || isHidden || node == nil || window == nil ||
+            (capturesBackdrop && (node?.playerLayer.isReadyForDisplay != true || (node?.isActive == true && node?.snapshot.state == .paused) || node?.snapshot.state == .failed)) ||
             (node?.isActive != true && !observesWarmFrame) ||
-            (node?.isActive == true && node?.snapshot.timeToFirstFrame != nil && (!capturesBackdrop || node?.backdropPoster != nil)) {
+            (node?.isActive == true && node?.snapshot.timeToFirstFrame != nil && (!capturesBackdrop || node?.needsBackdropCapture != true || captureBoundaries >= 12)) {
+            node?.discardBackdropOutput()
             displayLink?.invalidate(); displayLink = nil; readyItem = nil
         } else if displayLink == nil {
             let link = CADisplayLink(target: self, selector: #selector(displayBoundary))
@@ -90,6 +101,19 @@ final class HMVideoSurfaceView: UIView {
     }
 
     @objc private func displayBoundary() {
+        if let node, node.isActive, node.snapshot.timeToFirstFrame != nil {
+            guard capturesBackdrop, node.needsBackdropCapture, captureBoundaries < 12 else {
+                node.discardBackdropOutput()
+                displayLink?.invalidate(); displayLink = nil
+                return
+            }
+            captureBoundaries += 1
+        }
+        if capturesBackdrop, node?.playerLayer.isReadyForDisplay != true {
+            node?.discardBackdropOutput()
+            displayLink?.invalidate(); displayLink = nil; readyItem = nil
+            return
+        }
         guard isPlaybackVisible, let node, let window, !isHidden,
               convert(bounds, to: window).intersects(window.bounds) else {
             readyItem = nil; return
@@ -110,18 +134,21 @@ final class HMVideoSurfaceView: UIView {
             readyItem = node.item; readyRevision = node.displayRevision; return
         }
         if node.isActive { node.didDisplayFrame(activation: activation, at: ProcessInfo.processInfo.systemUptime) }
-        if capturesBackdrop { node.captureBackdropPoster() }
+        if capturesBackdrop, node.isActive, node.snapshot.timeToFirstFrame != nil, node.needsBackdropCapture {
+            node.captureBackdropPoster()
+        }
         guard node.isActive else { return }
         // First-frame metrics may already have copied this output frame. Wait for
         // the next decoded frame if the still is unavailable; do not decode again.
-        if !capturesBackdrop || node.backdropPoster != nil {
+        if !capturesBackdrop || !node.needsBackdropCapture || captureBoundaries >= 12 {
+            node.discardBackdropOutput()
             displayLink?.invalidate(); displayLink = nil
         }
     }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { displayLink?.invalidate(); displayLink = nil; readyItem = nil }
+        if window == nil { node?.discardBackdropOutput(); displayLink?.invalidate(); displayLink = nil; readyItem = nil }
         else { attach(node, gravity: hostedLayer?.videoGravity ?? .resizeAspectFill) }
     }
 

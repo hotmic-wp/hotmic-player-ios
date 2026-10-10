@@ -13,7 +13,7 @@ Choose `HMPlayerConfiguration.presentation`, with an optional `HMMediaItem.prese
 | `.automatic` (default) | Fill if the relative aspect difference from the host is at most `aspectRatioTolerance` (default 0.25); otherwise fit. Unknown aspect fills until a hint or decoded size arrives. |
 | `.fill` | Crop to fill the host, preserving the video's aspect. |
 | `.fit` | Show the entire video with black bars. |
-| `.fitWithBlurredBackdrop` | Fit over a blurred, darkened scale-to-fill poster. Without a poster, capture one small still from the existing decoded output. The backdrop is a still, with no second player or decoder. |
+| `.fitWithBlurredBackdrop` | Fit over a darkened scale-to-fill poster, preblurred once at small size. Without a poster, capture one small still from the existing decoded output after first-frame reporting, only during active playback, with bounded attempts. The backdrop is a still, with no second player or decoder. |
 | `.fitWithColor` | Fit over `configuration.backdropColor`, a portable RGBA value. |
 
 Changing policy updates layout and layer gravity without replacing the player or seeking. Existing feed calls remain source compatible. An explicit `gravity:` argument remains an override; omit it to use the new policy. Default automatic presentation intentionally changes mismatched media, including horizontal pre-rolls, from cropped to letterboxed. Matching vertical media still fills.
@@ -33,9 +33,9 @@ player.replaceAll([
 
 ## Fullscreen in SwiftUI
 
-Present `HMVerticalFeedView(player:)` or `HMPlayerView(player:)` and call `player.enterFullscreen()` / `player.exitFullscreen()`. Observe `player.isFullscreen`. The view presents a fullscreen controller in its own window scene, moving the same node's video layer. Playback, playhead, first-frame timing and activation ID continue unchanged. Feed swiping is disabled until exit, which restores the selected page. Entering fullscreen cancels any pending page request and anchors the feed to the active item. The fullscreen surface includes an exit button.
+Present `HMVerticalFeedView(player:)` or `HMPlayerView(player:)` and call `player.enterFullscreen()` / `player.exitFullscreen()`. Observe `player.isFullscreen`. The view presents a fullscreen controller in its own window scene, moving the same node's video layer. Playback, playhead, first-frame timing and activation ID continue unchanged. Feed swiping is disabled until exit, which restores the selected page. Entering fullscreen cancels any pending page request and anchors the feed to the active item. The fullscreen surface includes an exit button and reuses the feed or inline overlay closure, including fullscreen `snapshot.videoFrame` geometry. Presentation uses the topmost host controller, including an open sheet. If UIKit refuses presentation, the player returns to inline state.
 
-Set `configuration.followsDeviceRotation = true` to enter fullscreen when a landscape active item rotates to landscape, and exit when the device returns to portrait. Face-up, face-down and unknown orientations are ignored. Rotation following is off by default. There should be one mounted playback surface per player; switch surfaces instead of mounting feed and inline views simultaneously.
+Set `configuration.followsDeviceRotation = true` to enter fullscreen when a landscape active item rotates to landscape, and exit when the device returns to portrait. Face-up, face-down and unknown orientations are ignored. Rotation following is off by default. Mount one playback surface per player; switch surfaces instead of mounting feed and inline views simultaneously. Only one presenter may own fullscreen for an engine; duplicate presenters are inert and their removal cannot dismiss the owner. Device rotation can enter fullscreen even when the feed controller stays portrait.
 
 ```swift
 HMVerticalFeedView(player: player) { item, snapshot in
@@ -48,7 +48,7 @@ HMVerticalFeedView(player: player) { item, snapshot in
 
 ## Standalone player and UIKit
 
-`HMPlayerView(player:)` is a non-paging surface whose default inline aspect is 16:9. It uses the same `HMPlayer`, cache, adaptive prefetch and warm-next node as the feed. Pass one item or a playlist to the player. Use `next()` / `previous()` to navigate the playlist; set `configuration.loops`, `player.isMuted` and `seek(to:)` as usual. No swipe paging or automatic playlist advance is added. Pass `aspectRatio: nil` and a frame to let the host choose any size.
+`HMPlayerView(player:)` is a non-paging surface whose default inline aspect is 16:9. It uses the same `HMPlayer`, cache, adaptive prefetch and warm-next node as the feed. Pass one item or a playlist to the player. Use `next()` / `previous()` to navigate the playlist; set `configuration.loops`, `player.isMuted` and `seek(to:)` as usual. No swipe paging or automatic playlist advance is added. The inline view pauses when removed and resumes on appearance if playback was requested; an explicit `pause()` remains paused. Pass `aspectRatio: nil` and a frame to let the host choose any size.
 
 ```swift
 HMPlayerView(player: player)
@@ -74,10 +74,10 @@ video.didMove(toParent: self)
 player.enterFullscreen()
 ```
 
-For a UIKit feed, embed `UIHostingController(rootView: HMVerticalFeedView(player: player))` with the same child-controller lifecycle. Controls stay in the host; fullscreen presentation is built in. Keep `isFeedVisible` aligned with screen visibility and scene activity. Call `teardown()` only when the playback screen is permanently dismissed, not when it enters fullscreen.
+For a UIKit feed, embed `UIHostingController(rootView: HMVerticalFeedView(player: player))` with the same child-controller lifecycle. Fullscreen presentation is built in. Feed and SwiftUI inline overlay closures also render fullscreen. UIKit inline hosts can pass a `fullscreenOverlay:` view-builder closure to `HMPlayerViewController` for captions and controls. Keep `isFeedVisible` aligned with screen visibility and scene activity. Call `teardown()` only when the playback screen is permanently dismissed, not when it enters fullscreen.
 
 ## Host orientation setup
 
-On iOS the host app must allow portrait, landscape left and landscape right in its target's Supported Interface Orientations (`UISupportedInterfaceOrientations`; also the iPad key when applicable). Any app delegate orientation mask or enclosing custom controller must allow those orientations. HotMicPlayer requests landscape geometry for a landscape fullscreen item, and restores the prior orientation on API exit (portrait on portrait device rotation). iOS decides whether to grant geometry requests; the SDK cannot override a host restriction. Fullscreen still expands within the allowed orientation if rotation is denied. Device-rotation following is iOS-only; tvOS can use the explicit fullscreen API.
+For landscape fullscreen on iOS the host app must allow portrait, landscape left and landscape right in its target's Supported Interface Orientations (`UISupportedInterfaceOrientations`; also the iPad key when applicable). Any app delegate orientation mask must allow those orientations. The feed controller itself may stay portrait; the fullscreen controller supports the app’s allowed orientations. HotMicPlayer requests landscape geometry for a landscape fullscreen item, and restores the prior orientation on API exit (portrait on portrait device rotation). iOS decides whether to grant geometry requests; the SDK cannot override a host restriction. A portrait-only app safely expands fullscreen in its current scene orientation; the SDK checks the host mask before choosing a presentation orientation or requesting landscape. Device-rotation following is iOS-only; tvOS can use the explicit fullscreen API.
 
 The Sample's `HorizontalLabScreen` demonstrates a mixed feed, every presentation policy, overlay video bounds and an inline player. Launch with `--hm-horizontal-lab 1 --hm-manifest-url <mixed-orientation.json>` after generating your own fixtures. See the repository's Benchmarking guide for smoke commands and per-orientation reporting.

@@ -35,7 +35,19 @@ import Observation
         isFullscreen = true
     }
     /// Returns to the same inline item and feed page. Access on the main actor.
-    public func exitFullscreen() { isFullscreen = false }
+    public func exitFullscreen() {
+        guard isFullscreen else { return }
+        isFullscreen = false
+        scheduleFailedItemAdvance()
+    }
+    // A single mounted presenter owns fullscreen for this engine. A duplicate is inert.
+    @ObservationIgnored weak var fullscreenPresenter: AnyObject?
+    @ObservationIgnored private var inlineSurfaces = 0
+    func attachInline() { inlineSurfaces += 1; isFeedVisible = true }
+    func detachInline() {
+        inlineSurfaces = max(0, inlineSurfaces - 1)
+        if inlineSurfaces == 0, feedSurfaces == 0 { isFeedVisible = false }
+    }
     /// Host rotation adapters call this only for valid portrait / landscape device orientations.
     func deviceRotated(isLandscape: Bool) {
         guard configuration.followsDeviceRotation else { return }
@@ -424,7 +436,7 @@ import Observation
         navigate(to: index, reason: failedMove ? "failed-item" : "swipe",
                  requestedAt: requestedAt, retryFailed: false)
     }
-    func attachFeed() { feedSurfaces += 1 }
+    func attachFeed() { feedSurfaces += 1; isFeedVisible = true }
     func detachFeed() {
         feedSurfaces = max(0, feedSurfaces - 1)
         pageIsMoving = false; feedIsTouching = false
@@ -695,7 +707,7 @@ import Observation
             node.activate(startingAt: configuration.restoresPlaybackPosition ? resumePositions[identity(original)] : nil,
                           requestedAt: requestTime, reason: requestReason, cachedBytes: proxy?.cachedByteCount(for: item) ?? 0)
             if !wantsPlayback { node.pause() }
-        } else if wantsPlayback && node.snapshot.state == .paused { node.play() }
+        } else if wantsPlayback && (node.snapshot.state == .paused || node.player.timeControlStatus == .paused) { node.play() }
     }
     private func updatePrefetch(force: Bool = false) {
         guard isFeedVisible, !ended, let node = currentNode, node.isActive, let item = currentItem else { return }
@@ -1063,6 +1075,7 @@ import Observation
         }
     }
     private func advancePastFailure() {
+        guard !isFullscreen else { return }
         if let deferred = deferredFailureCommit, !isInteracting {
             deferredFailureCommit = nil
             commitPage(toID: deferred.id, requestedAt: ProcessInfo.processInfo.systemUptime)

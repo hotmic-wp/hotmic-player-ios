@@ -5,6 +5,21 @@ import Foundation
 import Observation
 import QuartzCore
 
+/// Precompute a tiny blurred image once, avoiding a full-page SwiftUI blur pass.
+enum HMBackdropImage {
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+    static func displayTransform(_ transform: CGAffineTransform) -> CGAffineTransform {
+        let flip = CGAffineTransform(scaleX: 1, y: -1)
+        return flip.concatenating(transform).concatenating(flip)
+    }
+    static func make(_ image: CIImage) -> CGImage? {
+        let scale = min(1, 160 / max(image.extent.width, image.extent.height))
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let blurred = small.clampedToExtent().applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 6]).cropped(to: small.extent)
+        return context.createCGImage(blurred, from: small.extent)
+    }
+}
+
 /// One recycled playback engine: an `AVPlayer` plus the `AVPlayerLayer` that
 /// renders it.
 ///
@@ -20,28 +35,32 @@ final class HMPlayerNode: Identifiable {
     @ObservationIgnored let playerLayer: AVPlayerLayer
 
     private(set) var backdropPoster: CGImage?
-    @ObservationIgnored private static let backdropContext = CIContext(options: [.cacheIntermediates: false])
-    /// A small still from the existing decoded output, used only when no partner poster was supplied.
+    @ObservationIgnored private var backdropAttempts = 0
+    /// Bounded capture after startup, using only the active item's existing decoder.
     func captureBackdropPoster() {
-        guard backdropPoster == nil else { return }
-        // Startup measurement releases its output after the first frame. Attach an
-        // output to the same item on demand (also for a later policy change), never
-        // a second player/decoder, then release it once the still is captured.
+        guard backdropPoster == nil, hasReportedFirstFrame, isActive,
+              player.timeControlStatus == .playing, backdropAttempts < 12 else { return }
+        backdropAttempts += 1
         if videoOutput == nil, let playerItem = player.currentItem {
             let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
             videoOutput = output; playerItem.add(output)
         }
-        guard let output = videoOutput,
-              let buffer = output.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) else { return }
-        let image = CIImage(cvPixelBuffer: buffer)
-        let scale = min(1, 160 / max(image.extent.width, image.extent.height))
-        var scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        // The output is in track coordinates; apply the display transform loaded during warmup.
-        scaled = scaled.transformed(by: backdropTransform)
-        backdropPoster = Self.backdropContext.createCGImage(scaled, from: scaled.extent)
-        if backdropPoster != nil, hasReportedFirstFrame {
-            player.currentItem?.remove(output); videoOutput = nil
+        if let output = videoOutput,
+           let buffer = output.copyPixelBuffer(forItemTime: player.currentTime(), itemTimeForDisplay: nil) {
+            let image = CIImage(cvPixelBuffer: buffer)
+            // Track transforms use y-down coordinates; CIImage uses y-up. Conjugate
+            // with a vertical reflection (translation is normalized by the extent).
+            let display = image.transformed(by: HMBackdropImage.displayTransform(backdropTransform))
+            backdropPoster = HMBackdropImage.make(display)
         }
+        if backdropPoster != nil || backdropAttempts >= 12 { discardBackdropOutput() }
+    }
+    var needsBackdropCapture: Bool {
+        backdropPoster == nil && backdropAttempts < 12 && hasReportedFirstFrame && isActive && player.timeControlStatus == .playing
+    }
+    func discardBackdropOutput() {
+        guard hasReportedFirstFrame, let output = videoOutput else { return }
+        player.currentItem?.remove(output); videoOutput = nil
     }
     @ObservationIgnored private var hasConfirmedAspect = false
     @ObservationIgnored private var backdropTransform = CGAffineTransform.identity
@@ -150,7 +169,7 @@ final class HMPlayerNode: Identifiable {
         setLayerVisible(false)
         isActive = false
         teardownItemObservers()
-        backdropPoster = nil; backdropTransform = .identity; hasConfirmedAspect = false
+        backdropPoster = nil; backdropAttempts = 0; backdropTransform = .identity; hasConfirmedAspect = false
         item = newItem
         assignmentGeneration += 1; hasReachedEnd = false
         displayRevision += 1; isSeekingFrame = false
@@ -699,8 +718,11 @@ final class HMPlayerNode: Identifiable {
             let replacement = AVPlayerItem(asset: asset)
             replacement.preferredPeakBitRate = didLiftStartupCap ? configuration.steadyPeakBitRate : configuration.startupPeakBitRate
             replacement.preferredForwardBufferDuration = isActive ? configuration.steadyBufferDuration : configuration.prefetch.warmBufferDuration
-            let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
-            videoOutput = output; replacement.add(output)
+            videoOutput = nil
+            if !hasReportedFirstFrame {
+                let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+                videoOutput = output; replacement.add(output)
+            }
             installItemObservers(for: replacement); player.replaceCurrentItem(with: replacement)
             loadAspect(from: asset, playerItem: replacement)
             didPreroll = false; prerollComplete = false; snapshot.state = .loading

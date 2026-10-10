@@ -110,7 +110,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
             .environment(\.hmFeedSafeArea, insets)
         }
         .background(.black)
-        .background(HMFullscreenPresenter(player: controller).frame(width: 0, height: 0))
+        .background(HMFullscreenPresenter(player: controller, overlay: { AnyView(overlay($0, $1)) }).frame(width: 0, height: 0))
     }
 
     @ViewBuilder

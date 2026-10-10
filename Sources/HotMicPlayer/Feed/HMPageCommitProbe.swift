@@ -182,6 +182,9 @@ struct HMPageCommitProbe: UIViewRepresentable {
             self.commit = commit; self.reference = reference; self.interaction = interaction
         }
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            restoringFullscreen = false; reference?.isRestoringFullscreen = false
+            pageSize = scrollView.bounds.size
+            fallback?.cancel(); fallback = nil
             interaction(true)
             original?.scrollViewWillBeginDragging?(scrollView)
         }

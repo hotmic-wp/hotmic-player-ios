@@ -37,6 +37,10 @@ jobs:
           path: |
             .bench/release/DerivedData/SourcePackages
             .bench/release/DerivedData/ModuleCache.noindex
+            .bench/release/device-derived/SourcePackages
+            .bench/release/device-derived/ModuleCache.noindex
+            .bench/release/docs-derived/SourcePackages
+            .bench/release/docs-derived/ModuleCache.noindex
           key: swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-26.6
           restore-keys: |
             swiftpm-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-xcode-

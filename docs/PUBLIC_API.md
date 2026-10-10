@@ -235,6 +235,7 @@ var id: Int { get }
 @MainActor func removeReaction(_ emoji: String, forMessage messageID: String, count: Int = 1, isOwn: Bool = false)
 @MainActor func removeReaction(id: String)
 @MainActor func sendChat(_ text: String, at mediaTime: TimeInterval? = nil) async throws
+@MainActor func setReaction(_ emoji: String, reacted: Bool) async throws
 @MainActor func supports(_ capability: HMEngagementCapabilities) -> Bool
 @MainActor func timelineOffset(forMediaTime time: TimeInterval) -> TimeInterval
 @MainActor func toggleReaction(_ emoji: String) async throws
@@ -247,6 +248,7 @@ var id: Int { get }
 @MainActor func vote(pollID: String, optionID: String) async throws
 @MainActor let capabilities: HMEngagementCapabilities
 @MainActor let timeline: any HMStreamTimeline
+@MainActor static let maximumLoadedComments: Int
 @MainActor static let maximumMessageLength: Int
 @MainActor static let viewerReactionWeight: Int
 @MainActor var authoredMoments: [HMTimelineEvent] { get }

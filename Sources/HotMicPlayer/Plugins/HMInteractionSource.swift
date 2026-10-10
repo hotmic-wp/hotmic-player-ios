@@ -171,7 +171,7 @@ public extension HMInteractionSource {
     /// Simulated round trip for every action.
     public var latency: Duration
     /// Creates the default demo provider.
-    public init(capabilities: HMEngagementCapabilities = .all, latency: Duration = .milliseconds(180)) {
+    public init(capabilities: HMEngagementCapabilities = [.all, .toggleReaction, .loadComments], latency: Duration = .milliseconds(180)) {
         self.capabilities = capabilities
         self.latency = latency
     }

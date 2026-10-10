@@ -179,7 +179,8 @@ struct EngagementTests {
         #expect(fromLegacy.capabilities == .readOnly && fromLegacy.polls.isEmpty)
         // The mock grants everything and its poll sits inside the clip.
         let mock = HMMockInteractionSource(latency: .zero)
-        #expect(mock.capabilities(for: item) == .all)
+        #expect(mock.capabilities(for: item) == [.all, .toggleReaction, .loadComments])
+        #expect(HMEngagementCapabilities.all.rawValue == 15)
         let mockPoll = try #require(mock.polls(for: HMMediaItem(id: "x", url: item.url!, durationHint: 10)).first)
         #expect(abs(mockPoll.opensAt - 2) < 1e-9 && abs((mockPoll.closesAt ?? 0) - 7) < 1e-9 && mockPoll.options.count >= 2)
     }
@@ -218,7 +219,7 @@ struct EngagementTests {
         source.beforeSet = {
             #expect(e.reactionSummary(for: "🔥") == .init(count: 11, reactedByViewer: true))
             #expect(e.isTogglingReaction("🔥") && e.holdsViewerState)
-            try await e.toggleReaction("🔥") // Must not start a second request.
+            try await e.setReaction("🔥", reacted: true) // Repeating desired membership needs no second request.
             if scenario == "push-failure" {
                 e.updateReactionSummary(.init(count: 20, reactedByViewer: false), for: "🔥")
                 #expect(e.reactionSummary(for: "🔥") == .init(count: 21, reactedByViewer: true))
@@ -242,8 +243,9 @@ struct EngagementTests {
     @Test("Item paging deduplicates, handles errors/refresh and tombstones without leaking future VOD chat")
     func itemCommentPages() async throws {
         let source = ItemSource()
-        let e = HMEngagement(item: item, timeline: FixedTimeline(duration: 30, events: [chat(1, "past"), chat(10, "future")]),
-                             source: source, mediaClock: { 3 })
+        let timeline = FixedTimeline(duration: 30, events: [chat(1, "past"), chat(10, "future")])
+        let e = HMEngagement(item: item, timeline: timeline, source: source, mediaClock: { 3 })
+        #expect(e.previewComment(near: 25)?.id == "future" && timeline.lastRange == 5...25)
         #expect(e.previewComment()?.id == "past" && e.comments().map(\.id) == ["past"])
         source.page = HMCommentPage(comments: [chat(25, "a"), chat(26, "b")], olderCursor: "older", totalCount: 5)
         source.beforePage = {
@@ -265,11 +267,78 @@ struct EngagementTests {
         source.beforePage = { throw URLError(.timedOut) }
         await #expect(throws: URLError.self) { try await e.loadComments(refresh: true) }
         #expect(e.comments().count == 4 && e.commentCount == 5 && !e.isLoadingComments)
-        source.beforePage = nil
+        source.beforePage = {
+            e.upsertComment(chat(3, "during-refresh"))
+            e.upsertComment(HMTimelineEvent(id: "b", offset: 26, kind: .chat, text: "Live edit"))
+        }
         source.page = HMCommentPage(comments: [chat(26, "b")], totalCount: nil)
         try await e.loadComments(refresh: true)
-        #expect(e.comments().map(\.id) == ["b"] && e.commentCount == nil && e.lastActionError == nil)
+        #expect(e.comments().map(\.id) == ["during-refresh", "b", "live"] && e.commentCount == 5 && e.lastActionError == nil)
+        #expect(e.comments().first { $0.id == "b" }?.text == "Live edit")
         #expect(e.messages(near: 3).map(\.id) == ["past"] && !e.holdsViewerState)
+    }
+
+    @Test("Rapid membership changes settle to latest intent; explicit add never unreacts",
+          arguments: ["unfire", "triple", "followup-error"])
+    func latestItemMembership(_ scenario: String) async throws {
+        let source = ItemSource()
+        let e = HMEngagement(item: item, timeline: source.timeline(for: item), source: source)
+        e.updateReactionSummary(.init(count: 10, reactedByViewer: false), for: "🔥")
+        source.beforeSet = {
+            if source.memberships.count == 1 {
+                try await e.toggleReaction("🔥")
+                #expect(e.reactionSummary(for: "🔥") == .init(count: 10, reactedByViewer: false))
+                if scenario == "triple" { try await e.toggleReaction("🔥") }
+            } else if scenario == "followup-error" { throw URLError(.timedOut) }
+        }
+        if scenario == "followup-error" {
+            await #expect(throws: URLError.self) { try await e.setReaction("🔥", reacted: true) }
+        } else { try await e.setReaction("🔥", reacted: true) }
+        #expect(source.memberships == (scenario == "triple" ? [true] : [true, false]))
+        #expect(e.reactionSummary(for: "🔥")?.reactedByViewer == (scenario != "unfire"))
+        #expect(!e.isTogglingReaction("🔥"))
+        source.beforeSet = nil
+        try await e.setReaction("🔥", reacted: true)
+        let requests = source.memberships.count
+        try await e.setReaction("🔥", reacted: true)
+        #expect(source.memberships.count == requests && e.reactionSummary(for: "🔥")?.reactedByViewer == true && e.lastActionError == nil)
+    }
+
+    @Test("Page and membership cancellation rolls back silently", arguments: ["task", "url"])
+    func cancelledItemActions(_ kind: String) async throws {
+        let source = ItemSource()
+        let e = HMEngagement(item: item, timeline: source.timeline(for: item), source: source)
+        e.updateReactionSummary(.init(count: 10, reactedByViewer: false), for: "🔥")
+        let cancel: () async throws -> Void = {
+            if kind == "task" { throw CancellationError() }
+            throw URLError(.cancelled)
+        }
+        source.beforeSet = cancel; source.beforePage = cancel
+        for action in ["page", "membership"] {
+            do {
+                if action == "page" { try await e.loadComments() }
+                else { try await e.toggleReaction("🔥") }
+                Issue.record("Cancellation should propagate")
+            } catch {
+                #expect(error is CancellationError || (error as? URLError)?.code == .cancelled)
+            }
+            #expect(e.lastActionError == nil && !e.isLoadingComments && !e.isTogglingReaction("🔥"))
+        }
+        #expect(e.reactionSummary(for: "🔥") == .init(count: 10, reactedByViewer: false) && !e.holdsViewerState)
+    }
+
+    @Test("Comment cache evicts oldest rows and purges tombstones before filling free space")
+    func boundedItemComments() {
+        let source = ItemSource()
+        let e = HMEngagement(item: item, timeline: source.timeline(for: item), source: source)
+        let cap = HMEngagement.maximumLoadedComments
+        for index in 0..<(cap + 5) { e.upsertComment(chat(Double(index), "row-\(index)")) }
+        #expect(e.comments().count == cap && e.comments().first?.id == "row-5")
+        for index in cap - 5..<cap + 5 { e.removeMessage(id: "row-\(index)") }
+        for index in 0..<10 { e.upsertComment(chat(Double(index), "replacement-\(index)")) }
+        #expect(e.comments().count == cap && e.comments().contains { $0.id == "replacement-0" })
+        e.upsertComment(chat(999, "row-\(cap)"))
+        #expect(e.comments().count == cap && !e.comments().contains { $0.id == "row-\(cap)" })
     }
 
     @Test("Item posting keeps row identity/counts through confirmation, failure and authoritative pushes",
@@ -304,8 +373,9 @@ struct EngagementTests {
     final class FixedTimeline: HMStreamTimeline {
         let duration: TimeInterval
         let fixed: [HMTimelineEvent]
+        var lastRange: ClosedRange<TimeInterval>?
         init(duration: TimeInterval, events: [HMTimelineEvent]) { self.duration = duration; fixed = events }
-        func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] { fixed.filter { range.contains($0.offset) } }
+        func events(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent] { lastRange = range; return fixed.filter { range.contains($0.offset) } }
         var density: [HMDensityBucket] { [] }
         var markers: [HMTimelineMarker] { [] }
     }

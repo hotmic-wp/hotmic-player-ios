@@ -53,6 +53,10 @@ import Observation
     private var pendingItemReactions: [String: Bool] = [:]
     private var hasToggledItemReaction = false
     private var itemComments: [String: HMTimelineEvent] = [:]
+    private var itemCommentVersions: [String: Int] = [:]
+    private var itemCommentRevision = 0
+    /// Maximum cached source comments per item. Oldest rows are evicted; viewer sends are retained separately.
+    public static let maximumLoadedComments = 512
     /// Whether the first item-comment page has loaded.
     public private(set) var hasLoadedComments = false
     /// Whether a page request is in flight. Concurrent requests are coalesced.
@@ -274,23 +278,39 @@ import Observation
         itemReactionValues[emoji] = summary; changed()
     }
 
-    /// Sets the opposite of current membership. Duplicate taps during the same emoji's request
-    /// are coalesced. Throws and rolls back on failure; no timed reaction event is created.
-    /// Load a summary first; unknown state reports unsupported rather than inventing a count.
+    /// Toggles the latest wanted membership, including an in-flight optimistic change.
+    /// Rapid taps update that intent; the active request sends a follow-up only if needed.
+    /// Throws and rolls back on failure. Cancellation is rethrown without a user-facing error.
     public func toggleReaction(_ emoji: String) async throws {
-        try require(.toggleReaction)
-        guard pendingItemReactions[emoji] == nil else { return }
         guard let current = reactionSummary(for: emoji) else { throw fail(HMInteractionError.unsupportedAction) }
-        let desired = !current.reactedByViewer
-        pendingItemReactions[emoji] = desired; changed()
+        try await setReaction(emoji, reacted: !current.reactedByViewer)
+    }
+
+    /// Sets desired membership, suitable for add-only video double taps (`reacted: true`).
+    /// An already satisfied state does not send a request. While a request runs, calls update
+    /// the latest wanted state and return immediately; the original caller drains any follow-up.
+    /// Failure rolls back to the latest server state. No timed reaction event is created.
+    public func setReaction(_ emoji: String, reacted: Bool) async throws {
+        try require(.toggleReaction)
+        guard let current = reactionSummary(for: emoji) else { throw fail(HMInteractionError.unsupportedAction) }
+        guard current.reactedByViewer != reacted else { succeeded(); return }
+        let inFlight = pendingItemReactions[emoji] != nil
+        pendingItemReactions[emoji] = reacted; changed()
+        guard !inFlight else { return }
+        defer { pendingItemReactions[emoji] = nil; changed() }
+        var target = reacted
         do {
-            let confirmed = try await performReturning { try await $0.setReaction(emoji, isReacted: desired, for: self.item) }
-            itemReactionValues[emoji] = confirmed
-            hasToggledItemReaction = true
-            pendingItemReactions[emoji] = nil
+            while true {
+                let confirmed = try await performReturning { try await $0.setReaction(emoji, isReacted: target, for: self.item) }
+                itemReactionValues[emoji] = confirmed
+                hasToggledItemReaction = true
+                guard let latest = pendingItemReactions[emoji], latest != target,
+                      latest != confirmed.reactedByViewer else { break }
+                target = latest
+            }
             succeeded()
         } catch {
-            pendingItemReactions[emoji] = nil; changed()
+            if isCancellation(error) { throw error }
             throw fail(error)
         }
     }
@@ -308,18 +328,30 @@ import Observation
     public func loadComments(refresh: Bool = false) async throws {
         try require(.loadComments)
         guard !isLoadingComments, refresh || !hasLoadedComments || olderCommentsCursor != nil else { return }
+        let loadVersion = itemCommentRevision
         isLoadingComments = true; changed()
         defer { isLoadingComments = false; changed() }
         do {
             let cursor = refresh ? nil : olderCommentsCursor
             let page = try await performReturning { try await $0.comments(for: self.item, before: cursor) }
-            if refresh { itemComments.removeAll() }
-            for event in page.comments { upsertComment(event) }
+            let valid = page.comments.filter { $0.kind == .chat && !moderation.removesEvent($0.id) }
+            let liveIDs = Set(itemCommentVersions.filter { $0.value > loadVersion }.keys)
+            if refresh {
+                let newest = valid.max(by: commentPrecedes)
+                itemComments = itemComments.filter { id, event in
+                    liveIDs.contains(id) || newest.map { commentPrecedes($0, event) } == true
+                }
+                itemCommentVersions = itemCommentVersions.filter { itemComments[$0.key] != nil }
+            }
+            for event in valid where !liveIDs.contains(event.id) { upsertComment(event) }
             olderCommentsCursor = page.olderCursor
             hasLoadedComments = true
-            updateCommentCount(page.totalCount)
+            if let count = page.totalCount { updateCommentCount(count) }
             succeeded()
-        } catch { throw fail(error) }
+        } catch {
+            if isCancellation(error) { throw error }
+            throw fail(error)
+        }
     }
 
     /// Inserts or updates an independent item comment by server ID, for example from a socket.
@@ -327,7 +359,13 @@ import Observation
     /// Deleted IDs and non-chat events are ignored. It does not mark the first page as loaded.
     public func upsertComment(_ event: HMTimelineEvent) {
         guard event.kind == .chat, !moderation.removesEvent(event.id) else { return }
-        itemComments[event.id] = event; changed()
+        itemComments[event.id] = event
+        itemCommentRevision += 1; itemCommentVersions[event.id] = itemCommentRevision
+        if itemComments.count > Self.maximumLoadedComments {
+            let oldest = itemComments.values.sorted(by: commentPrecedes).prefix(itemComments.count - Self.maximumLoadedComments)
+            for row in oldest { itemComments[row.id] = nil; itemCommentVersions[row.id] = nil }
+        }
+        changed()
     }
 
     /// Item comments, oldest first, including optimistic sends. Without item comments or a loaded page,
@@ -339,7 +377,7 @@ import Observation
             return messages(near: mediaTime ?? currentMediaTime, lookback: .greatestFiniteMagnitude, limit: Int.max)
         }
         var events = itemComments
-        for event in ownEvents where event.kind == .chat { events[event.id] = event }
+        for event in ownEvents where event.kind == .chat && events[event.id] == nil { events[event.id] = event }
         let rows = events.values.filter { !moderation.removesEvent($0.id) }.map(message(from:))
         return (rows + pendingMessages.filter { !moderation.removesEvent($0.id) }).sorted {
             let left = $0.wallTime ?? .distantPast, right = $1.wallTime ?? .distantPast
@@ -350,7 +388,9 @@ import Observation
     /// Latest comment by default, or a rotating selection among the latest three loaded/eligible
     /// comments. Hosts advance `rotation` on their own timer; the SDK owns no background timer.
     public func previewComment(near mediaTime: TimeInterval? = nil, rotation: Int = 0) -> HMChatMessage? {
-        let recent = Array(comments(near: mediaTime).suffix(3).reversed())
+        let rows = hasLoadedComments || !itemComments.isEmpty ? comments(near: mediaTime)
+            : messages(near: mediaTime ?? currentMediaTime, limit: 3)
+        let recent = Array(rows.suffix(3).reversed())
         guard !recent.isEmpty else { return nil }
         return recent[((rotation % recent.count) + recent.count) % recent.count]
     }
@@ -732,6 +772,15 @@ import Observation
         }
     }
 
+    private func commentPrecedes(_ left: HMTimelineEvent, _ right: HMTimelineEvent) -> Bool {
+        let lhs = left.wallTime ?? .distantPast, rhs = right.wallTime ?? .distantPast
+        return lhs == rhs ? (left.offset == right.offset ? left.id < right.id : left.offset < right.offset) : lhs < rhs
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
     private func require(_ capability: HMEngagementCapabilities) throws {
         guard supports(capability), source != nil else { throw fail(HMInteractionError.unsupportedAction) }
     }
@@ -776,6 +825,8 @@ import Observation
             pendingMessages.removeAll { moderation.removesEvent($0.id) }
             ownMessageIDs = ownMessageIDs.filter { !moderation.removesEvent($0) }
             receivedEvents = receivedEvents.filter { !moderation.removesEvent($0.key) }
+            itemComments = itemComments.filter { !moderation.removesEvent($0.key) }
+            itemCommentVersions = itemCommentVersions.filter { itemComments[$0.key] != nil }
             foldedIDs = foldedIDs.filter { !moderation.removesEvent($0) }
             moments.removeAll { moderation.removesEvent($0.id) }
             clientIDs = clientIDs.filter { !moderation.removesEvent($0.key) && !moderation.removesEvent($0.value) }

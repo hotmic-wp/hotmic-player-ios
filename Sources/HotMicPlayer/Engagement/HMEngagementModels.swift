@@ -39,10 +39,11 @@ public struct HMEngagementCapabilities: OptionSet, Sendable, Hashable {
     /// The source can load item comments independently of the media clock.
     public static let loadComments = HMEngagementCapabilities(rawValue: 1 << 5)
 
-    /// Every action.
+    /// Original chat, timed stream/message reactions and poll actions.
+    /// Item membership and comment paging must be added explicitly.
     ///
     /// Use from any task; mutate only an exclusively owned value.
-    public static let all: HMEngagementCapabilities = [.sendChat, .reactToStream, .reactToMessage, .vote, .toggleReaction, .loadComments]
+    public static let all: HMEngagementCapabilities = [.sendChat, .reactToStream, .reactToMessage, .vote]
     /// Display only; every action control is hidden.
     ///
     /// Use from any task; mutate only an exclusively owned value.

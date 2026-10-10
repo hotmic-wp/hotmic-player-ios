@@ -33,6 +33,15 @@ def main():
     (fixture / 'es.vtt').write_text(vtt.replace('HotMic caption', 'Subtítulo HotMic'))
     (fixture / 'subtitles.m3u8').write_text('#EXTM3U\n#EXT-X-TARGETDURATION:12\n#EXT-X-VERSION:3\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:12,\nen.vtt\n#EXT-X-ENDLIST\n')
     (fixture / 'master.m3u8').write_text('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subtitles.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=360x640,SUBTITLES="subs"\nvideo.m3u8\n')
+    (fixture / 'forced.vtt').write_text(vtt.replace('HotMic caption', 'Forced caption'))
+    (fixture / 'forced.m3u8').write_text((fixture / 'subtitles.m3u8').read_text().replace('en.vtt', 'forced.vtt'))
+    (fixture / 'selection-master.m3u8').write_text(
+        '#EXTM3U\n#EXT-X-VERSION:3\n'
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES\n'
+        '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Forced English",LANGUAGE="en",DEFAULT=NO,AUTOSELECT=YES,FORCED=YES,URI="forced.m3u8"\n'
+        '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="French",LANGUAGE="fr",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,URI="subtitles.m3u8"\n'
+        '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subtitles.m3u8"\n'
+        '#EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=360x640,AUDIO="audio",SUBTITLES="subs"\nvideo.m3u8\n')
     cells = []
     for fmt, media in [('mp4', 'clip.mp4'), ('hls', 'master.m3u8')]:
         items = []

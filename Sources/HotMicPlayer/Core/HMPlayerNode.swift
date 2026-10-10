@@ -97,7 +97,9 @@ final class HMPlayerNode: Identifiable {
     @ObservationIgnored private var startupWidth = 0.0
     @ObservationIgnored private var startupHeight = 0.0
     @ObservationIgnored private var startupBitrate = 0.0
-    @ObservationIgnored var configuration: HMPlayerConfiguration
+    @ObservationIgnored var configuration: HMPlayerConfiguration {
+        didSet { player.audiovisualBackgroundPlaybackPolicy = configuration.allowsBackgroundAudio ? .continuesIfPossible : .pauses }
+    }
 
     // Observation plumbing
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
@@ -124,6 +126,7 @@ final class HMPlayerNode: Identifiable {
         player.automaticallyWaitsToMinimizeStalling = true
         player.actionAtItemEnd = .none
         player.isMuted = configuration.startsMuted
+        player.audiovisualBackgroundPlaybackPolicy = configuration.allowsBackgroundAudio ? .continuesIfPossible : .pauses
         self.player = player
 
         let layer = AVPlayerLayer(player: player)

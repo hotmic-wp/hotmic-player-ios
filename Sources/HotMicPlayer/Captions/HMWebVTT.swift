@@ -12,18 +12,33 @@ enum HMWebVTT {
         let normalized = source.replacingOccurrences(of: "\u{feff}", with: "")
             .replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         guard normalized.hasPrefix("WEBVTT") else { return [] }
-        return normalized.components(separatedBy: "\n\n").compactMap { block in
-            let lines = block.components(separatedBy: "\n")
-            guard !["NOTE", "STYLE", "REGION"].contains(where: { block.hasPrefix($0) }),
+        return normalized.components(separatedBy: "\n").split(whereSeparator: { $0.trimmingCharacters(in: .whitespaces).isEmpty }).compactMap { block in
+            let lines = Array(block)
+            let first = lines[0]
+            guard !(first == "NOTE" || first.hasPrefix("NOTE ") || first.hasPrefix("NOTE\t") || first == "STYLE" || first == "REGION"),
                   let timing = lines.firstIndex(where: { $0.contains("-->") }) else { return nil }
             let times = lines[timing].components(separatedBy: "-->")
             guard times.count == 2, let start = timestamp(times[0]), let end = timestamp(times[1]), end > start else { return nil }
-            let text = lines.dropFirst(timing + 1).joined(separator: "\n")
+            let text = decode(lines.dropFirst(timing + 1).joined(separator: "\n")
                 .replacingOccurrences(of: "<[^>]*>", with: "", options: .regularExpression)
-                .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
-                .replacingOccurrences(of: "&nbsp;", with: " ").replacingOccurrences(of: "&amp;", with: "&")
+            )
             return text.isEmpty ? nil : HMCaptionCue(start: start, end: end, text: text)
         }.sorted { $0.start < $1.start }
+    }
+    private static func decode(_ source: String) -> String {
+        var text = source
+        let pattern = try! NSRegularExpression(pattern: "&#(x[0-9a-fA-F]+|[0-9]+);")
+        for match in pattern.matches(in: source, range: NSRange(source.startIndex..., in: source)).reversed() {
+            guard let tokenRange = Range(match.range(at: 1), in: source), let range = Range(match.range, in: text) else { continue }
+            let token = String(source[tokenRange])
+            let number = token.hasPrefix("x") ? UInt32(token.dropFirst(), radix: 16) : UInt32(token)
+            guard let number, number != 0, let scalar = UnicodeScalar(number) else { continue }
+            text.replaceSubrange(range, with: String(scalar))
+        }
+        for (entity, value) in [("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " "), ("&lrm;", "\u{200e}"), ("&rlm;", "\u{200f}"), ("&quot;", "\""), ("&amp;", "&")] {
+            text = text.replacingOccurrences(of: entity, with: value)
+        }
+        return text
     }
     private static func timestamp(_ value: String) -> TimeInterval? {
         guard let token = value.split(whereSeparator: { $0.isWhitespace }).first else { return nil }

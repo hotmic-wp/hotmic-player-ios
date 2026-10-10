@@ -55,6 +55,16 @@ import UIKit
     private func updateCaptions() {
         for node in pool.nodes { node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage) }
         emit(.captionsChanged(enabled: captionsEnabled, language: selectedCaptionLanguage))
+        prefetchCaptions()
+    }
+    private func prefetchCaptions() {
+        guard isFeedVisible, captionsEnabled else { return }
+        for item in items.dropFirst(activeIndex).prefix(2) {
+            if let language = HMCaptionController.matchLanguage(in: item.captionSources.keys.sorted(), preferences: HMCaptionController.preferences(selectedCaptionLanguage)),
+               let url = item.captionSources[language] {
+                Task { _ = await HMCaptionCache.shared.cues(for: url, prefetch: true) }
+            }
+        }
     }
     #if os(iOS)
     @ObservationIgnored private var audioObserver: HMAudioObserver?
@@ -65,9 +75,6 @@ import UIKit
     private var resumeAfterInterruption = false
     private var resumeAfterBackground = false
     private var audioBlocked: Bool { audioInterrupted || (appBackgrounded && !configuration.allowsBackgroundAudio) }
-    private var wasPlaying: Bool {
-        wantsPlayback && ((currentNode?.player.rate ?? 0) > 0 || (adNode?.player.rate ?? 0) > 0 || snapshot.state == .playing || adState.isActive && hostAdContext?.isPlaybackAllowed == true)
-    }
     func handleAudioNotification(_ note: Notification) {
         guard !ended else { return }
         switch note.name {
@@ -75,7 +82,10 @@ import UIKit
             guard let raw = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             if type == .began {
-                if !audioInterrupted { resumeAfterInterruption = wasPlaying || resumeAfterBackground }
+                let reason = (note.userInfo?[AVAudioSessionInterruptionReasonKey] as? NSNumber)?.uintValue
+                let suspended = (note.userInfo?[AVAudioSessionInterruptionWasSuspendedKey] as? NSNumber)?.boolValue == true
+                guard reason != AVAudioSession.InterruptionReason.appWasSuspended.rawValue, !suspended else { return }
+                if !audioInterrupted { resumeAfterInterruption = wantsPlayback }
                 audioInterrupted = true; pauseAll(); updateHostPlaybackPermission()
                 emit(.audioSession(.interruptionBegan))
             } else {
@@ -86,7 +96,7 @@ import UIKit
                 }
                 let eligible = resumeAfterInterruption && shouldResume && wantsPlayback
                 audioInterrupted = false; resumeAfterInterruption = false
-                if !eligible { wantsPlayback = false; resumeAfterBackground = false }
+                if !shouldResume { wantsPlayback = false; resumeAfterBackground = false }
                 let resumed = eligible && isFeedVisible && !audioBlocked
                 if resumed { activateAudioIfManaged(); resumeActive() }
                 updateHostPlaybackPermission()
@@ -98,26 +108,25 @@ import UIKit
             emit(.audioSession(.routeChanged(reason: raw)))
         case UIApplication.didEnterBackgroundNotification:
             guard !appBackgrounded else { return }
-            resumeAfterBackground = wasPlaying || resumeAfterInterruption
+            resumeAfterBackground = wantsPlayback
             appBackgrounded = true
             if !configuration.allowsBackgroundAudio { pauseAll() }
             updateHostPlaybackPermission(); emit(.audioSession(.enteredBackground))
         case UIApplication.didBecomeActiveNotification:
-            guard appBackgrounded else { return }
-            appBackgrounded = false
-            let eligible = resumeAfterBackground && wantsPlayback
-            resumeAfterBackground = false
-            if !eligible && !configuration.allowsBackgroundAudio { wantsPlayback = false }
+            let eligible = wantsPlayback && (resumeAfterBackground || audioInterrupted || !appBackgrounded)
+            appBackgrounded = false; audioInterrupted = false
+            resumeAfterBackground = false; resumeAfterInterruption = false
             let resumed = eligible && isFeedVisible && !audioBlocked
             if resumed { activateAudioIfManaged(); resumeActive(); refreshWindow() }
             updateHostPlaybackPermission(); emit(.audioSession(.enteredForeground(resumed: resumed)))
         case AVAudioSession.mediaServicesWereResetNotification:
-            let resume = wasPlaying
+            let resume = wantsPlayback
             pauseAll()
             // Rebuild AVPlayerItems, preserving the current playhead and preferences.
             if let item = currentItem { resumePositions[identity(item)] = snapshot.currentTime }
             let position = snapshot.currentTime
             if adState.isActive { endAd(.failed, resume: false) }
+            for node in pool.nodes { analytics.detach(playerKey: node.id) }
             pool.rebuild()
             activateAudioIfManaged()
             if !resume { wantsPlayback = false }
@@ -381,7 +390,8 @@ import UIKit
         resolutions.configure(signingParameters: configuration.volatileSigningQueryParameters)
         pool.onEvent = { [weak self] event, item in self?.handle(event, item: item) }
         pool.willRecycle = { [weak self] node, item in self?.analytics.videoChange(playerKey: node.id, item: item) }
-        for node in pool.nodes { node.onBufferChanged = { [weak self] in self?.updatePrefetch() } }
+        pool.didCreate = { [weak self] node in self?.wire(node) }
+        for node in pool.nodes { wire(node) }
         captionObserver = HMCaptionSettingsObserver { [weak self] in
             guard let self else { return }
             self.systemCaptionsEnabled = MACaptionAppearanceGetDisplayType(.user) == .alwaysOn
@@ -393,6 +403,15 @@ import UIKit
         #endif
         connectivityMonitor = HMConnectivityMonitor { [weak self] satisfied in
             Task { @MainActor [weak self] in self?.connectivityChanged(satisfied: satisfied) }
+        }
+    }
+
+    private func wire(_ node: HMPlayerNode) {
+        node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
+        node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage)
+        node.captions.onLanguagesChanged = { [weak self, weak node] in
+            guard let self, let node, node.item?.id == self.currentItem?.id else { return }
+            self.emit(.captionsChanged(enabled: self.captionsEnabled, language: self.selectedCaptionLanguage))
         }
     }
 
@@ -497,7 +516,12 @@ import UIKit
     /// Begins playback, or resumes the current item without resetting its position.
     ///
     /// Access on the main actor.
-    public func play() { wantsPlayback = true; activateAudioIfManaged(); updateHostPlaybackPermission(); resumeActive(); refreshWindow() }
+    public func play() {
+        #if os(iOS)
+        audioInterrupted = false; resumeAfterInterruption = false
+        #endif
+        wantsPlayback = true; activateAudioIfManaged(); updateHostPlaybackPermission(); resumeActive(); refreshWindow()
+    }
     /// Pauses playback without changing the playlist or current position.
     ///
     /// Access on the main actor.
@@ -602,6 +626,9 @@ import UIKit
     @_spi(Benchmark) public func requestPlay(at index: Int, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) async {
         guard items.indices.contains(index) else { return }
         let selected = items[index]
+        #if os(iOS)
+        audioInterrupted = false; resumeAfterInterruption = false
+        #endif
         activateAudioIfManaged()
         await prepareTransport()
         guard let index = items.firstIndex(of: selected), !ended else { return }
@@ -736,13 +763,7 @@ import UIKit
     private func refreshWindow() {
         guard !ended else { return }
         // Fetch the next sidecar alongside the protected media head, including one-player configurations.
-        if isFeedVisible {
-            for item in items.dropFirst(activeIndex).prefix(2) {
-                for url in item.captionSources.values.prefix(8) {
-                    Task { _ = await HMCaptionCache.shared.cues(for: url) }
-                }
-            }
-        }
+        prefetchCaptions()
         consultAdIfNeeded()
         if let currentItem, resolutions.cached(currentItem) == nil {
             pendingSnapshot.readinessTier = .resolving

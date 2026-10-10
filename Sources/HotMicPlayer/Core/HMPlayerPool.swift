@@ -16,6 +16,7 @@ final class HMPlayerPool {
     private var assignments: [String: HMPlayerNode] = [:]  // itemID -> node
     @ObservationIgnored var configuration: HMPlayerConfiguration
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
+    @ObservationIgnored var didCreate: ((HMPlayerNode) -> Void)?
     /// Called when a node is about to be reassigned, so analytics can detach.
     @ObservationIgnored var willRecycle: ((HMPlayerNode, HMMediaItem) -> Void)?
 
@@ -34,6 +35,7 @@ final class HMPlayerPool {
                 let node = HMPlayerNode(id: "hm-player-\(index)", configuration: configuration)
                 node.onEvent = { [weak self] event, item in self?.onEvent?(event, item) }
                 nodes.append(node)
+                didCreate?(node)
             }
         } else if nodes.count > target {
             for node in nodes[target...] {

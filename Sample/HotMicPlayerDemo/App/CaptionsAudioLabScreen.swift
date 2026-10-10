@@ -63,7 +63,7 @@ struct CaptionsAudioLabScreen: View {
             let events = player.events
             player.replaceAll([
                 HMMediaItem(id: "caption-mp4", url: origin.appendingPathComponent("fixture/clip.mp4"), title: "MP4 · sidecar WebVTT", captionSources: ["en": sidecar, "es": origin.appendingPathComponent("fixture/es.vtt")]),
-                HMMediaItem(id: "caption-hls", url: origin.appendingPathComponent("fixture/master.m3u8"), title: "HLS · AVMediaSelection subtitles")
+                HMMediaItem(id: "caption-hls", url: origin.appendingPathComponent(options.values["selection-fixture"] == "1" ? "fixture/selection-master.m3u8" : "fixture/master.m3u8"), title: "HLS · AVMediaSelection subtitles")
             ])
             await player.start()
             await diagnostics(events)
@@ -112,6 +112,9 @@ struct CaptionsAudioLabScreen: View {
                 case "previous": player.previous()
                 case "pause": player.pause()
                 case "play": player.play()
+                case "language-missing": player.selectCaption("zz")
+                case "began-suspended": post(AVAudioSession.interruptionNotification, [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue, AVAudioSessionInterruptionReasonKey: AVAudioSession.InterruptionReason.appWasSuspended.rawValue])
+                case "began-was-suspended": post(AVAudioSession.interruptionNotification, [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue, AVAudioSessionInterruptionWasSuspendedKey: true])
                 case "began": post(AVAudioSession.interruptionNotification, [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
                 case "ended", "ended-no-resume": post(AVAudioSession.interruptionNotification, [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue, AVAudioSessionInterruptionOptionKey: command.hasPrefix("ended-no-resume") ? 0 : AVAudioSession.InterruptionOptions.shouldResume.rawValue])
                 case "route": post(AVAudioSession.routeChangeNotification, [AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue])

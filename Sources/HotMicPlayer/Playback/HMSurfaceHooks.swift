@@ -25,6 +25,9 @@ struct HMSurfaceHooks {
 enum HMVideoAccessibility {
     static func text(_ key: String) -> String { NSLocalizedString(key, bundle: .module, comment: "Video accessibility") }
     static func value(_ state: HMPlaybackState) -> String { text(state.rawValue.capitalized) }
+    static func position(_ current: TimeInterval, duration: TimeInterval) -> String {
+        String.localizedStringWithFormat(text("%1$lld of %2$lld seconds"), Int64(max(0, current.isFinite ? current : 0)), Int64(max(0, duration.isFinite ? duration : 0)))
+    }
 }
 private struct HMSurfaceHooksKey: EnvironmentKey { static let defaultValue = HMSurfaceHooks() }
 private struct HMHitSpaceKey: EnvironmentKey { static let defaultValue: UUID? = nil }
@@ -137,7 +140,7 @@ struct HMVideoGestureSurface: UIViewRepresentable {
         }
         view.isAccessibilityElement = false
         view.videoElement.accessibilityLabel = title ?? hooks.accessibilityLabel
-        view.videoElement.accessibilityValue = "\(HMVideoAccessibility.value(state)), \(Int(max(0, snapshot.currentTime))) of \(Int(max(0, snapshot.duration))) seconds, \(HMVideoAccessibility.text(muted ? "Muted" : "Audio on")), \(HMVideoAccessibility.text(captions ? "Captions on" : "Captions off"))"
+        view.videoElement.accessibilityValue = "\(HMVideoAccessibility.value(state)), \(HMVideoAccessibility.position(snapshot.currentTime, duration: snapshot.duration)), \(HMVideoAccessibility.text(muted ? "Muted" : "Audio on")), \(HMVideoAccessibility.text(captions ? "Captions on" : "Captions off"))"
         view.videoElement.accessibilityTraits = [.button, .startsMediaSession]
         view.mute = toggleMute; view.caption = toggleCaptions
         view.progressElement.position = snapshot.currentTime
@@ -145,7 +148,7 @@ struct HMVideoGestureSurface: UIViewRepresentable {
         view.progressElement.duration = snapshot.seekableDuration
         view.progressElement.seek = seek
         view.progressElement.accessibilityLabel = HMVideoAccessibility.text("Playback position")
-        view.progressElement.accessibilityValue = "\(Int(max(0, snapshot.currentTime))) of \(Int(max(0, snapshot.duration))) seconds"
+        view.progressElement.accessibilityValue = "\(HMVideoAccessibility.position(snapshot.currentTime, duration: snapshot.duration))"
         view.updateActions(wantsPlayback: wantsPlayback, muted: muted, captions: captions, hasCaptions: hasCaptions)
         view.accessibilityElements = view.enabled ? (snapshot.seekableDuration > 0 ? [view.videoElement, view.progressElement] : [view.videoElement]) : []
         // With no Fire callback there is no reason to wait for a second tap.

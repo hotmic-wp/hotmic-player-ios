@@ -145,6 +145,8 @@ struct EngagementTests {
         await #expect(throws: HMInteractionError.unsupportedAction) { try await readOnly.vote(pollID: "p", optionID: "a") }
         #expect(readOnly.lastReactionEcho == nil && readOnly.messages(near: 2).map(\.id) == ["c1"])
         #expect(readOnly.polls.first?.viewerVote == nil && readOnly.lastActionError != nil)
+        await #expect(throws: HMInteractionError.unsupportedAction) { try await readOnly.toggleReaction("🔥") }
+        await #expect(throws: HMInteractionError.unsupportedAction) { try await readOnly.loadComments() }
 
         // Partial support: chat only.
         let chatOnly = Source([.sendChat])
@@ -171,7 +173,8 @@ struct EngagementTests {
 
         // A 0.3 source that implements only `timeline(for:)` compiles and is read-only with no polls.
         let legacy = LegacySource()
-        #expect(legacy.capabilities(for: item) == .readOnly && legacy.polls(for: item).isEmpty)
+        await #expect(throws: HMInteractionError.unsupportedAction) { try await legacy.setReaction("🔥", isReacted: true, for: item) }
+        await #expect(throws: HMInteractionError.unsupportedAction) { try await legacy.comments(for: item, before: nil) }
         let fromLegacy = HMEngagement(item: item, timeline: legacy.timeline(for: item), source: legacy)
         #expect(fromLegacy.capabilities == .readOnly && fromLegacy.polls.isEmpty)
         // The mock grants everything and its poll sits inside the clip.
@@ -179,6 +182,122 @@ struct EngagementTests {
         #expect(mock.capabilities(for: item) == .all)
         let mockPoll = try #require(mock.polls(for: HMMediaItem(id: "x", url: item.url!, durationHint: 10)).first)
         #expect(abs(mockPoll.opensAt - 2) < 1e-9 && abs((mockPoll.closesAt ?? 0) - 7) < 1e-9 && mockPoll.options.count >= 2)
+    }
+
+    final class ItemSource: HMInteractionSource {
+        var beforeSet: (() async throws -> Void)?
+        var beforePage: (() async throws -> Void)?
+        var beforeSend: ((HMChatMessage) async throws -> Void)?
+        var memberships: [Bool] = []
+        var cursors: [String?] = []
+        var page = HMCommentPage(comments: [])
+        func timeline(for item: HMMediaItem) -> HMStreamTimeline { FixedTimeline(duration: 30, events: []) }
+        func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities { [.toggleReaction, .loadComments, .sendChat] }
+        func setReaction(_ emoji: String, isReacted: Bool, for item: HMMediaItem) async throws -> HMItemReactionSummary {
+            memberships.append(isReacted)
+            try await beforeSet?()
+            return HMItemReactionSummary(count: isReacted ? 11 : 10, reactedByViewer: isReacted)
+        }
+        func comments(for item: HMMediaItem, before cursor: String?) async throws -> HMCommentPage {
+            cursors.append(cursor); try await beforePage?(); return page
+        }
+        func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent? {
+            try await beforeSend?(message)
+            return HMTimelineEvent(id: "server-" + message.id, offset: message.offset, kind: .chat, text: message.text)
+        }
+    }
+
+    @Test("Item membership coalesces taps, overlays server pushes, rolls back and stays separate from replay",
+          arguments: ["success", "failure", "push-failure"])
+    func itemMembership(_ scenario: String) async throws {
+        let source = ItemSource()
+        let e = HMEngagement(item: item, timeline: source.timeline(for: item), source: source)
+        #expect(e.reactionSummary(for: "🔥") == nil)
+        await #expect(throws: HMInteractionError.unsupportedAction) { try await e.toggleReaction("🔥") }
+        e.updateReactionSummary(.init(count: 10, reactedByViewer: false), for: "🔥")
+        source.beforeSet = {
+            #expect(e.reactionSummary(for: "🔥") == .init(count: 11, reactedByViewer: true))
+            #expect(e.isTogglingReaction("🔥") && e.holdsViewerState)
+            try await e.toggleReaction("🔥") // Must not start a second request.
+            if scenario == "push-failure" {
+                e.updateReactionSummary(.init(count: 20, reactedByViewer: false), for: "🔥")
+                #expect(e.reactionSummary(for: "🔥") == .init(count: 21, reactedByViewer: true))
+            }
+            if scenario != "success" { throw URLError(.timedOut) }
+        }
+        if scenario == "success" {
+            try await e.toggleReaction("🔥")
+            #expect(e.reactionSummary(for: "🔥") == .init(count: 11, reactedByViewer: true))
+            source.beforeSet = nil
+            try await e.toggleReaction("🔥")
+            #expect(source.memberships == [true, false] && e.holdsViewerState)
+        } else {
+            await #expect(throws: URLError.self) { try await e.toggleReaction("🔥") }
+            #expect(e.reactionSummary(for: "🔥") == .init(count: scenario == "failure" ? 10 : 20, reactedByViewer: false))
+            #expect(source.memberships == [true] && !e.holdsViewerState && e.lastActionError != nil)
+        }
+        #expect(!e.isTogglingReaction("🔥") && e.reactionTotals.isEmpty && e.reactions(in: 0...30).isEmpty)
+    }
+
+    @Test("Item paging deduplicates, handles errors/refresh and tombstones without leaking future VOD chat")
+    func itemCommentPages() async throws {
+        let source = ItemSource()
+        let e = HMEngagement(item: item, timeline: FixedTimeline(duration: 30, events: [chat(1, "past"), chat(10, "future")]),
+                             source: source, mediaClock: { 3 })
+        #expect(e.previewComment()?.id == "past" && e.comments().map(\.id) == ["past"])
+        source.page = HMCommentPage(comments: [chat(25, "a"), chat(26, "b")], olderCursor: "older", totalCount: 5)
+        source.beforePage = {
+            #expect(e.isLoadingComments)
+            try await e.loadComments() // Coalesced without a second request.
+        }
+        try await e.loadComments()
+        #expect(e.commentCount == 5 && e.comments().map(\.id) == ["a", "b"])
+        #expect(e.messages(near: 3).map(\.id) == ["past"])
+        #expect(e.previewComment()?.id == "b" && e.previewComment(rotation: 1)?.id == "a")
+        e.removeMessage(id: "deleted")
+        source.page = HMCommentPage(comments: [chat(0, "older"), chat(25, "a"), chat(1, "deleted")], totalCount: 5)
+        try await e.loadComments()
+        #expect(source.cursors == [nil, "older"] && e.olderCommentsCursor == nil)
+        #expect(e.comments().map(\.id) == ["older", "a", "b"])
+        try await e.loadComments(); #expect(source.cursors.count == 2)
+        e.upsertComment(chat(27, "live")); e.upsertComment(chat(2, "deleted"))
+        #expect(e.previewComment()?.id == "live")
+        source.beforePage = { throw URLError(.timedOut) }
+        await #expect(throws: URLError.self) { try await e.loadComments(refresh: true) }
+        #expect(e.comments().count == 4 && e.commentCount == 5 && !e.isLoadingComments)
+        source.beforePage = nil
+        source.page = HMCommentPage(comments: [chat(26, "b")], totalCount: nil)
+        try await e.loadComments(refresh: true)
+        #expect(e.comments().map(\.id) == ["b"] && e.commentCount == nil && e.lastActionError == nil)
+        #expect(e.messages(near: 3).map(\.id) == ["past"] && !e.holdsViewerState)
+    }
+
+    @Test("Item posting keeps row identity/counts through confirmation, failure and authoritative pushes",
+          arguments: ["success", "failure", "push-failure", "saturated"])
+    func itemCommentPosting(_ scenario: String) async throws {
+        let source = ItemSource()
+        let e = HMEngagement(item: item, timeline: source.timeline(for: item), source: source)
+        try await e.loadComments()
+        e.updateCommentCount(scenario == "saturated" ? Int.max : 5)
+        var rowID: String?
+        source.beforeSend = { message in
+            rowID = e.comments().last?.rowID
+            #expect(rowID == message.id && e.comments().last?.delivery == .sending)
+            #expect(e.commentCount == (scenario == "saturated" ? Int.max : 6))
+            if scenario == "push-failure" { e.updateCommentCount(20) }
+            if scenario.contains("failure") { throw URLError(.timedOut) }
+        }
+        if scenario.contains("failure") {
+            await #expect(throws: URLError.self) { try await e.sendChat("Hello") }
+            #expect(e.comments().isEmpty && e.commentCount == (scenario == "failure" ? 5 : 20))
+        } else {
+            try await e.sendChat("Hello")
+            let row = try #require(e.comments().first)
+            #expect(row.rowID == rowID && row.id != rowID && row.delivery == .sent)
+            #expect(e.commentCount == (scenario == "saturated" ? Int.max : 6))
+            e.upsertComment(HMTimelineEvent(id: row.id, offset: 0, kind: .chat, text: "Hello"))
+            #expect(e.comments().count == 1)
+        }
     }
 
     /// A partner timeline that keeps the protocol's default, ignoring `append`.

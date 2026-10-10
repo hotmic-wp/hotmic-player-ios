@@ -34,10 +34,15 @@ public struct HMEngagementCapabilities: OptionSet, Sendable, Hashable {
     /// Use from any task; mutate only an exclusively owned value.
     public static let vote = HMEngagementCapabilities(rawValue: 1 << 3)
 
+    /// The viewer can toggle membership in an item's reaction count.
+    public static let toggleReaction = HMEngagementCapabilities(rawValue: 1 << 4)
+    /// The source can load item comments independently of the media clock.
+    public static let loadComments = HMEngagementCapabilities(rawValue: 1 << 5)
+
     /// Every action.
     ///
     /// Use from any task; mutate only an exclusively owned value.
-    public static let all: HMEngagementCapabilities = [.sendChat, .reactToStream, .reactToMessage, .vote]
+    public static let all: HMEngagementCapabilities = [.sendChat, .reactToStream, .reactToMessage, .vote, .toggleReaction, .loadComments]
     /// Display only; every action control is hidden.
     ///
     /// Use from any task; mutate only an exclusively owned value.
@@ -308,5 +313,31 @@ public enum HMEngagementError: Error, Sendable, Equatable, LocalizedError {
         case .alreadyVoted: "You already voted."
         case .unknownMessage: "That message isn't available."
         }
+    }
+}
+
+/// An item's reaction count including the viewer, independent of timed reaction volume.
+public struct HMItemReactionSummary: Sendable, Equatable {
+    /// Total memberships, including the viewer. Negative input is clamped to zero.
+    public let count: Int
+    /// Whether the signed-in viewer belongs to this count.
+    public let reactedByViewer: Bool
+    /// Creates authoritative item reaction state.
+    public init(count: Int, reactedByViewer: Bool) {
+        self.count = max(0, count); self.reactedByViewer = reactedByViewer
+    }
+}
+
+/// One page of item comments, separate from media-clock replay events.
+public struct HMCommentPage: Sendable, Equatable {
+    /// Chat events with stable server IDs. Non-chat events are ignored by engagement.
+    public let comments: [HMTimelineEvent]
+    /// Opaque cursor for older comments; nil means there are no more pages.
+    public let olderCursor: String?
+    /// Authoritative item comment count, or nil when the backend does not provide it.
+    public let totalCount: Int?
+    /// Creates a page. Comments may overlap previous pages; IDs are deduplicated.
+    public init(comments: [HMTimelineEvent], olderCursor: String? = nil, totalCount: Int? = nil) {
+        self.comments = comments; self.olderCursor = olderCursor; self.totalCount = totalCount.map { max(0, $0) }
     }
 }

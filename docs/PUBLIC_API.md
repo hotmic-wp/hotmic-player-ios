@@ -159,6 +159,16 @@ case sent
 enum Delivery
 ```
 
+## HMCommentPage
+
+```swift
+init(comments: [HMTimelineEvent], olderCursor: String? = nil, totalCount: Int? = nil)
+let comments: [HMTimelineEvent]
+let olderCursor: String?
+let totalCount: Int?
+struct HMCommentPage
+```
+
 ## HMConsoleSink
 
 ```swift
@@ -208,11 +218,16 @@ var id: Int { get }
 ```swift
 @MainActor convenience init(item: HMMediaItem, timeline: any HMStreamTimeline, source: (any HMInteractionSource)?, capabilities: HMEngagementCapabilities? = nil, polls: [HMPoll]? = nil, mediaClock: @escaping @MainActor () -> TimeInterval = { 0 })
 @MainActor final class HMEngagement
+@MainActor func comments(near mediaTime: TimeInterval? = nil) -> [HMChatMessage]
 @MainActor func intensity(at mediaTime: TimeInterval) -> Double
+@MainActor func isTogglingReaction(_ emoji: String) -> Bool
+@MainActor func loadComments(refresh: Bool = false) async throws
 @MainActor func messages(near mediaTime: TimeInterval, lookback: TimeInterval = 20, limit: Int = 6) -> [HMChatMessage]
 @MainActor func polls(at mediaTime: TimeInterval, resultsLinger: TimeInterval = 6) -> [HMPoll]
+@MainActor func previewComment(near mediaTime: TimeInterval? = nil, rotation: Int = 0) -> HMChatMessage?
 @MainActor func react(_ emoji: String, at mediaTime: TimeInterval? = nil) async throws
 @MainActor func react(_ emoji: String, toMessage messageID: String) async throws
+@MainActor func reactionSummary(for emoji: String) -> HMItemReactionSummary?
 @MainActor func reactions(in range: ClosedRange<TimeInterval>) -> [HMTimelineEvent]
 @MainActor func receive(_ event: HMTimelineEvent)
 @MainActor func removeMessage(id: String)
@@ -222,8 +237,12 @@ var id: Int { get }
 @MainActor func sendChat(_ text: String, at mediaTime: TimeInterval? = nil) async throws
 @MainActor func supports(_ capability: HMEngagementCapabilities) -> Bool
 @MainActor func timelineOffset(forMediaTime time: TimeInterval) -> TimeInterval
+@MainActor func toggleReaction(_ emoji: String) async throws
 @MainActor func update(_ poll: HMPoll)
+@MainActor func updateCommentCount(_ count: Int?)
+@MainActor func updateReactionSummary(_ summary: HMItemReactionSummary, for emoji: String)
 @MainActor func updateReactions(_ counts: [String : Int], forMessage messageID: String)
+@MainActor func upsertComment(_ event: HMTimelineEvent)
 @MainActor func upsertPoll(_ poll: HMPoll)
 @MainActor func vote(pollID: String, optionID: String) async throws
 @MainActor let capabilities: HMEngagementCapabilities
@@ -231,13 +250,17 @@ var id: Int { get }
 @MainActor static let maximumMessageLength: Int
 @MainActor static let viewerReactionWeight: Int
 @MainActor var authoredMoments: [HMTimelineEvent] { get }
+@MainActor var commentCount: Int? { get }
 @MainActor var currentMediaTime: TimeInterval { get }
 @MainActor var density: [HMDensityBucket] { get }
 @MainActor var duration: TimeInterval { get }
+@MainActor var hasLoadedComments: Bool { get set }
+@MainActor var isLoadingComments: Bool { get set }
 @MainActor var item: HMMediaItem { get set }
 @MainActor var lastActionError: String? { get set }
 @MainActor var lastReactionEcho: HMReactionEcho? { get set }
 @MainActor var markers: [HMTimelineMarker] { get }
+@MainActor var olderCommentsCursor: String? { get set }
 @MainActor var polls: [HMPoll] { get }
 @MainActor var reactionTotals: [String : Int] { get }
 @MainActor var revision: Int { get }
@@ -249,10 +272,12 @@ var id: Int { get }
 init(rawValue: Int)
 let rawValue: Int
 static let all: HMEngagementCapabilities
+static let loadComments: HMEngagementCapabilities
 static let reactToMessage: HMEngagementCapabilities
 static let reactToStream: HMEngagementCapabilities
 static let readOnly: HMEngagementCapabilities
 static let sendChat: HMEngagementCapabilities
+static let toggleReaction: HMEngagementCapabilities
 static let vote: HMEngagementCapabilities
 struct HMEngagementCapabilities
 ```
@@ -320,6 +345,7 @@ var errorDescription: String? { get }
 
 ```swift
 @MainActor func capabilities(for item: HMMediaItem) -> HMEngagementCapabilities
+@MainActor func comments(for item: HMMediaItem, before cursor: String?) async throws -> HMCommentPage
 @MainActor func didBecomeCurrent(_ item: HMMediaItem)
 @MainActor func didLeave(_ item: HMMediaItem)
 @MainActor func engagementDidLoad(_ engagement: HMEngagement)
@@ -329,10 +355,20 @@ var errorDescription: String? { get }
 @MainActor func react(_ reaction: HMTimelineEvent, for item: HMMediaItem) async throws -> HMTimelineEvent?
 @MainActor func sendChat(_ message: HMChatMessage, for item: HMMediaItem) async throws -> HMTimelineEvent?
 @MainActor func sendChat(_ text: String, for item: HMMediaItem) async throws
+@MainActor func setReaction(_ emoji: String, isReacted: Bool, for item: HMMediaItem) async throws -> HMItemReactionSummary
 @MainActor func timeline(for item: HMMediaItem) -> any HMStreamTimeline
 @MainActor func vote(pollID: String, optionID: String, for item: HMMediaItem) async throws
 @MainActor func willBecomeNext(_ item: HMMediaItem)
 @MainActor protocol HMInteractionSource : AnyObject
+```
+
+## HMItemReactionSummary
+
+```swift
+init(count: Int, reactedByViewer: Bool)
+let count: Int
+let reactedByViewer: Bool
+struct HMItemReactionSummary
 ```
 
 ## HMItemResolver

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add optional `HMSocialPlayerView`, `HMSocialOverlay` and a UIKit host for themeable social playback on public hooks, with standalone metadata, preview, Fire burst, progress, pause and comment-sheet components. Extend the existing action rail without changing its original initializer.
+- Add backend-independent social data/actions, an `HMEngagement` adapter, native sharing helper, interactive squeezeback, ad suppression, caption/mute controls, safe sidecar placement and host replacement sheets. Extend `HMTheme` with custom images, rail spacing and motion timing.
+- Add a generic Partner demo with offline mixed-orientation media, fake engagement, persistent navigation and kit/custom UI switching, plus a ready-made overlay DocC guide and opt-in benchmark overlay cells.
+
 - Preserve `.all` as the original chat, timed reaction and poll capability mask; opt into `.toggleReaction` and `.loadComments` explicitly. Add `HMEngagement.setReaction(_:reacted:)` for add-only double taps and retain the latest rapid-tap intent with serialized follow-up requests.
 - Treat cancelled engagement loads/reactions silently, preserve known counts when pages omit totals, and bound cached source comments to 512 while retaining live refresh updates. Reset social preview selection on item changes, retain drafts edited during posting, and reject stale example paging cursors.
 

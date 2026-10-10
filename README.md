@@ -132,3 +132,9 @@ From 1.0, public non-SPI API follows semantic versioning: patches fix behavior, 
 Report SDK problems through [repository issues](https://github.com/hotmic-wp/hotmic-player-ios/issues) or your HotMic partner contact. Include SDK/Xcode/iOS versions, a minimal reproduction, expected behavior, and relevant events. Use the Connect package's support channel for adapter-specific issues. Remove credentials and private media URLs from shared reports.
 
 For a host-built social UI, see [Building your own overlay](Sources/HotMicPlayer/HotMicPlayer.docc/BuildingYourOwnOverlay.md): nav insets, interactive squeezeback, gesture exclusions, reserved regions, accessibility and counts. The Sample’s **Social layout** screen uses public SDK API.
+
+## Ready-made social overlay
+
+Add the optional **HotMicPlayerUI** product for `HMSocialPlayerView` (SwiftUI) or `HMSocialPlayerViewController` (UIKit). Supply an observable `HMSocialDataSource` directly from your backend, or adapt `HMEngagement` with `HMEngagementSocialAdapter`. The themeable kit includes metadata/hashtags, ephemeral comment previews, one shared Fire animation, Fire/Comment/Share rail, progress, optional mute and scrubbing, captions and an interactive squeezed comment sheet. Hosts supply persistent navigation, sharing and optional sidecar/replacement sheet content.
+
+See [Ready-made social overlay](Sources/HotMicPlayerUI/HotMicPlayerUI.docc/ReadyMadeSocialOverlay.md) for data, theming, component composition and the behavior mapping. The Sample's **Partner demo** uses fake data and generated mixed-orientation video, with a switch between kit UI and custom UI on public hooks. You can also build your own UI using only HotMicPlayer; both integration paths use the same playback/layout hooks.

@@ -11,6 +11,7 @@ struct DemoRootView: View {
     @State private var controller: HMPlayer?
 
     private let benchmark = BenchmarkOptions()
+    @State private var showsPartner = false
     @State private var showsSocial = false
     @State private var showsAds = false
     @State private var showsCaptions = false
@@ -22,7 +23,9 @@ struct DemoRootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if benchmark.values["accessibility-lab"] == "1" {
+        if benchmark.values["partner-demo"] == "1" {
+            PartnerDemoScreen()
+        } else if benchmark.values["accessibility-lab"] == "1" {
             CaptionsAudioLabScreen()
         } else if benchmark.values["ads-lab"] == "1" {
             AdsLabScreen()
@@ -76,6 +79,7 @@ struct DemoRootView: View {
             HStack {
             Button("Captions + audio") { showsCaptions = true }
             Button("Ads lab") { showsAds = true }
+            Button("Partner demo") { showsPartner = true }.accessibilityIdentifier("partner-demo")
             Button("Social layout") { showsSocial = true }
             Button("Playlist lab") { showsLab = true }.accessibilityIdentifier("playlist-lab")
             Button("Benchmark mode") {
@@ -89,6 +93,7 @@ struct DemoRootView: View {
         }
         .fullScreenCover(isPresented: $showsCaptions) { CaptionsAudioLabScreen() }
         .fullScreenCover(isPresented: $showsAds) { AdsLabScreen() }
+        .fullScreenCover(isPresented: $showsPartner) { PartnerDemoScreen() }
         .fullScreenCover(isPresented: $showsSocial) { SocialLayoutScreen() }
         .fullScreenCover(isPresented: $showsLab) { PlaylistLabScreen { showsLab = false } }
         .fullScreenCover(isPresented: $showsBenchmark, onDismiss: {

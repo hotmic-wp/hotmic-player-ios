@@ -162,6 +162,67 @@ public struct HMTheme {
         }
     }
 
+    /// Custom images override SF Symbol defaults for the social controls.
+    public enum Icon: Hashable {
+        /// Fire reaction icon, used by both the rail and burst.
+        case fire
+        /// Opens the comment sheet.
+        case comment
+        /// Opens host sharing UI.
+        case share
+        /// Audio is muted.
+        case muted
+        /// Audio is enabled.
+        case unmuted
+        /// Closed captions control.
+        case captions
+        /// Enters fullscreen playback.
+        case fullscreen
+        /// Playback affordance.
+        case play
+        /// Pauses active playback.
+        case pause
+        /// Closes sheets or exits fullscreen.
+        case close
+    }
+    /// Host images overriding the corresponding social SF Symbol icons.
+    public var customImages: [Icon: Image] = [:]
+    /// Vertical spacing between rail controls, in points.
+    public var railSpacing: CGFloat = 14
+    /// Seconds for a burst to resolve into the rail icon.
+    public var fireAnimationDuration: TimeInterval = 0.5
+    /// Seconds for sheet opening and closing; ignored for Reduce Motion.
+    public var sheetAnimationDuration: TimeInterval = 0.25
+    /// Fallback SF Symbol for the closed-caption control.
+    public var captionsSymbol = "captions.bubble"
+    /// Fallback SF Symbol for the fullscreen control.
+    public var fullscreenSymbol = "arrow.up.left.and.arrow.down.right"
+    /// Fallback SF Symbol for the paused playback affordance.
+    public var playSymbol = "play.fill"
+    /// Fallback SF Symbol for active playback.
+    public var pauseSymbol = "pause.fill"
+    /// Fallback SF Symbol for close and fullscreen exit controls.
+    public var closeSymbol = "xmark"
+
+    /// Resolves host images before falling back to the theme's symbols.
+    public func image(for icon: Icon) -> Image {
+        if let image = customImages[icon] { return image }
+        let symbol: String
+        switch icon {
+        case .fire: symbol = icons.react
+        case .comment: symbol = icons.comment
+        case .share: symbol = icons.share
+        case .muted: symbol = icons.muted
+        case .unmuted: symbol = icons.unmuted
+        case .captions: symbol = captionsSymbol
+        case .fullscreen: symbol = fullscreenSymbol
+        case .play: symbol = playSymbol
+        case .pause: symbol = pauseSymbol
+        case .close: symbol = closeSymbol
+        }
+        return Image(systemName: symbol)
+    }
+
     /// Palette.
     ///
     /// Configure this SwiftUI value on the main actor.

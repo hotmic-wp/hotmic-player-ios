@@ -95,3 +95,11 @@ The Social layout screen shares one `HMEngagement` UI between **Host backend** a
 The host adapter is compiled directly from [CustomEngagementBackend](../Examples/CustomEngagementBackend). The fake Connect client is an offline stand-in; use the separate Connect package for a real HotMic session. See [Engagement from your backend or HotMic](../Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) for the contract. Benchmark grid cells accept `"engagement": 0` (off), `1` (fake host) or `2` (fake Connect) in `knobs`, exercising the same observed preview/count state during playback.
 
 For an offline two-item social feed, launch with `--hm-social-layout 1 --hm-social-fixture feed`. Use `--hm-engagement-latency-ms 1500` to inspect pending requests and edit a draft while posting (clamped to 0–5000 ms). Preview selection resets on each item; rapid rail taps settle to the latest intended membership.
+
+## Partner demo
+
+Open **Partner demo**, or launch with `--hm-partner-demo 1`. It generates offline vertical and landscape clips, uses a fake host engagement backend, and keeps bottom navigation visible. **Demo options** switches between kit UI and custom UI on public hooks, enables mute/scrubbing, replaces sheet/rail/metadata content, limits previews to once per item, or selects landscape and host-ad placeholders. The kit shows caption controls for the bundled WebVTT track and admits a sidecar placeholder only when its complete slot is free. Share opens a native activity sheet. No environment variables or network fixtures are needed for its core gesture UI test.
+
+Benchmark grid cells accept `"social-overlay": 0` or `1` in `knobs` for paired S3 MP4/HLS runs through the actual kit. Set the same `"engagement": 1` backend in both cells to isolate UI overhead.
+
+The Debug-only `--hm-partner-trace 1` option records public player state, Reduce Motion/Dynamic Type settings and native accessibility actions in Documents `partner-state.json`. Its `partner-command.txt` accepts `fire|unique-nonce` to activate the native VoiceOver Fire action. Diagnostics are off by default.

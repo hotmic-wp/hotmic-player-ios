@@ -1082,6 +1082,7 @@ var hmTheme: HMTheme { get set }
 ## HMActionRail
 
 ```swift
+@MainActor init(content: HMSocialContent, canFire: Bool = true, fireEvent: Int = 0, onFire: @escaping () -> Void, onComment: @escaping () -> Void, onShare: @escaping () -> Void, onFireFrame: ((CGRect) -> Void)? = nil)
 @MainActor init(engagement: HMEngagement, actions: Set<HMActionRail.Action> = Set(Action.allCases), isMuted: Binding<Bool>? = nil, onComment: (() -> Void)? = nil, onShare: (() -> Void)? = nil)
 @MainActor struct HMActionRail
 @MainActor var body: some View { get }
@@ -1103,6 +1104,26 @@ enum Action
 @MainActor init(engagement: HMEngagement, mediaTime: TimeInterval, lookback: TimeInterval = 20, limit: Int = 5, maxHeight: CGFloat? = nil)
 @MainActor struct HMChatRail
 @MainActor var body: some View { get }
+```
+
+## HMCommentPreview
+
+```swift
+@MainActor init(comment: HMSocialComment, onOpen: @escaping () -> Void)
+@MainActor struct HMCommentPreview
+@MainActor var body: some View { get }
+@MainActor var comment: HMSocialComment
+@MainActor var onOpen: () -> Void
+```
+
+## HMCommentSheet
+
+```swift
+@MainActor init(data: any HMSocialDataSource, onPosted: @escaping (String) -> Void = { _ in })
+@MainActor let data: any HMSocialDataSource
+@MainActor struct HMCommentSheet
+@MainActor var body: some View { get }
+@MainActor var onPosted: (String) -> Void
 ```
 
 ## HMComposer
@@ -1142,12 +1163,53 @@ enum Action
 @MainActor var body: some View { get }
 ```
 
+## HMEngagementSocialAdapter
+
+```swift
+@MainActor final class HMEngagementSocialAdapter
+@MainActor func loadMoreComments() async throws
+@MainActor func postComment(_ text: String) async throws
+@MainActor func setReacted(_ reacted: Bool) async throws
+@MainActor init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default, previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) })
+@MainActor let engagement: HMEngagement
+@MainActor var canFire: Bool { get }
+@MainActor var canLoadMore: Bool { get }
+@MainActor var canPost: Bool { get }
+@MainActor var content: HMSocialContent { get }
+@MainActor var metadata: HMSocialContent { get set }
+@MainActor var previewSelection: ([HMSocialComment]) -> [HMSocialComment] { get set }
+@MainActor var theme: HMTheme { get set }
+```
+
+## HMFireBurst
+
+```swift
+@MainActor init(event: Int, origin: CGPoint, target: CGPoint, isEnabled: Bool = true)
+@MainActor struct HMFireBurst
+@MainActor var body: some View { get }
+@MainActor var event: Int
+@MainActor var isEnabled: Bool
+@MainActor var origin: CGPoint
+@MainActor var target: CGPoint
+```
+
 ## HMFloatingReactions
 
 ```swift
 @MainActor init(engagement: HMEngagement, mediaTime: TimeInterval, isPlaying: Bool, quietFloor: Double = 0.45, trailingInset: CGFloat = 34, launchHeight: Double = 0.6)
 @MainActor struct HMFloatingReactions
 @MainActor var body: some View { get }
+```
+
+## HMMetadataView
+
+```swift
+@MainActor init(content: HMSocialContent, onExpand: @escaping () -> Void, onHashtag: @escaping (String) -> Void = { _ in })
+@MainActor init(content: HMSocialContent, onHashtag: @escaping (String) -> Void = { _ in })
+@MainActor struct HMMetadataView
+@MainActor var body: some View { get }
+@MainActor var content: HMSocialContent
+@MainActor var onHashtag: (String) -> Void
 ```
 
 ## HMOverlayLayout
@@ -1179,6 +1241,15 @@ var showsPolls: Bool
 var showsScrubber: Bool
 ```
 
+## HMPlayPauseAffordance
+
+```swift
+@MainActor init(isPaused: Bool)
+@MainActor struct HMPlayPauseAffordance
+@MainActor var body: some View { get }
+@MainActor var isPaused: Bool
+```
+
 ## HMPollCard
 
 ```swift
@@ -1187,19 +1258,226 @@ var showsScrubber: Bool
 @MainActor var body: some View { get }
 ```
 
+## HMProgressBar
+
+```swift
+@MainActor init(snapshot: HMPlaybackSnapshot, onSeek: ((TimeInterval) -> Void)? = nil, onScrubbingChanged: @escaping (Bool) -> Void = { _ in })
+@MainActor struct HMProgressBar
+@MainActor var body: some View { get }
+@MainActor var onScrubbingChanged: (Bool) -> Void
+@MainActor var onSeek: ((TimeInterval) -> Void)?
+@MainActor var snapshot: HMPlaybackSnapshot
+```
+
+## HMShareSheet
+
+```swift
+@MainActor func makeUIViewController(context: UIViewControllerRepresentableContext<HMShareSheet>) -> UIActivityViewController
+@MainActor func updateUIViewController(_ controller: UIActivityViewController, context: UIViewControllerRepresentableContext<HMShareSheet>)
+@MainActor init(items: [Any])
+@MainActor static func present(items: [Any], from presenter: UIViewController, sourceView: UIView? = nil)
+@MainActor struct HMShareSheet
+@MainActor var items: [Any]
+```
+
+## HMSocialCallbacks
+
+```swift
+init()
+struct HMSocialCallbacks
+var commentPosted: (HMMediaItem, String) -> Void
+var fireToggled: (HMMediaItem, Bool) -> Void
+var hashtagTapped: (String) -> Void
+var share: (HMMediaItem) -> Void
+var sheetChanged: (HMMediaItem, Bool) -> Void
+```
+
+## HMSocialComment
+
+```swift
+init(id: String, author: String, text: String)
+struct HMSocialComment
+var author: String
+var id: String
+var text: String
+```
+
+## HMSocialContent
+
+```swift
+init(title: String, description: String = "", hashtags: [String] = [], community: String? = nil, fireCount: Int? = nil, commentCount: Int? = nil, shareCount: Int? = nil, isReacted: Bool = false, previewComments: [HMSocialComment] = [], comments: [HMSocialComment] = [])
+struct HMSocialContent
+var commentCount: Int?
+var comments: [HMSocialComment]
+var community: String?
+var description: String
+var fireCount: Int?
+var hashtags: [String]
+var isReacted: Bool
+var previewComments: [HMSocialComment]
+var shareCount: Int?
+var title: String
+```
+
+## HMSocialDataSource
+
+```swift
+@MainActor func loadMoreComments() async throws
+@MainActor func postComment(_ text: String) async throws
+@MainActor func setReacted(_ reacted: Bool) async throws
+@MainActor protocol HMSocialDataSource : AnyObject
+@MainActor var canFire: Bool { get }
+@MainActor var canLoadMore: Bool { get }
+@MainActor var canPost: Bool { get }
+@MainActor var content: HMSocialContent { get }
+```
+
+## HMSocialMetadataContext
+
+```swift
+let content: HMSocialContent
+let expand: () -> Void
+let hashtagTapped: (String) -> Void
+struct HMSocialMetadataContext
+```
+
+## HMSocialModel
+
+```swift
+@MainActor final class HMSocialModel
+@MainActor func loadMoreComments() async throws
+@MainActor func postComment(_ text: String) async throws
+@MainActor func setReacted(_ reacted: Bool) async throws
+@MainActor init(content: HMSocialContent, canFire: Bool = true, canPost: Bool = true, canLoadMore: Bool = false, onSetReacted: @escaping (Bool) async throws -> Void = { _ in }, onLoadMore: @escaping () async throws -> Void = {}, onPost: @escaping (String) async throws -> Void = { _ in })
+@MainActor var canFire: Bool { get set }
+@MainActor var canLoadMore: Bool { get set }
+@MainActor var canPost: Bool { get set }
+@MainActor var content: HMSocialContent { get set }
+@MainActor var onLoadMore: () async throws -> Void
+@MainActor var onPost: (String) async throws -> Void
+@MainActor var onSetReacted: (Bool) async throws -> Void
+```
+
+## HMSocialOptions
+
+```swift
+init()
+struct HMSocialOptions
+var allowsScrubbing: Bool
+var hidesMetadataDuringAds: Bool
+var hostNavigationHeight: CGFloat
+var previewDuration: TimeInterval
+var previewRotationInterval: TimeInterval?
+var sheetHeight: CGFloat
+var showsMute: Bool
+```
+
+## HMSocialOverlay
+
+```swift
+@MainActor func actionRail<Content>(@ViewBuilder content: @escaping (HMSocialRailContext) -> Content) -> HMSocialOverlay where Content : View
+@MainActor func commentSheet<Content>(@ViewBuilder content: () -> Content) -> HMSocialOverlay where Content : View
+@MainActor func metadata<Content>(@ViewBuilder content: @escaping (HMSocialMetadataContext) -> Content) -> HMSocialOverlay where Content : View
+@MainActor func sidecar<Content>(size: CGSize, @ViewBuilder content: () -> Content) -> HMSocialOverlay where Content : View
+@MainActor init(player: HMPlayer, item: HMMediaItem, snapshot: HMPlaybackSnapshot, data: any HMSocialDataSource, state: HMSocialState, options: HMSocialOptions = .init(), callbacks: HMSocialCallbacks = .init())
+@MainActor let data: any HMSocialDataSource
+@MainActor let item: HMMediaItem
+@MainActor let player: HMPlayer
+@MainActor let snapshot: HMPlaybackSnapshot
+@MainActor let state: HMSocialState
+@MainActor struct HMSocialOverlay
+@MainActor var body: some View { get }
+@MainActor var callbacks: HMSocialCallbacks
+@MainActor var options: HMSocialOptions
+```
+
+## HMSocialPlayerView
+
+```swift
+@MainActor func actionRail<Content>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialRailContext) -> Content) -> HMSocialPlayerView where Content : View
+@MainActor func commentSheet<Content>(@ViewBuilder content: @escaping (HMMediaItem) -> Content) -> HMSocialPlayerView where Content : View
+@MainActor func metadata<Content>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialMetadataContext) -> Content) -> HMSocialPlayerView where Content : View
+@MainActor func sidecar<Content>(size: CGSize, @ViewBuilder content: @escaping (HMMediaItem) -> Content) -> HMSocialPlayerView where Content : View
+@MainActor init(player: HMPlayer, surface: HMSocialPlayerView.Surface = .feed, options: HMSocialOptions = .init(), callbacks: HMSocialCallbacks = .init(), data: @escaping (HMMediaItem) -> any HMSocialDataSource)
+@MainActor let player: HMPlayer
+@MainActor struct HMSocialPlayerView
+@MainActor var body: some View { get }
+```
+
+## HMSocialPlayerView.Surface
+
+```swift
+case feed
+case inline
+enum Surface
+```
+
+## HMSocialPlayerViewController
+
+```swift
+@MainActor convenience init(player: HMPlayer, content: HMSocialPlayerView, theme: HMTheme = .default)
+@MainActor final class HMSocialPlayerViewController
+@MainActor init(content: HMSocialPlayerView, theme: HMTheme = .default)
+@MainActor init(player: HMPlayer, surface: HMSocialPlayerView.Surface = .feed, options: HMSocialOptions = .init(), theme: HMTheme = .default, callbacks: HMSocialCallbacks = .init(), data: @escaping (HMMediaItem) -> any HMSocialDataSource)
+@MainActor let player: HMPlayer
+```
+
+## HMSocialRailContext
+
+```swift
+let canFire: Bool
+let content: HMSocialContent
+let fire: () -> Void
+let fireEvent: Int
+let fireFrameChanged: (CGRect) -> Void
+let openComments: () -> Void
+let share: () -> Void
+struct HMSocialRailContext
+```
+
+## HMSocialState
+
+```swift
+@MainActor final class HMSocialState
+@MainActor func closeComments()
+@MainActor func dragComments(to height: CGFloat)
+@MainActor func fire(at point: CGPoint?, item: HMMediaItem, data: any HMSocialDataSource, addOnly: Bool = false, isAdActive: Bool = false, onToggle: @escaping (HMMediaItem, Bool) -> Void = { _, _ in })
+@MainActor func openComments(item: HMMediaItem, height: CGFloat, isAdActive: Bool, onChange: @escaping (HMMediaItem, Bool) -> Void = { _, _ in })
+@MainActor func updateSheetLayout(maximumHeight: CGFloat, bottomInset: CGFloat)
+@MainActor init()
+@MainActor var error: String? { get set }
+@MainActor var fireID: Int { get set }
+@MainActor var fireOrigin: CGPoint? { get set }
+@MainActor var fireTarget: CGPoint { get set }
+@MainActor var isSheetOpen: Bool { get }
+@MainActor var maximumSheetHeight: CGFloat { get set }
+@MainActor var sheetBottomInset: CGFloat { get set }
+@MainActor var sheetHeight: CGFloat { get set }
+```
+
 ## HMTheme
 
 ```swift
+func image(for icon: HMTheme.Icon) -> Image
 init(colors: HMTheme.Colors, fonts: HMTheme.Fonts, icons: HMTheme.Icons, cornerRadius: CGFloat, reactionPalette: [String], messageReaction: String)
 static let `default`: HMTheme
 struct HMTheme
+var captionsSymbol: String
+var closeSymbol: String
 var colors: HMTheme.Colors
 var cornerRadius: CGFloat
+var customImages: [HMTheme.Icon : Image]
+var fireAnimationDuration: TimeInterval
 var fonts: HMTheme.Fonts
+var fullscreenSymbol: String
 var icons: HMTheme.Icons
 var messageReaction: String
+var pauseSymbol: String
+var playSymbol: String
 var primaryReaction: String { get }
+var railSpacing: CGFloat
 var reactionPalette: [String]
+var sheetAnimationDuration: TimeInterval
 ```
 
 ## HMTheme.Colors
@@ -1229,6 +1507,22 @@ var headline: Font
 var metric: Font
 ```
 
+## HMTheme.Icon
+
+```swift
+case captions
+case close
+case comment
+case fire
+case fullscreen
+case muted
+case pause
+case play
+case share
+case unmuted
+enum Icon
+```
+
 ## HMTheme.Icons
 
 ```swift
@@ -1254,6 +1548,8 @@ var unmuted: String
 
 ```swift
 @MainActor func hmOverlayOptions(_ options: HMOverlayLayout.Options) -> some View
+
+@MainActor func hmSocialPlayback(player: HMPlayer, state: HMSocialState, options: HMSocialOptions = .init(), extendsUnderSafeArea: Bool = true, data: @escaping (HMMediaItem) -> any HMSocialDataSource, callbacks: HMSocialCallbacks = .init()) -> some View
 
 @MainActor func hmTheme(_ theme: HMTheme) -> some View
 

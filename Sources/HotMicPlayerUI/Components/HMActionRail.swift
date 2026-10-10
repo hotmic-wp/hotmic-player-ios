@@ -35,11 +35,25 @@ public struct HMActionRail: View {
         case mute
     }
 
-    private let engagement: HMEngagement
+    private let engagement: HMEngagement?
     private let actions: Set<Action>
     private let isMuted: Binding<Bool>?
     private let onComment: (() -> Void)?
     private let onShare: (() -> Void)?
+
+    private var social: HMSocialContent?
+    private var onFire: (() -> Void)?
+    private var fireEvent = 0
+    private var onFireFrame: ((CGRect) -> Void)?
+
+    /// Backend-independent social rail. Shares the overlay's Fire event with the surface burst.
+    public init(content: HMSocialContent, canFire: Bool = true, fireEvent: Int = 0,
+                onFire: @escaping () -> Void, onComment: @escaping () -> Void,
+                onShare: @escaping () -> Void, onFireFrame: ((CGRect) -> Void)? = nil) {
+        self.engagement = nil; self.actions = []; self.isMuted = nil
+        self.social = content; self.onFire = canFire ? onFire : nil; self.fireEvent = fireEvent
+        self.onComment = onComment; self.onShare = onShare; self.onFireFrame = onFireFrame
+    }
 
     @Environment(\.hmTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -62,8 +76,11 @@ public struct HMActionRail: View {
     /// Renders the component from current state when SwiftUI evaluates the view.
     /// Access on the main actor.
     public var body: some View {
-        VStack(spacing: 14) {
-            if actions.contains(.react), engagement.supports(.reactToStream) { reactButton }
+        if let social {
+            socialRail(social)
+        } else if let engagement {
+        VStack(spacing: theme.railSpacing) {
+            if actions.contains(.react), engagement.supports(.reactToStream) { reactButton(engagement) }
             if actions.contains(.comment), engagement.supports(.sendChat), let onComment {
                 railButton(symbol: theme.icons.comment, label: "Comment", action: onComment)
             }
@@ -76,9 +93,10 @@ public struct HMActionRail: View {
             }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: reactionTaps)
+        }
     }
 
-    private var reactButton: some View {
+    private func reactButton(_ engagement: HMEngagement) -> some View {
         let total = engagement.reactionTotals.values.reduce(0, +)
         return VStack(spacing: 2) {
             Image(systemName: theme.icons.react)
@@ -144,7 +162,46 @@ public struct HMActionRail: View {
 
     private func send(_ emoji: String) {
         reactionTaps += 1
-        Task { try? await engagement.react(emoji) }
+        Task { try? await engagement?.react(emoji) }
+    }
+
+    private func socialRail(_ content: HMSocialContent) -> some View {
+        VStack(spacing: theme.railSpacing) {
+            if let onFire {
+                socialButton(icon: .fire, label: "Fire", count: content.fireCount, action: onFire)
+                    .foregroundStyle(content.isReacted ? theme.colors.accentSecondary : theme.colors.onVideo)
+                    .accessibilityValue((content.isReacted ? "reacted" : "not reacted") + (content.fireCount.map { ", \($0) reactions" } ?? ""))
+                    .accessibilityIdentifier("hm-fire")
+
+            }
+            if let onComment {
+                socialButton(icon: .comment, label: "Comment", count: content.commentCount, action: onComment)
+                    .accessibilityIdentifier("hm-comments")
+            }
+            if let onShare {
+                socialButton(icon: .share, label: "Share", count: content.shareCount, action: onShare)
+                    .accessibilityIdentifier("hm-share")
+            }
+        }.foregroundStyle(theme.colors.onVideo)
+        .padding(6).background(theme.colors.scrim.opacity(0.7), in: RoundedRectangle(cornerRadius: theme.cornerRadius))
+        .sensoryFeedback(.impact(weight: .light), trigger: fireEvent)
+    }
+
+    private func socialButton(icon: HMTheme.Icon, label: String, count: Int?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                theme.image(for: icon).font(.system(size: iconSize, weight: .semibold))
+                    .background(GeometryReader { geometry in
+                        if icon == .fire {
+                            Color.clear.onChange(of: geometry.frame(in: .named("hm-social-overlay")), initial: true) { _, frame in
+                                onFireFrame?(frame)
+                            }
+                        }
+                    })
+                if let count { Text(HMCountFormatter().string(from: count)).font(theme.fonts.caption.monospacedDigit()) }
+            }.frame(minWidth: 52, minHeight: 52)
+        }.buttonStyle(.plain).accessibilityLabel(label)
+            .accessibilityValue(count.map { "\($0)" } ?? "")
     }
 
     private func railButton(symbol: String, label: String, action: @escaping () -> Void) -> some View {

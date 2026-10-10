@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        EE0000000000000000000001 = {isa = PBXBuildFile; productRef = EE0000000000000000000002; };
         DD0000000000000000000003 = {isa = PBXBuildFile; fileRef = DD0000000000000000000002; };
         DD0000000000000000000005 = {isa = PBXBuildFile; fileRef = DD0000000000000000000004; };
         DD0000000000000000000001 = {isa = PBXBuildFile; fileRef = DD0000000000000000000002; };
@@ -40,7 +41,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BB000000000000000000000E = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-        CC000000000000000000000E = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (CC0000000000000000000012); runOnlyForDeploymentPostprocessing = 0; };
+        CC000000000000000000000E = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (CC0000000000000000000012, EE0000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -107,7 +108,7 @@
             buildPhases = (CC000000000000000000000D, CC000000000000000000000E, CC000000000000000000000F);
             buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (CC0000000000000000000006);
             name = HotMicPlayerTests; productName = HotMicPlayerTests;
-            packageProductDependencies = (CC0000000000000000000011);
+            packageProductDependencies = (CC0000000000000000000011, EE0000000000000000000002);
             productReference = CC0000000000000000000005; productType = "com.apple.product-type.bundle.unit-test";
         };
 /* End PBXNativeTarget section */
@@ -367,6 +368,7 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+        EE0000000000000000000002 = {isa = XCSwiftPackageProductDependency; productName = HotMicPlayerUI; };
 		AA0000000000000000000011 /* HotMicPlayer */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = HotMicPlayer;

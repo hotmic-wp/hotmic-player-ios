@@ -16,7 +16,7 @@ import HotMicPlayer
             try await Task.sleep(for: .seconds(5))
             return .none
         }
-        guard item.id == "host-ad" else { return .none }
+        guard ["host-ad", "hung-ad", "endless-ad"].contains(item.id) else { return .none }
         return .hostPlayed(HMHostAdBreak(start: { [weak self] context in
             let label = UILabel()
             label.textColor = .white; label.textAlignment = .center; label.numberOfLines = 0
@@ -31,11 +31,17 @@ import HotMicPlayer
                 label.centerYAnchor.constraint(equalTo: context.container.centerYAnchor),
                 label.heightAnchor.constraint(equalTo: label.widthAnchor, multiplier: 9.0 / 16)])
             self?.task = Task { @MainActor in
-                for tick in 0..<30 {
+                var tick = 0
+                while tick < 30 || item.id == "endless-ad" {
+                    if !context.isPlaybackAllowed {
+                        do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                        continue
+                    }
                     guard !Task.isCancelled else { return }
                     let elapsed = Double(tick) / 5
                     label.text = "Host ad · \(Int(ceil(6 - elapsed)))s\nExisting skip/countdown UI"
-                    context.updateProgress(HMAdProgress(elapsed: elapsed, duration: 6))
+                    if item.id != "hung-ad" { context.updateProgress(HMAdProgress(elapsed: elapsed, duration: 6)) }
+                    if item.id != "hung-ad" { tick += 1 }
                     do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
                 }
                 context.complete()

@@ -11,7 +11,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public enum Kind: Sendable, Hashable {
-        /// Ad lifecycle/progress, associated with content without starting a content impression.
+        /// Ad lifecycle phase change, associated with content without starting a content impression.
         case adStateChanged
         /// A visit's terminal ad outcome, including swipe-away cancellation.
         case adBreakEnded

@@ -34,9 +34,11 @@ struct AdsLabScreen: View {
                 let content = try await socialVideoFixture(landscape: false, name: "ads-content")
                 player.adBreakProvider = DemoAdProvider(preRollURL: ad)
                 if BenchmarkOptions().values["ads-block-swipe"] == "1" { player.configuration.allowsSwipeDuringAds = false }
+                if let duration = Double(BenchmarkOptions().values["ads-max-duration"] ?? "") { player.configuration.adBreakMaxDuration = duration }
+                if let timeout = Double(BenchmarkOptions().values["ads-no-progress"] ?? "") { player.configuration.adNoProgressTimeout = timeout }
                 let start = Int(BenchmarkOptions().values["start-index"] ?? "0") ?? 0
                 let events = player.events
-                player.replaceAll(["url-ad", "host-ad", "slow-ad", "content"].map {
+                player.replaceAll(["url-ad", "host-ad", "slow-ad", "content", "hung-ad", "endless-ad"].map {
                     HMMediaItem(id: $0, url: content, title: $0, aspectRatio: 9.0 / 16)
                 }, startAt: start)
                 await player.start()
@@ -51,7 +53,8 @@ struct AdsLabScreen: View {
             Spacer()
             if player.adState.isActive {
                 Text("Advertisement").accessibilityIdentifier("ads-active")
-                if case .playing(_, let progress) = player.adState {
+                if case .playing = player.adState {
+                    let progress = player.adProgress
                     Text("\(progress.elapsed, specifier: "%.1f") / \(progress.duration, specifier: "%.1f")")
                 }
                 Button("Skip ad") { player.skipAd() }.accessibilityIdentifier("ads-skip").hmExcludedHitArea()
@@ -75,14 +78,16 @@ struct AdsLabScreen: View {
             }
         }
         defer { eventTask.cancel() }
-        var lastCommand = ""
+        // Commands belong to this launch; do not replay a previous debugging session.
+        var lastCommand = (try? String(contentsOf: documents.appendingPathComponent("ads-command.txt"))) ?? ""
         while !Task.isCancelled {
             status = "\(player.currentItem?.id ?? "") | \(player.adState)"
             let value: [String: Any] = ["item": player.currentItem?.id ?? "", "ad": String(describing: player.adState),
                 "active": player.adState.isActive, "time": player.snapshot.currentTime,
                 "ttff": player.snapshot.timeToFirstFrame ?? -1, "ready": player.snapshot.readinessTier.rawValue,
                 "prepared": player.preparedItemIdentities, "swipeBlocked": player.isAdSwipeBlocked,
-                "contentRate": player.snapshot.state.rawValue]
+                "contentRate": player.snapshot.state.rawValue, "progress": player.adProgress.elapsed,
+                "feedVisible": player.isFeedVisible]
             if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) { try? data.write(to: documents.appendingPathComponent("ads-state.json"), options: .atomic) }
             if let command = try? String(contentsOf: documents.appendingPathComponent("ads-command.txt")), command != lastCommand {
                 lastCommand = command
@@ -92,6 +97,12 @@ struct AdsLabScreen: View {
                 case "skip": player.skipAd()
                 case "pause": player.pause()
                 case "play": player.play()
+                case "hide": player.isFeedVisible = false
+                case "show": player.isFeedVisible = true
+                case "previous": player.previous()
+                case "remove":
+                    player.configuration.removedCurrentPolicy = .finishThenAdvance
+                    if let id = player.currentItem?.id { player.remove(ids: [id]) }
                 case "standalone": inline = true
                 case "feed": inline = false
                 default: break

@@ -77,7 +77,7 @@ var fraction: Double? { get }
 case finished
 case loading
 case none
-case playing(kind: HMAdKind, progress: HMAdProgress)
+case playing(kind: HMAdKind)
 enum HMAdState
 var isActive: Bool { get }
 ```
@@ -284,6 +284,8 @@ enum HMFailedItemPolicy
 @MainActor func skip()
 @MainActor func updateProgress(_ value: HMAdProgress)
 @MainActor let container: UIView
+@MainActor var isPlaybackAllowed: Bool { get set }
+@MainActor var onPlaybackAllowedChange: ((Bool) -> Void)?
 ```
 
 ## HMInteractionError
@@ -570,6 +572,7 @@ enum HMPlaybackState
 @MainActor let analytics: HMAnalyticsHub
 @MainActor var activeIndex: Int { get }
 @MainActor var adBreakProvider: (any HMAdBreakProvider)?
+@MainActor var adProgress: HMAdProgress { get set }
 @MainActor var adState: HMAdState { get set }
 @MainActor var configuration: HMPlayerConfiguration { get set }
 @MainActor var currentIndex: Int? { get }
@@ -607,8 +610,10 @@ static let `default`: HMPlayerConfiguration
 static let highQuality: HMPlayerConfiguration
 static let instantStart: HMPlayerConfiguration
 struct HMPlayerConfiguration
+var adBreakMaxDuration: TimeInterval
 var adDecisionTimeout: TimeInterval
 var adLoadTimeout: TimeInterval
+var adNoProgressTimeout: TimeInterval
 var adaptive: Bool
 var allowsSwipeDuringAds: Bool
 var aspectRatioTolerance: Double

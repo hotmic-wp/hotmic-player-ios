@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// The renderer responsible for a pre-roll. Companion/sidecar units remain host overlays.
 public enum HMAdKind: String, Sendable, Equatable {
@@ -29,8 +30,8 @@ public enum HMAdState: Sendable, Equatable {
     case none
     /// Awaiting a decision or a URL ad's first frame.
     case loading
-    /// A break is active, with renderer and media-time progress.
-    case playing(kind: HMAdKind, progress: HMAdProgress)
+    /// A break is active. Read HMPlayer.adProgress for media-time progress.
+    case playing(kind: HMAdKind)
     /// The current visit's decision/break ended, including no fill or timeout.
     case finished
     /// True during loading/playing; suppress comment affordances and squeezeback.
@@ -47,7 +48,7 @@ public enum HMAdOutcome: String, Sendable, Equatable {
     case skipped
     /// Decisioning or ad playback failed; content may continue.
     case failed
-    /// The decision or URL startup exceeded its deadline.
+    /// The decision, startup, break duration or progress exceeded its deadline.
     case timedOut
     /// The provider chose content without an ad.
     case noFill
@@ -59,9 +60,9 @@ public enum HMAdOutcome: String, Sendable, Equatable {
 import UIKit
 
 /// Host decisioning stays in the existing ad stack. Called once per item visit,
-/// before content activation. Return promptly; cancellation/late results are ignored.
+/// before content activation. Return promptly; late host adapters are stopped as cancelled.
 @MainActor public protocol HMAdBreakProvider: AnyObject {
-    /// Selects an optional pre-roll for this activation; late results are ignored.
+    /// Selects an optional pre-roll; a late host adapter receives stop(.cancelled).
     func adBreak(for item: HMMediaItem) async throws -> HMAdBreak
 }
 
@@ -90,11 +91,15 @@ import UIKit
 
 /// One visit's safe-area container and callbacks. Retaining an old context is safe:
 /// after it ends, all callbacks are inert. Host owns beacons, skip UI and countdown.
-@MainActor public final class HMHostAdContext {
+@MainActor @Observable public final class HMHostAdContext {
     /// Safe-area view above content and below host overlays; mount your SDK here.
     public let container = UIView()
-    private var finish: ((HMAdOutcome) -> Void)?
-    private var progress: ((HMAdProgress) -> Void)?
+    /// Whether the SDK may play audio/video. Honour changes on pause and visibility transitions.
+    public private(set) var isPlaybackAllowed = false
+    /// SDK pause/resume bridge. Set during start and also read the initial isPlaybackAllowed value.
+    @ObservationIgnored public var onPlaybackAllowedChange: ((Bool) -> Void)?
+    @ObservationIgnored private var finish: ((HMAdOutcome) -> Void)?
+    @ObservationIgnored private var progress: ((HMAdProgress) -> Void)?
     init(finish: @escaping (HMAdOutcome) -> Void, progress: @escaping (HMAdProgress) -> Void) {
         self.finish = finish; self.progress = progress
         container.backgroundColor = .black
@@ -108,6 +113,14 @@ import UIKit
     public func fail() { finish?(.failed) }
     /// Publishes host SDK media progress while this visit is active.
     public func updateProgress(_ value: HMAdProgress) { progress?(value) }
-    func invalidate() { finish = nil; progress = nil; container.removeFromSuperview() }
+    func setPlaybackAllowed(_ allowed: Bool) {
+        guard allowed != isPlaybackAllowed else { return }
+        isPlaybackAllowed = allowed; onPlaybackAllowedChange?(allowed)
+    }
+    func invalidate() {
+        finish = nil; progress = nil
+        setPlaybackAllowed(false); onPlaybackAllowedChange = nil
+        container.removeFromSuperview()
+    }
 }
 #endif

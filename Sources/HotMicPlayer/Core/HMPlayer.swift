@@ -13,6 +13,11 @@ import Observation
     @ObservationIgnored public var adBreakProvider: (any HMAdBreakProvider)?
     /// Host UI should hide comment affordances and squeezeback while isActive.
     public private(set) var adState: HMAdState = .none
+    /// Media-time progress, observed independently without lifecycle events or analytics ticks.
+    public private(set) var adProgress = HMAdProgress()
+    private var adContentOutcome: HMAdOutcome?
+    private var adLastProgressAt: TimeInterval = 0
+    @ObservationIgnored private var adWatchdogTask: Task<Void, Never>?
     /// Feed paging policy while a break is loading or playing.
     public var isAdSwipeBlocked: Bool { adState.isActive && !configuration.allowsSwipeDuringAds }
     private var adVisit: HMMediaItem.MediaIdentity?
@@ -134,6 +139,7 @@ import Observation
     public var isFeedVisible = true {
         didSet {
             guard isFeedVisible != oldValue else { return }
+            updateHostPlaybackPermission()
             if isFeedVisible { Task { [weak self] in await self?.prepareTransport() }; if configuration.managesAudioSession { HMAudioSession.activatePlayback() }; refreshWindow() }
             else { pauseAll() }
         }
@@ -316,7 +322,7 @@ import Observation
         item.mediaIdentity(ignoring: configuration.volatileSigningQueryParameters)
     }
     private var effectiveRemovedCurrentPolicy: HMRemovedCurrentPolicy {
-        guard configuration.removedCurrentPolicy == .finishThenAdvance,
+        guard !adState.isActive, configuration.removedCurrentPolicy == .finishThenAdvance,
               !failureIdle, let item = playlist.current,
               !terminalFailures.contains(identity(item)), networkFailures[identity(item)] == nil,
               resolutionFailures[identity(item)] == nil,
@@ -375,11 +381,15 @@ import Observation
     /// Begins playback, or resumes the current item without resetting its position.
     ///
     /// Access on the main actor.
-    public func play() { wantsPlayback = true; resumeActive(); refreshWindow() }
+    public func play() { wantsPlayback = true; updateHostPlaybackPermission(); resumeActive(); refreshWindow() }
     /// Pauses playback without changing the playlist or current position.
     ///
     /// Access on the main actor.
-    public func pause() { wantsPlayback = false; currentNode?.pause(); adNode?.pause() }
+    public func pause() {
+        wantsPlayback = false; updateHostPlaybackPermission()
+        if currentNode?.isActive == true { currentNode?.pause() }
+        adNode?.pause()
+    }
     /// Seeks to a VOD time in seconds, clamped to the known duration.
     ///
     /// Access on the main actor.
@@ -479,7 +489,7 @@ import Observation
     }
     private func saveAndDeactivate() {
         if adState.isActive { endAd(.cancelled, resume: false) }
-        adVisit = nil; adState = .none
+        adVisit = nil; adState = .none; adProgress = HMAdProgress(); adContentOutcome = nil
         guard let node = currentNode, let item = currentItem else { return }
         resumePositions[identity(item)] = node.snapshot.currentTime
         node.deactivate(retainingPosition: configuration.restoresPlaybackPosition)
@@ -636,10 +646,14 @@ import Observation
             if let resolved = resolutions.cached(entry) ?? resolutions.cached(entry, requireFormat: false) { engagement.updateItem(resolved) }
         }
         resolutionFailures = resolutionFailures.filter { media.contains($0.key) }
-        let warm: [HMMediaItem] = currentItem == nil ? [] : (adState.isActive ? [1] : configuration.warmOffsets).compactMap { offset in
+        let warm: [HMMediaItem] = currentItem == nil ? [] : configuration.warmOffsets.compactMap { offset in
             let i = playlist.index + offset; return items.indices.contains(i) ? items[i] : nil
         }
-        pool.trim(keeping: Set(([currentItem].compactMap { $0 } + warm).compactMap { resolutions.cached($0) }))
+        // A decision (including no fill) must not evict a warm back-swipe assignment.
+        // Accepted breaks retain existing neighbours too; only new bulk preparation is gated.
+        if !adState.isActive {
+            pool.trim(keeping: Set(([currentItem].compactMap { $0 } + warm).compactMap { resolutions.cached($0) }))
+        }
         let playable = mediaWindowItems.compactMap { resolutions.cached($0) }
         proxy?.retainWindow(playable)
         proxy?.retainPlaylist(items.compactMap { resolutions.cached($0) })
@@ -981,7 +995,7 @@ import Observation
         adVisit = identity(item)
         guard let provider = adBreakProvider else { return }
         adToken = UUID(); let token = adToken
-        adItem = item; adDecisionPending = true; adDidStart = false
+        adItem = item; adDecisionPending = true; adDidStart = false; adProgress = HMAdProgress(); adContentOutcome = nil
         setAdState(.loading)
         proxy?.cancelPrefetch(); prefetchIdentity = ""; prefetchSafe = false
         emit(.adPrefetchChanged(paused: true))
@@ -995,7 +1009,10 @@ import Observation
         adDecisionTask = Task { [weak self] in
             do {
                 let decision = try await provider.adBreak(for: item)
-                guard let self, self.adToken == token, self.adState.isActive, !Task.isCancelled else { return }
+                guard let self, self.adToken == token, self.adState.isActive, !Task.isCancelled else {
+                    if case .hostPlayed(let host) = decision { host.stop(.cancelled) }
+                    return
+                }
                 self.adDecisionPending = false; self.adTimeoutTask?.cancel(); self.adTimeoutTask = nil
                 switch decision {
                 case .none: self.endAd(.noFill)
@@ -1017,24 +1034,59 @@ import Observation
         adState = state
         if let item = adItem {
             emit(.adStateChanged(item: item, state: state))
-            analytics.emit(HMPlaybackEvent(kind: .adStateChanged, itemID: item.id, properties: ["state": String(describing: state)]), item: item)
+            analytics.emit(HMPlaybackEvent(kind: .adStateChanged, itemID: item.id, properties: Self.adStateProperties(state)), item: item)
+        }
+    }
+    private static func adStateProperties(_ state: HMAdState) -> [String: String] {
+        switch state {
+        case .none: return ["state": "none"]
+        case .loading: return ["state": "loading"]
+        case .playing(let kind): return ["state": "playing", "kind": kind.rawValue]
+        case .finished: return ["state": "finished"]
+        }
+    }
+    private func updateHostPlaybackPermission() {
+        // Paused time is not evidence of a stuck SDK; the wall-clock cap still applies.
+        adLastProgressAt = ProcessInfo.processInfo.systemUptime
+        hostAdContext?.setPlaybackAllowed(isFeedVisible && wantsPlayback && adState.isActive)
+    }
+    private func updateAdProgress(_ value: HMAdProgress) {
+        if value.elapsed != adProgress.elapsed { adLastProgressAt = ProcessInfo.processInfo.systemUptime }
+        adProgress = value
+    }
+    private func beginAcceptedAd(token: UUID) {
+        resetAdContentPosition(); adDidStart = true; wantsPlayback = true
+        let started = ProcessInfo.processInfo.systemUptime
+        adLastProgressAt = started
+        let cap = Self.adTimeout(configuration.adBreakMaxDuration, fallback: 120, range: 0.1...3600)
+        let idle = Self.adTimeout(configuration.adNoProgressTimeout, fallback: 10, range: 0.1...120)
+        adWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                guard let self, self.adToken == token, self.adState.isActive else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if !self.isFeedVisible || !self.wantsPlayback { self.adLastProgressAt = now }
+                let stuck = self.adState != .loading && now - self.adLastProgressAt >= idle
+                if now - started >= cap || stuck { self.endAd(.timedOut); return }
+            }
         }
     }
     private func startHostAd(_ host: HMHostAdBreak, token: UUID) {
-        resetAdContentPosition(); adDidStart = true
+        beginAcceptedAd(token: token)
         hostBreak = host
         let context = HMHostAdContext(finish: { [weak self] outcome in
             guard let self, self.adToken == token else { return }; self.endAd(outcome)
         }, progress: { [weak self] progress in
             guard let self, self.adToken == token, self.adState.isActive else { return }
-            self.setAdState(.playing(kind: .host, progress: progress))
+            self.updateAdProgress(progress)
         })
         hostAdContext = context
-        setAdState(.playing(kind: .host, progress: HMAdProgress()))
+        context.setPlaybackAllowed(isFeedVisible && wantsPlayback)
+        setAdState(.playing(kind: .host))
         host.start(context)
     }
     private func startURLAd(_ ad: HMMediaItem, token: UUID) {
-        resetAdContentPosition(); adDidStart = true
+        beginAcceptedAd(token: token)
         guard let url = ad.url, ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { endAd(.failed); return }
         var config = configuration; config.loops = false; config.restoresPlaybackPosition = false
         let node = HMPlayerNode(id: "hm-ad-" + token.uuidString, configuration: config)
@@ -1044,7 +1096,8 @@ import Observation
             switch event.kind {
             case .firstFrame:
                 self.adTimeoutTask?.cancel(); self.adTimeoutTask = nil
-                self.setAdState(.playing(kind: .player, progress: HMAdProgress(elapsed: node.snapshot.currentTime, duration: node.snapshot.duration)))
+                self.updateAdProgress(HMAdProgress(elapsed: node.snapshot.currentTime, duration: node.snapshot.duration))
+                self.setAdState(.playing(kind: .player))
             case .ended: self.endAd(.completed)
             case .error: self.endAd(.failed)
             default: break
@@ -1062,7 +1115,7 @@ import Observation
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
                 guard let self, let node, self.adToken == token, self.adState.isActive else { return }
-                if case .playing = self.adState { self.setAdState(.playing(kind: .player, progress: HMAdProgress(elapsed: node.snapshot.currentTime, duration: node.snapshot.duration))) }
+                if case .playing = self.adState { self.updateAdProgress(HMAdProgress(elapsed: node.snapshot.currentTime, duration: node.snapshot.duration)) }
             }
         }
     }
@@ -1071,6 +1124,8 @@ import Observation
     private func endAd(_ outcome: HMAdOutcome, resume: Bool = true) {
         guard adState.isActive else { return }
         adToken = UUID(); adDecisionPending = false
+        adContentOutcome = adDidStart ? outcome : nil
+        adWatchdogTask?.cancel(); adWatchdogTask = nil
         adDecisionTask?.cancel(); adDecisionTask = nil
         adTimeoutTask?.cancel(); adTimeoutTask = nil
         adProgressTask?.cancel(); adProgressTask = nil
@@ -1087,23 +1142,23 @@ import Observation
         host?.stop(outcome)
         prefetchIdentity = ""; lastDecisionAt = -Double.infinity
         if resume, !ended {
-            if adDidStart { requestTime = ProcessInfo.processInfo.systemUptime }
+            if adDidStart && (outcome == .completed || outcome == .skipped) { requestTime = ProcessInfo.processInfo.systemUptime }
             refreshWindow(); scheduleFailedItemAdvance()
         }
     }
     private func resetAdContentPosition() {
         if let item = currentItem { resumePositions[identity(item)] = nil }
-        if let node = currentNode, node.snapshot.currentTime > 0.01 { node.seek(to: 0) }
+        if let node = currentNode, node.snapshot.currentTime > 0.01 { node.resetForAd() }
     }
     private func prepareAdHeads() {
         guard isFeedVisible, !ended, adState.isActive else { return }
         // Preroll the active content at zero, and protect the next head even while bulk work is paused.
         if let current = currentItem.flatMap({ resolutions.cached($0) }) { proxy?.prioritizePlayback(current, urgent: false) }
-        let heads = playlist.window(offsets: [0, 1]).compactMap { resolutions.cached($0) }
-        pool.trim(keeping: Set(heads))
         guard configuration.poolSize > 1, items.indices.contains(activeIndex + 1),
               let next = resolutions.cached(items[activeIndex + 1]), pool.existingNode(for: next) == nil else { return }
-        let node = pool.node(for: next, protecting: Set([currentItem?.id, next.id].compactMap { $0 }), playbackURL: proxy?.url(for: next))
+        // Never recycle an existing neighbour for speculative work during an ad decision/break.
+        guard pool.nodes.contains(where: { $0.item == nil }) else { return }
+        let node = pool.node(for: next, protecting: Set(pool.nodes.compactMap { $0.item?.id }), playbackURL: proxy?.url(for: next))
         node.setMuted(isMuted)
     }
 
@@ -1138,8 +1193,13 @@ import Observation
             metrics["ready_by_swipe_hit"] = ["warmPlayer", "cachedBytes"].contains(event.properties["readiness_tier"] ?? "") ? 1 : 0
         }
         if event.kind == .viewStart || event.kind == .firstFrame { metrics["live_player_count"] = Double(pool.nodes.count); metrics["memory_bytes"] = HMMemorySample.footprint() }
+        var properties = event.properties
+        if event.kind == .viewStart || event.kind == .firstFrame {
+            properties["after_ad"] = adContentOutcome == nil ? "false" : "true"
+            if let outcome = adContentOutcome { properties["ad_outcome"] = outcome.rawValue }
+        }
         analytics.emit(HMPlaybackEvent(kind: event.kind, itemID: event.itemID, timestamp: event.timestamp,
-            monotonicTime: event.monotonicTime, position: event.position, metrics: metrics, properties: event.properties), item: item)
+            monotonicTime: event.monotonicTime, position: event.position, metrics: metrics, properties: properties), item: item)
         let entry = entry(withID: item.id) ?? item
         switch event.kind {
         case .ended:

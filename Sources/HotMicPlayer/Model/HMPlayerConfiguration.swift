@@ -118,6 +118,11 @@ public struct HMPlayerConfiguration: Sendable {
     public var adDecisionTimeout: TimeInterval = 1
     /// URL-ad startup deadline, default 5 seconds; invalid values use 5, bounded to 0.1...30.
     public var adLoadTimeout: TimeInterval = 5
+    /// Maximum accepted break wall time, default 120 seconds; finite values clamped to 0.1...3600.
+    public var adBreakMaxDuration: TimeInterval = 120
+    /// Allowed playing time without media progress, default 10 seconds; finite values clamped to 0.1...120.
+    /// Suspended while playback is disallowed. Nonfinite values use the default.
+    public var adNoProgressTimeout: TimeInterval = 10
     /// Allow vertical paging to cancel a pre-roll. Companion units never change this flag.
     public var allowsSwipeDuringAds = true
     /// Rendering default. Automatic preserves fill for matching vertical media and fits landscape media.
@@ -273,6 +278,8 @@ public struct HMPlayerConfiguration: Sendable {
     struct BenchmarkRecord: Codable, Sendable {
         private let adDecisionTimeout: TimeInterval?
         private let adLoadTimeout: TimeInterval?
+        private let adBreakMaxDuration: TimeInterval?
+        private let adNoProgressTimeout: TimeInterval?
         private let allowsSwipeDuringAds: Bool?
         private let presentation: HMVideoPresentation?
         private let aspectRatioTolerance: Double?
@@ -301,6 +308,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let managesAudioSession: Bool
         private let restoresPlaybackPosition: Bool
         fileprivate init(_ c: HMPlayerConfiguration) {
+            adBreakMaxDuration = c.adBreakMaxDuration; adNoProgressTimeout = c.adNoProgressTimeout
             adDecisionTimeout = c.adDecisionTimeout; adLoadTimeout = c.adLoadTimeout; allowsSwipeDuringAds = c.allowsSwipeDuringAds
             presentation = c.presentation; aspectRatioTolerance = c.aspectRatioTolerance
             backdropColor = c.backdropColor; followsDeviceRotation = c.followsDeviceRotation
@@ -324,6 +332,7 @@ public struct HMPlayerConfiguration: Sendable {
                 startupBitRateWindow: startupBitRateWindow, loops: loops, startsMuted: startsMuted,
                 managesAudioSession: managesAudioSession, restoresPlaybackPosition: restoresPlaybackPosition,
                 lowWaterMark: lowWaterMark, playlistTTL: playlistTTL)
+            c.adBreakMaxDuration = adBreakMaxDuration ?? 120; c.adNoProgressTimeout = adNoProgressTimeout ?? 10
             c.adDecisionTimeout = adDecisionTimeout ?? 1; c.adLoadTimeout = adLoadTimeout ?? 5; c.allowsSwipeDuringAds = allowsSwipeDuringAds ?? true
             c.presentation = presentation ?? .automatic; c.aspectRatioTolerance = aspectRatioTolerance ?? 0.25
             c.backdropColor = backdropColor ?? .black; c.followsDeviceRotation = followsDeviceRotation ?? false

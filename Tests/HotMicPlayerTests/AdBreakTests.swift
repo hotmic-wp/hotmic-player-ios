@@ -16,7 +16,9 @@ struct AdBreakTests {
         let sinkName = "ads-test"
         var outcomes: [String] = []
         var prefetch: [String] = []
+        var events: [HMPlaybackEvent] = []
         func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+            events.append(event)
             if event.kind == .adBreakEnded { outcomes.append(event.properties["outcome"] ?? "") }
             if event.kind == .adPrefetchChanged { prefetch.append(event.properties["paused"] ?? "") }
         }
@@ -45,15 +47,25 @@ struct AdBreakTests {
         #expect(!content.isActive && content.snapshot.currentTime == 0)
         #expect(player.preparedItemCount == 2)
         player.seek(to: 0.5); #expect(content.snapshot.currentTime == 0)
-        player.pause(); player.play(); player.isFeedVisible = false; player.isFeedVisible = true
+        var permissions: [Bool] = []
+        contexts[0].onPlaybackAllowedChange = { permissions.append($0) }
+        #expect(contexts[0].isPlaybackAllowed)
+        player.pause(); #expect(!contexts[0].isPlaybackAllowed)
+        player.play(); player.isFeedVisible = false; player.isFeedVisible = true
+        #expect(permissions == [false, true, false, true])
         var metadata = items; metadata[0] = HMMediaItem(id: "one", url: url, title: "new title")
         player.replaceAll(metadata)
         #expect(provider.calls == 1 && content.assignmentGeneration == assignment)
         contexts[0].updateProgress(HMAdProgress(elapsed: 1, duration: 6))
-        #expect(player.adState == .playing(kind: .host, progress: HMAdProgress(elapsed: 1, duration: 6)))
+        #expect(player.adState == .playing(kind: .host) && player.adProgress == HMAdProgress(elapsed: 1, duration: 6))
+        for tick in 2...30 { contexts[0].updateProgress(HMAdProgress(elapsed: Double(tick), duration: 60)) }
+        #expect(sink.events.filter { $0.kind == .adStateChanged }.map { $0.properties["state"] } == ["loading", "playing"])
+        #expect(sink.events.allSatisfy { ![.seeking, .seeked, .pause].contains($0.kind) })
         player.skipAd(); contexts[0].complete(); contexts[0].fail()
         #expect(stops == [.skipped] && sink.outcomes == ["skipped"])
         #expect(!player.adState.isActive && content.isActive && content.assignmentGeneration == assignment)
+        let start = try #require(sink.events.last { $0.kind == .viewStart })
+        #expect(start.properties["after_ad"] == "true" && start.properties["ad_outcome"] == "skipped")
         player.next()
         try await wait { contexts.count == 2 }
         player.configuration.allowsSwipeDuringAds = false
@@ -74,7 +86,7 @@ struct AdBreakTests {
         let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
         defer { try? FileManager.default.removeItem(at: url) }
         var continuation: CheckedContinuation<HMAdBreak, Never>?
-        var starts = 0
+        var starts = 0, stops: [HMAdOutcome] = []
         let provider = Provider { _ in await withCheckedContinuation { continuation = $0 } }
         var c = HMPlayerConfiguration(managesAudioSession: false); c.adDecisionTimeout = 0.05
         let sink = Sink(), player = HMPlayer(configuration: c, analytics: HMAnalyticsHub(sinks: [sink]))
@@ -82,19 +94,19 @@ struct AdBreakTests {
         player.adBreakProvider = provider; player.replaceAll([HMMediaItem(id: "slow", url: url)])
         try await wait { player.adState == .finished }
         try await wait { player.currentNode?.isActive == true }
-        continuation?.resume(returning: .hostPlayed(HMHostAdBreak(start: { _ in starts += 1 })))
+        continuation?.resume(returning: .hostPlayed(HMHostAdBreak(start: { _ in starts += 1 }, stop: { stops.append($0) })))
         continuation = nil
         try await Task.sleep(for: .milliseconds(30))
         #expect(starts == 0 && provider.calls == 1 && sink.outcomes == ["timedOut"])
+        #expect(stops == [.cancelled])
         player.play(); #expect(provider.calls == 1)
     }
-    @Test("URL startup timeout and decision failures release ad work and resume content", arguments: ["startup", "invalid", "throw", "none"])
+    @Test("URL startup timeout and decision failures release ad work and resume content", arguments: ["startup", "invalid", "throw"])
     func failOpen(mode: String) async throws {
         let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
         defer { try? FileManager.default.removeItem(at: url) }
         let provider = Provider { _ in
             if mode == "throw" { throw HMPlayerError.playback("fake SDK") }
-            if mode == "none" { return .none }
             return .preRoll(HMMediaItem(id: "ad", url: mode == "invalid" ? URL(string: "ftp://invalid/ad.mp4")! : url))
         }
         var c = HMPlayerConfiguration(managesAudioSession: false); c.adLoadTimeout = 0.1
@@ -103,8 +115,88 @@ struct AdBreakTests {
         player.adBreakProvider = provider; player.replaceAll([HMMediaItem(id: "content", url: url)])
         try await wait { player.adState == .finished && player.currentNode?.isActive == true }
         #expect(player.adNode == nil && player.hostAdContext == nil)
-        #expect(sink.outcomes == [mode == "startup" ? "timedOut" : mode == "none" ? "noFill" : "failed"])
+        #expect(sink.outcomes == [mode == "startup" ? "timedOut" : "failed"])
         #expect(sink.prefetch == ["true", "false"])
+        let start = try #require(sink.events.last { $0.kind == .viewStart })
+        #expect(start.properties["after_ad"] == (mode == "startup" || mode == "invalid" ? "true" : "false"))
+        if mode == "startup" {
+            #expect(start.monotonicTime - (start.metrics["request_monotonic_s"] ?? start.monotonicTime) >= 0.1)
+            #expect(start.properties["ad_outcome"] == "timedOut")
+        }
+    }
+
+    @Test("Accepted breaks escape hung renderers even with paging blocked", arguments: ["host-idle", "host-cap", "url-idle", "url-cap"])
+    func watchdog(mode: String) async throws {
+        let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var context: HMHostAdContext?, stops: [HMAdOutcome] = []
+        let ad = HMMediaItem(id: "ad", url: url)
+        let provider = Provider { _ in
+            mode.hasPrefix("url") ? .preRoll(ad) : .hostPlayed(HMHostAdBreak(start: { context = $0 }, stop: { stops.append($0) }))
+        }
+        var c = HMPlayerConfiguration(managesAudioSession: false)
+        c.allowsSwipeDuringAds = false
+        c.adNoProgressTimeout = mode.hasSuffix("idle") ? 0.15 : 10
+        c.adBreakMaxDuration = mode.hasSuffix("cap") ? 0.25 : 10
+        let sink = Sink(), player = HMPlayer(configuration: c, analytics: HMAnalyticsHub(sinks: [sink]))
+        defer { player.teardown() }
+        player.pause() // Prior content pause must not freeze the new break.
+        player.adBreakProvider = provider; player.replaceAll([HMMediaItem(id: "content", url: url)])
+        if mode.hasPrefix("url") {
+            try await wait { player.adNode != nil }
+            let node = try #require(player.adNode)
+            // Model a decoder that displayed its first frame, then stalled permanently.
+            node.onEvent?(HMPlaybackEvent(kind: .firstFrame, itemID: ad.id), ad)
+            node.player.pause()
+        } else {
+            try await wait { context != nil }
+            #expect(context?.isPlaybackAllowed == true)
+        }
+        #expect(player.isAdSwipeBlocked)
+        try await wait { player.adState == .finished && player.currentNode?.isActive == true }
+        #expect(sink.outcomes == ["timedOut"] && !player.isAdSwipeBlocked)
+        #expect(player.adNode == nil && player.hostAdContext == nil)
+        if mode.hasPrefix("host") { #expect(stops == [.timedOut]) }
+    }
+
+    @Test("Decision and accepted breaks preserve back-swipe assignments; removing current cancels finish-once", arguments: [false, true])
+    func retainedNeighbours(host: Bool) async throws {
+        let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var c = HMPlayerConfiguration(poolSize: 3, managesAudioSession: false)
+        c.removedCurrentPolicy = .finishThenAdvance
+        let sink = Sink(), player = HMPlayer(configuration: c, analytics: HMAnalyticsHub(sinks: [sink]))
+        defer { player.teardown() }
+        let items = ["one", "two", "three"].map { HMMediaItem(id: $0, url: url) }
+        player.replaceAll(items)
+        try await wait { player.currentNode?.isActive == true }
+        let previous = try #require(player.currentNode)
+        let generation = previous.assignmentGeneration
+        var continuation: CheckedContinuation<HMAdBreak, Never>?, stops: [HMAdOutcome] = []
+        let provider = Provider { _ in await withCheckedContinuation { continuation = $0 } }
+        player.adBreakProvider = provider; player.next()
+        try await wait { continuation != nil }
+        #expect(player.node(for: items[0]) === previous && previous.assignmentGeneration == generation)
+        continuation?.resume(returning: host ? .hostPlayed(HMHostAdBreak(start: { _ in }, stop: { stops.append($0) })) : .none)
+        continuation = nil
+        try await wait { host ? player.adState == .playing(kind: .host) : player.adState == .finished }
+        #expect(player.node(for: items[0]) === previous && previous.assignmentGeneration == generation)
+        if host {
+            player.remove(ids: ["two"])
+            #expect(player.currentItem?.id == "three" && !player.items.contains { $0.id == "two" })
+            #expect(stops == [.cancelled])
+            // Resolve the new visit before teardown, avoiding a dangling test continuation.
+            try await wait { continuation != nil }
+            continuation?.resume(returning: .none); continuation = nil
+            try await wait { player.adState == .finished }
+        } else {
+            #expect(sink.outcomes == ["noFill"] && sink.prefetch == ["true", "false"])
+            player.previous()
+            try await wait { continuation != nil }
+            continuation?.resume(returning: .none); continuation = nil
+            try await wait { player.adState == .finished && previous.isActive }
+            #expect(previous.assignmentGeneration == generation)
+        }
     }
 }
 #endif

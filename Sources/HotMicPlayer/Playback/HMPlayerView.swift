@@ -194,7 +194,10 @@ struct HMItemSurface<Overlay: View>: View {
                         .position(x: videoFrame.midX, y: videoFrame.midY)
                 }
                 HMVideoSurface(node: player.isFullscreen == fullscreen ? player.node(for: item) : nil,
-                               gravity: effectiveGravity, observesWarmFrame: observesWarmFrame,
+                               gravity: effectiveGravity,
+                               // Keep the incoming decoded frame's display proof while decisioning
+                               // holds content inactive. No fill must not cost two fresh boundaries.
+                               observesWarmFrame: observesWarmFrame || (player.currentItem?.id == item.id && player.adState == .loading),
                                capturesBackdrop: resolved == .fitWithBlurredBackdrop && display.posterURL == nil)
                     .frame(width: viewport.width, height: viewport.height)
                     .position(x: viewport.midX, y: viewport.midY)
@@ -202,9 +205,12 @@ struct HMItemSurface<Overlay: View>: View {
                 HMVideoGestureSurface(hooks: hooks, videoFrame: videoFrame, viewport: viewport, regions: regions,
                                       state: player.snapshot(for: item).state,
                                       wantsPlayback: player.wantsPlayback,
-                                      enabled: player.currentItem?.id == item.id && player.isFullscreen == fullscreen,
+                                      enabled: !player.adState.isActive && player.currentItem?.id == item.id && player.isFullscreen == fullscreen,
                                       toggle: { player.togglePlayPause() })
                     .frame(width: geometry.size.width, height: geometry.size.height)
+                if player.currentItem?.id == item.id, player.adState.isActive, player.isFullscreen == fullscreen {
+                    HMAdSurface(player: player).frame(width: geometry.size.width, height: geometry.size.height)
+                }
                 overlay(display, overlaySnapshot(videoFrame))
                     .environment(\.hmHitSpace, hitSpace)
                     .environment(\.hmReservedRegions, regions)

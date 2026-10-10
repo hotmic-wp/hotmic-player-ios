@@ -364,6 +364,12 @@ final class HMPlayerNode: Identifiable {
         snapshot.isMuted = muted
     }
 
+    /// Internal preroll positioning does not represent a viewer seek.
+    func resetForAd() {
+        seekForDisplay(to: .zero)
+        snapshot.currentTime = 0
+    }
+
     func seek(to seconds: TimeInterval) {
         guard let item, snapshot.seekableDuration > 0 else { return }
         // Map into the seekable window so this stays correct on DVR.

@@ -25,6 +25,63 @@ var hmFeedSafeArea: EdgeInsets { get set }
 var hmReservedRegions: [CGRect] { get set }
 ```
 
+## HMAdBreak
+
+```swift
+@MainActor enum HMAdBreak
+case hostPlayed(HMHostAdBreak)
+case none
+case preRoll(HMMediaItem)
+```
+
+## HMAdBreakProvider
+
+```swift
+@MainActor func adBreak(for item: HMMediaItem) async throws -> HMAdBreak
+@MainActor protocol HMAdBreakProvider : AnyObject
+```
+
+## HMAdKind
+
+```swift
+case host
+case player
+enum HMAdKind
+```
+
+## HMAdOutcome
+
+```swift
+case cancelled
+case completed
+case failed
+case noFill
+case skipped
+case timedOut
+enum HMAdOutcome
+```
+
+## HMAdProgress
+
+```swift
+init(elapsed: TimeInterval = 0, duration: TimeInterval = 0)
+let duration: TimeInterval
+let elapsed: TimeInterval
+struct HMAdProgress
+var fraction: Double? { get }
+```
+
+## HMAdState
+
+```swift
+case finished
+case loading
+case none
+case playing(kind: HMAdKind)
+enum HMAdState
+var isActive: Bool { get }
+```
+
 ## HMAdaptivePrefetchPolicy
 
 ```swift
@@ -207,6 +264,28 @@ enum HMFailedItemPolicy
 @MainActor init(@ViewBuilder content: () -> Content)
 @MainActor struct HMHitArea<Content> where Content : View
 @MainActor var body: some View { get }
+```
+
+## HMHostAdBreak
+
+```swift
+@MainActor init(start: @escaping (HMHostAdContext) -> Void, stop: @escaping (HMAdOutcome) -> Void = { _ in })
+@MainActor let start: (HMHostAdContext) -> Void
+@MainActor let stop: (HMAdOutcome) -> Void
+@MainActor struct HMHostAdBreak
+```
+
+## HMHostAdContext
+
+```swift
+@MainActor final class HMHostAdContext
+@MainActor func complete()
+@MainActor func fail()
+@MainActor func skip()
+@MainActor func updateProgress(_ value: HMAdProgress)
+@MainActor let container: UIView
+@MainActor var isPlaybackAllowed: Bool { get set }
+@MainActor var onPlaybackAllowedChange: ((Bool) -> Void)?
 ```
 
 ## HMInteractionError
@@ -401,6 +480,9 @@ var description: String { get }
 ## HMPlaybackEvent.Kind
 
 ```swift
+case adBreakEnded
+case adPrefetchChanged
+case adStateChanged
 case ended
 case error
 case firstFrame
@@ -478,6 +560,7 @@ enum HMPlaybackState
 @MainActor func previous()
 @MainActor func seek(to seconds: TimeInterval)
 @MainActor func seek(toProgress progress: Double)
+@MainActor func skipAd()
 @MainActor func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot
 @MainActor func start() async
 @MainActor func teardown()
@@ -488,11 +571,15 @@ enum HMPlaybackState
 @MainActor init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil)
 @MainActor let analytics: HMAnalyticsHub
 @MainActor var activeIndex: Int { get }
+@MainActor var adBreakProvider: (any HMAdBreakProvider)?
+@MainActor var adProgress: HMAdProgress { get set }
+@MainActor var adState: HMAdState { get set }
 @MainActor var configuration: HMPlayerConfiguration { get set }
 @MainActor var currentIndex: Int? { get }
 @MainActor var currentItem: HMMediaItem? { get }
 @MainActor var events: AsyncStream<HMPlayerEvent> { get }
 @MainActor var hasMoreContent: Bool { get set }
+@MainActor var isAdSwipeBlocked: Bool { get }
 @MainActor var isFeedVisible: Bool { get set }
 @MainActor var isFullscreen: Bool { get set }
 @MainActor var isInteracting: Bool { get }
@@ -523,7 +610,12 @@ static let `default`: HMPlayerConfiguration
 static let highQuality: HMPlayerConfiguration
 static let instantStart: HMPlayerConfiguration
 struct HMPlayerConfiguration
+var adBreakMaxDuration: TimeInterval
+var adDecisionTimeout: TimeInterval
+var adLoadTimeout: TimeInterval
+var adNoProgressTimeout: TimeInterval
 var adaptive: Bool
+var allowsSwipeDuringAds: Bool
 var aspectRatioTolerance: Double
 var backdropColor: HMVideoBackdropColor
 var cacheCapacityBytes: Int
@@ -560,6 +652,9 @@ var errorDescription: String? { get }
 ## HMPlayerEvent
 
 ```swift
+case adBreakEnded(item: HMMediaItem, outcome: HMAdOutcome)
+case adPrefetchChanged(paused: Bool)
+case adStateChanged(item: HMMediaItem, state: HMAdState)
 case currentItemChanged(HMMediaItem?)
 case error(item: HMMediaItem?, kind: HMPlayerError)
 case firstFrame(HMMediaItem, ttff: TimeInterval, readiness: HMReadinessTier)

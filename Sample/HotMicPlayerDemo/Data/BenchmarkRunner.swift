@@ -58,7 +58,7 @@ final class BenchmarkRunner {
         guard isSafeID(grid.runPrefix) else { throw BenchmarkOptions.Invalid("run_prefix") }
         // Validate the entire grid before playing its first cell.
         for cell in grid.cells {
-            guard [nil, "feed", "inline"].contains(cell.scenario), isSafeID(cell.id), (1...100).contains(cell.repeats), (0...10000).contains(cell.swipes ?? 50),
+            guard [nil, "feed", "inline", "ads", "ads-inline", "no-fill"].contains(cell.scenario), isSafeID(cell.id), (1...100).contains(cell.repeats), (0...10000).contains(cell.swipes ?? 50),
                   ["binge", "normal", "watchThrough", "backAndForth", "jumpTo20"].contains(cell.script),
                   cell.dwellSeconds == nil || (cell.dwellSeconds!.isFinite && cell.dwellSeconds! >= 0) else { throw BenchmarkOptions.Invalid("cell \(cell.id)") }
             _ = try cellOptions(cell, grid: grid, base: url).configuration()
@@ -109,7 +109,7 @@ final class BenchmarkRunner {
         let cellOptions = try cellOptions(cell, grid: grid, base: base)
         var configuration = try cellOptions.configuration()
         configuration.presentation = cell.presentation ?? configuration.presentation
-        isInline = cell.scenario == "inline"
+        isInline = cell.scenario == "inline" || cell.scenario == "ads-inline"
         let source = try await cellOptions.dataSource()
         let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("BenchRuns/\(runID).jsonl")
         let createdSink = try HMJSONLFileSink(fileURL: file, runID: runID, configuration: configuration,
@@ -129,6 +129,10 @@ final class BenchmarkRunner {
             if event.kind == .error { playbackError = event.properties["error_message"] ?? "Decoder error" }
         })
         let created = HMPlayer(configuration: configuration, analytics: hub)
+        if cell.scenario == "ads" || cell.scenario == "ads-inline" {
+            created.adBreakProvider = BenchmarkAdProvider(url: try await socialVideoFixture(landscape: true, name: "benchmark-preroll", seconds: 3))
+        }
+        if cell.scenario == "no-fill" { created.adBreakProvider = BenchmarkNoFillProvider() }
         created.playlistSource = source
         created.isFeedVisible = false
         await created.start()
@@ -194,4 +198,20 @@ final class BenchmarkRunner {
         init(_ event: @escaping (HMPlaybackEvent) -> Void) { self.event = event }
         func handle(_ event: HMPlaybackEvent, item: HMMediaItem) { self.event(event) }
     }
+}
+
+/// One local landscape pre-roll on the initial visit; subsequent swipes measure protected content heads.
+@MainActor private final class BenchmarkAdProvider: HMAdBreakProvider {
+    let url: URL
+    var consulted = false
+    init(url: URL) { self.url = url }
+    func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
+        defer { consulted = true }
+        return consulted ? .none : .preRoll(HMMediaItem(id: "benchmark-ad", url: url, aspectRatio: 16.0 / 9))
+    }
+}
+
+/// Decisioning overhead and warm back-swipe control without any accepted ad.
+@MainActor private final class BenchmarkNoFillProvider: HMAdBreakProvider {
+    func adBreak(for item: HMMediaItem) async throws -> HMAdBreak { .none }
 }

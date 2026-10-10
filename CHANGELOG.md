@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add visit-scoped `HMAdBreakProvider` for host SDK and URL pre-rolls, safe-area letterboxing, `adState`/`adProgress`, host playback permission, skip/cancellation, bounded deadlines and protected content prefetch. Add the offline Ads lab and ad/no-fill benchmark scenarios.
+- **Source compatibility:** `HMPlayerEvent` and `HMPlaybackEvent.Kind` gain ad lifecycle cases. Update exhaustive host switches when upgrading; use `@unknown default` for future SDK enum cases. Ad phase is `.playing(kind:)`; observe `HMPlayer.adProgress` separately from lifecycle events.
+
 - **Behavior change:** video surfaces now enable single-tap play/pause by default and expose a localized Video accessibility element with Play/Pause actions. Hosts can override the tap callback; Fire is opt-in.
 - Fullscreen defaults to independent zero-inset layout with optional fullscreen layout hooks, recomputed overlay exclusions, and no inherited inline reservations.
 - Add UIKit video-frame change callbacks and explicit full-bleed safe-area opt-in. Preserve UIKit's safe-area default and HotMicPlayerUI's locale compact names.

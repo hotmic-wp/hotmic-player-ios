@@ -266,8 +266,8 @@ private struct SocialOverlay: View {
 }
 
 /// Offline generated content for the gesture demo and simulator UI test. No network or environment setup.
-@MainActor private func socialVideoFixture(landscape: Bool) async throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("social-fixture.mp4")
+@MainActor func socialVideoFixture(landscape: Bool, name: String = "social-fixture", seconds: Int = 12) async throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(name + ".mp4")
     try? FileManager.default.removeItem(at: url)
     let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
     let width = landscape ? 320 : 180, height = landscape ? 180 : 320
@@ -282,7 +282,7 @@ private struct SocialOverlay: View {
     CVPixelBufferLockBaseAddress(pixels, [])
     memset(CVPixelBufferGetBaseAddress(pixels), 80, CVPixelBufferGetDataSize(pixels))
     CVPixelBufferUnlockBaseAddress(pixels, [])
-    for frame in 0..<120 {
+    for frame in 0..<(seconds * 10) {
         while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
         guard adaptor.append(pixels, withPresentationTime: CMTime(value: Int64(frame), timescale: 10)) else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }

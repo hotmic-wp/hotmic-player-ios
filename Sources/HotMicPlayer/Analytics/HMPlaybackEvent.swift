@@ -11,6 +11,13 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     public enum Kind: Sendable, Hashable {
+        /// Ad lifecycle phase change, associated with content without starting a content impression.
+        case adStateChanged
+        /// A visit's terminal ad outcome, including swipe-away cancellation.
+        case adBreakEnded
+        /// Bulk prefetch pause/resume during ads; protected content heads remain prepared.
+        case adPrefetchChanged
+
         /// A view (one item impression) began. Mux: `videochange` / new view.
         ///
         /// Use from any task; mutate only an exclusively owned value.
@@ -101,6 +108,9 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         /// Use from any task; mutate only an exclusively owned value.
         public var rawValue: String {
             switch self {
+            case .adStateChanged: return "adStateChanged"
+            case .adBreakEnded: return "adBreakEnded"
+            case .adPrefetchChanged: return "adPrefetchChanged"
             case .viewStart: return "viewStart"
             case .viewEnd: return "viewEnd"
             case .loadStart: return "loadStart"
@@ -130,6 +140,9 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         /// Decodes recorded benchmark categories, including experimental events.
         @_spi(Benchmark) public init?(rawValue: String) {
             switch rawValue {
+            case "adStateChanged": self = .adStateChanged
+            case "adBreakEnded": self = .adBreakEnded
+            case "adPrefetchChanged": self = .adPrefetchChanged
             case "viewStart": self = .viewStart
             case "viewEnd": self = .viewEnd
             case "loadStart": self = .loadStart

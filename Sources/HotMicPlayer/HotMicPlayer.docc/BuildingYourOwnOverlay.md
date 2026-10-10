@@ -122,8 +122,8 @@ This continuation window extends with each rapid tap. Without a double-tap
 callback, single taps do not wait for a second tap. Pending recognizers cancel
 when the ad flag disables them. Gestures remain enabled in fullscreen.
 
-Drive `.hmVideoGestures(isAdPlaying: true, ...)` while an ad plays; the ads
-integration can drive this flag later. It disables video gestures and video
+Drive `.hmVideoGestures(isAdPlaying: player.adState.isActive, ...)` on custom
+surfaces. Built-in surfaces already use `adState` automatically. It disables video gestures and video
 accessibility actions without disabling the host's own ad controls. Playback
 state is available through `snapshot.state`; draw the paused affordance in your
 overlay and mark decorative affordances `.allowsHitTesting(false)` and

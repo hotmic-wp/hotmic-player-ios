@@ -74,7 +74,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                 .onChange(of: controller.isFullscreen) { _, _ in
                     fallbackCommit?.cancel(); scrolledID = controller.currentItem?.id
                 }
-                .scrollDisabled(controller.isFullscreen)
+                .scrollDisabled(controller.isFullscreen || controller.isAdSwipeBlocked)
                 .scrollTargetBehavior(.paging)
                 .scrollIndicators(.hidden)
                 .scrollPosition(id: $scrolledID)

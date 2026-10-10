@@ -45,6 +45,58 @@ final class BenchmarkUITests: XCTestCase {
         }
         XCTFail("Grid timeout: \(app.staticTexts["benchmark-grid-progress"].label)")
     }
+    func testHorizontalRestrictedHost() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let manifest = env["HM_HORIZONTAL_MANIFEST"] else { throw XCTSkip("Set HM_HORIZONTAL_MANIFEST for the local horizontal walkthrough") }
+        continueAfterFailure = false
+        for portraitOnly in [true, false] {
+            XCUIDevice.shared.orientation = .portrait
+            let app = XCUIApplication()
+            app.launchArguments = ["--hm-horizontal-lab", "1", "--hm-manifest-url", manifest, "--hm-start-index", "1"]
+            if portraitOnly { app.launchArguments += ["--hm-portrait-only", "1"] }
+            app.launch()
+            let evidence = app.staticTexts["horizontal-evidence"]
+            XCTAssertTrue(evidence.waitForExistence(timeout: 15))
+            expectation(for: NSPredicate(format: "label MATCHES %@", ".*\\|[1-9][0-9]*\\|0$"), evaluatedWith: evidence)
+            waitForExpectations(timeout: 20)
+            let original = evidence.label
+            let startup = app.staticTexts["horizontal-ttff"].label.split(separator: " ").dropFirst().first.flatMap { Double($0) }
+            XCTAssertLessThan(try XCTUnwrap(startup), 3000) // catches a watcher sleeping until a 12s fixture loops
+            let exit = app.buttons["hm-exit-fullscreen"]
+            app.buttons["horizontal-fullscreen"].tap()
+            XCTAssertTrue(exit.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["horizontal-caption"].exists)
+            if portraitOnly { XCTAssertLessThan(app.frame.width, app.frame.height) }
+            exit.tap()
+            XCTAssertTrue(evidence.waitForExistence(timeout: 5)); XCTAssertEqual(evidence.label, original)
+            app.buttons["horizontal-sheet"].tap()
+            XCTAssertTrue(app.staticTexts["horizontal-host-sheet"].waitForExistence(timeout: 5))
+            app.buttons["sheet-fullscreen"].tap()
+            XCTAssertTrue(exit.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["horizontal-caption"].exists)
+            if portraitOnly { XCTAssertLessThan(app.frame.width, app.frame.height) }
+            exit.tap()
+            XCTAssertTrue(app.buttons["close-host-sheet"].waitForExistence(timeout: 5))
+            app.buttons["close-host-sheet"].tap()
+            XCTAssertTrue(evidence.waitForExistence(timeout: 5)); XCTAssertEqual(evidence.label, original)
+            if portraitOnly {
+                // The feed scene cannot rotate. Device orientation must still enter fullscreen.
+                XCUIDevice.shared.orientation = .landscapeLeft
+                XCTAssertTrue(exit.waitForExistence(timeout: 5))
+                XCTAssertLessThan(app.frame.width, app.frame.height)
+                XCUIDevice.shared.orientation = .portrait
+                XCTAssertTrue(evidence.waitForExistence(timeout: 5)); XCTAssertEqual(evidence.label, original)
+            }
+            // Begin the swipe immediately after exit, within the restore quiet period.
+            app.buttons["horizontal-fullscreen"].tap()
+            XCTAssertTrue(exit.waitForExistence(timeout: 5)); exit.tap()
+            app.swipeUp()
+            expectation(for: NSPredicate(format: "label CONTAINS '003-portrait'"), evaluatedWith: app.staticTexts["horizontal-status"])
+            waitForExpectations(timeout: 10)
+            app.terminate()
+        }
+    }
+
     /// Opt-in simulator walkthrough; unit coverage remains in the existing native/snapshot suites.
     func testHorizontalFullscreenContinuity() throws {
         let env = ProcessInfo.processInfo.environment
@@ -61,6 +113,8 @@ final class BenchmarkUITests: XCTestCase {
         expectation(for: NSPredicate(format: "NOT label CONTAINS 'pending'"), evaluatedWith: app.staticTexts["horizontal-ttff"])
         waitForExpectations(timeout: 20)
         let original = evidence.label
+        let startup = app.staticTexts["horizontal-ttff"].label.split(separator: " ").dropFirst().first.flatMap { Double($0) }
+        XCTAssertLessThan(try XCTUnwrap(startup), 3000)
         func shot(_ name: String) throws {
             // Wait for UIKit's rotation animation, then capture the whole display.
             // app.screenshot() can crop to the old portrait app bounds during rotation.

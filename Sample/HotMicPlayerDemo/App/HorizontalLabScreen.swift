@@ -7,6 +7,7 @@ import Observation
 struct HorizontalLabScreen: View {
     @State private var player: HMPlayer
     @State private var inline = BenchmarkOptions().values["horizontal-inline"] == "1"
+    @State private var hostSheet = false
     @State private var sink: HMJSONLFileSink?
     @State private var error: String?
     @State private var lastCommand = ""
@@ -26,11 +27,12 @@ struct HorizontalLabScreen: View {
             if inline {
                 VStack(spacing: 24) {
                     Text("Inline 16:9 player").font(.title2)
-                    HMPlayerView(player: player)
+                    HMPlayerView(player: player) { _, snapshot in fullscreenCaption(snapshot) }
                     Text("Same engine · next / previous · fullscreen").font(.caption)
                 }
             } else {
                 HMVerticalFeedView(player: player) { _, snapshot in
+                    fullscreenCaption(snapshot)
                     GeometryReader { _ in
                         Rectangle().stroke(.white.opacity(0.5), lineWidth: 1)
                             .frame(width: snapshot.videoFrame.width, height: snapshot.videoFrame.height)
@@ -55,6 +57,7 @@ struct HorizontalLabScreen: View {
                     Button("Fullscreen") { player.enterFullscreen() }.accessibilityIdentifier("horizontal-fullscreen")
                     Button(inline ? "Feed" : "Inline") { inline.toggle() }.accessibilityIdentifier("horizontal-inline")
                 }
+                Button("Host sheet") { hostSheet = true }.accessibilityIdentifier("horizontal-sheet")
                 HStack {
                     ForEach([HMVideoPresentation.automatic, .fill, .fit, .fitWithBlurredBackdrop, .fitWithColor], id: \.self) { policy in
                         Button(label(policy)) {
@@ -66,10 +69,21 @@ struct HorizontalLabScreen: View {
             }
             .padding().buttonStyle(.bordered).font(.caption).foregroundStyle(.white)
         }
+        .sheet(isPresented: $hostSheet) {
+            VStack(spacing: 24) {
+                Text("Host sheet").accessibilityIdentifier("horizontal-host-sheet")
+                Button("Sheet fullscreen") { player.enterFullscreen() }.accessibilityIdentifier("sheet-fullscreen")
+                Button("Close sheet") { hostSheet = false }.accessibilityIdentifier("close-host-sheet")
+            }.presentationDetents([.medium])
+        }
         .task {
             do {
                 guard sink == nil else { return }
                 let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("horizontal-lab.jsonl")
+                #if DEBUG
+                // Commands belong to the current lab session, never a subsequent launch.
+                try? FileManager.default.removeItem(at: file.deletingLastPathComponent().appendingPathComponent("horizontal-command.txt"))
+                #endif
                 let createdSink = try HMJSONLFileSink(fileURL: file, runID: "horizontal-lab", configuration: player.configuration,
                     format: "mixed", network: "local", script: "manual", buildSHA: "local")
                 sink = createdSink; player.analytics.add(createdSink); player.analytics.add(counters)
@@ -88,7 +102,7 @@ struct HorizontalLabScreen: View {
                         #endif
                         let snapshot = player.snapshot
                         let evidence: [String: Any] = ["time": ProcessInfo.processInfo.systemUptime, "id": player.currentItem?.id ?? "",
-                            "fullscreen": player.isFullscreen, "interacting": player.isInteracting, "inlineSurface": inline, "assignments": player.preparedItemIdentities,
+                            "fullscreen": player.isFullscreen, "hostSheet": hostSheet, "visible": player.isFeedVisible, "interacting": player.isInteracting, "inlineSurface": inline, "assignments": player.preparedItemIdentities,
                             "activation": snapshot.activationID, "playhead": snapshot.currentTime, "stalls": snapshot.stallCount,
                             "ttff": snapshot.timeToFirstFrame ?? -1, "aspect": snapshot.aspectRatio ?? 0,
                             "firstFrameEvents": counters.frames, "stallEvents": counters.stalls]
@@ -103,6 +117,8 @@ struct HorizontalLabScreen: View {
     }
     private func applyCommand(_ command: String) {
         switch command {
+        case "sheet": hostSheet = true
+        case "close-sheet": hostSheet = false
         case "enter": player.enterFullscreen()
         case "exit": player.exitFullscreen()
         case "inline": inline = true
@@ -115,6 +131,14 @@ struct HorizontalLabScreen: View {
                 player.configuration.backdropColor = HMVideoBackdropColor(red: 0.06, green: 0.12, blue: 0.25)
             }
         }
+    }
+    private func fullscreenCaption(_ snapshot: HMPlaybackSnapshot) -> some View {
+        VStack {
+            Spacer()
+            Text("Partner captions · \(Int(snapshot.videoFrame.width)) × \(Int(snapshot.videoFrame.height))")
+                .font(.caption).padding().background(.black.opacity(0.5))
+                .accessibilityIdentifier("horizontal-caption")
+        }.allowsHitTesting(false)
     }
     private func label(_ policy: HMVideoPresentation) -> String {
         switch policy {

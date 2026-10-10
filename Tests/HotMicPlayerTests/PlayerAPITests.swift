@@ -259,6 +259,9 @@ private final class FormatProtocol: URLProtocol {
 #if canImport(AVFoundation) && !os(macOS)
 import AVFoundation
 import Network
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @Suite("Native review regressions") @MainActor
 struct PlayerNativeReviewTests {
@@ -277,6 +280,11 @@ struct PlayerNativeReviewTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(!node.isActive)
+        let outputs = node.player.currentItem?.outputs.count
+        node.captureBackdropPoster() // warm capture must not consume the startup output
+        #expect(node.backdropPoster == nil && node.player.currentItem?.outputs.count == outputs)
+        let point = CGPoint(x: 1, y: 0).applying(HMBackdropImage.displayTransform(CGAffineTransform(rotationAngle: .pi / 2)))
+        #expect(abs(point.x) < 0.001 && abs(point.y + 1) < 0.001)
         #expect(abs((node.snapshot.aspectRatio ?? 0) - expected) < 0.001)
         node.updateMetadata(HMMediaItem(id: "camera", url: url, aspectRatio: 1))
         #expect(abs((node.snapshot.aspectRatio ?? 0) - expected) < 0.001) // decoded size wins
@@ -319,7 +327,66 @@ struct PlayerNativeReviewTests {
         #expect(node.snapshot.stallCount == 0)
         player.configuration.followsDeviceRotation = false
         player.deviceRotated(isLandscape: true); #expect(!player.isFullscreen)
+        #if os(iOS)
+        #expect(HMFullscreenPresenterController.presentationOrientation(current: .portrait, device: .landscapeLeft,
+            landscapeItem: true, supported: .portrait) == .portrait)
+        #expect(HMFullscreenPresenterController.presentationOrientation(current: .portrait, device: .landscapeLeft,
+            landscapeItem: true, supported: [.portrait, .landscapeLeft]) == .landscapeLeft)
+        let owner = HMFullscreenPresenterController(player: player)
+        let duplicate = HMFullscreenPresenterController(player: player)
+        player.fullscreenPresenter = owner; player.enterFullscreen()
+        duplicate.stop()
+        #expect(player.isFullscreen && player.fullscreenPresenter === owner)
+        owner.stop(); #expect(!player.isFullscreen && player.fullscreenPresenter == nil)
+        #endif
+        player.attachInline(); #expect(player.isFeedVisible)
+        player.pause(); player.detachInline(); #expect(!player.isFeedVisible)
+        player.attachInline(); #expect(player.isFeedVisible && node.player.rate == 0)
+        player.detachInline()
     }
+
+    @Test("Fullscreen failure skipping resumes on exit for inline and mounted feed", arguments: [false, true])
+    func fullscreenFailure(feed: Bool) async throws {
+        let player = HMPlayer(configuration: HMPlayerConfiguration(managesAudioSession: false))
+        player.isFeedVisible = false
+        defer { player.teardown() }
+        let a = item("failed-fullscreen"), b = item("next-fullscreen")
+        player.replaceAll([a, b])
+        if feed { player.attachFeed(); player.isFeedVisible = false }
+        player.enterFullscreen()
+        player.pool.onEvent?(HMPlaybackEvent(kind: .error, itemID: a.id), a)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(player.currentItem?.id == a.id && player.requestedPageID == nil)
+        player.exitFullscreen()
+        let deadline = Date().addingTimeInterval(1)
+        while player.currentItem?.id == a.id && player.requestedPageID == nil, Date() < deadline { await Task.yield() }
+        if feed {
+            #expect(player.requestedPageID == b.id)
+            player.commitPage(toID: b.id, requestedAt: 0)
+            player.detachFeed()
+        }
+        #expect(player.currentItem?.id == b.id)
+    }
+
+    #if canImport(UIKit)
+    @Test("A real drag ends fullscreen geometry restoration immediately")
+    func quickSwipeAfterFullscreen() {
+        let reference = HMScrollViewReference()
+        var committed: String?
+        let coordinator = HMPageCommitProbe.Coordinator(commit: { id, _ in committed = id }, reference: reference, interaction: { _ in })
+        let scroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        scroll.contentSize = CGSize(width: 390, height: 1688)
+        coordinator.observe(scroll); coordinator.reconcile(items: ["a", "b"], current: "a")
+        coordinator.isSuspended = true; coordinator.isSuspended = false
+        #expect(reference.isRestoringFullscreen)
+        coordinator.scrollViewWillBeginDragging(scroll)
+        #expect(!reference.isRestoringFullscreen)
+        scroll.contentOffset.y = 844
+        coordinator.scrollViewDidEndDragging(scroll, willDecelerate: false)
+        #expect(committed == "b")
+        coordinator.fallback?.cancel()
+    }
+    #endif
 
     /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
     private func videoFixture(rotated: Bool) async throws -> URL {

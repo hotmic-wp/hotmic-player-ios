@@ -1,6 +1,6 @@
 # HotMicPlayer architecture (0.3.0)
 
-The dependency-free player package defines `HMPlayer`, its VOD engine, `HMVerticalFeedView`, analytics and three partner adapter protocols. The separate [HotMicPlayerCore package](https://github.com/hotmic-wp/hotmic-player-core-ios) will depend on this package and HotMicCore to implement those adapters. There is no Core code here.
+The dependency-free player package defines `HMPlayer`, its VOD engine, `HMVerticalFeedView`, analytics and three partner adapter protocols. The separate [HotMicPlayerConnect package](https://github.com/hotmic-wp/hotmic-player-connect-ios) will depend on this package and HotMicCore to implement those adapters. There is no Core code here.
 
 ## Public contract and atomic playlist edits
 

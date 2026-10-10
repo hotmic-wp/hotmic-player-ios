@@ -7,5 +7,5 @@ public enum HotMicPlayer {
     /// Semantic version of the partner API.
     ///
     /// Safe to read from any task.
-    public static let version = "1.0.0-rc.3"
+    public static let version = "1.0.0-rc.4"
 }

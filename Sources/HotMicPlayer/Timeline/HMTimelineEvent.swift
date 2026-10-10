@@ -202,7 +202,7 @@ public struct HMTimelineMarker: Identifiable, Sendable, Equatable {
 /// Source of engagement events for one item.
 ///
 /// Implement this in your interaction source to return media-clock history and
-/// precomputed aggregates. The separate HotMicPlayerCore package supplies the
+/// precomputed aggregates. The separate HotMicPlayerConnect package supplies the
 /// HotMic adapter; custom sources can use their own storage.
 ///
 /// Access on the main actor.

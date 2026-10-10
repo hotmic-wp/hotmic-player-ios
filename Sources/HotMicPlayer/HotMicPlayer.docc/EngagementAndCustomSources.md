@@ -23,7 +23,7 @@ Implement `capabilities(for:)` to expose `.sendChat`, `.reactToStream`, `.reactT
 }
 ```
 
-The [PlayerWithUI Example](https://github.com/hotmic-wp/hotmic-player-sdk/tree/main/Examples/PlayerWithUI) includes a small writable in-memory source using only public API.
+The [PlayerWithUI Example](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerWithUI) includes a small writable in-memory source using only public API.
 
 ## Timeline and actions
 

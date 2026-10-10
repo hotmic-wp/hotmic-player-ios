@@ -6,17 +6,24 @@ A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in
 | --- | --- | --- |
 | URLs → your feed UI | `HotMicPlayer` | [PlayerOnly Example](Examples/PlayerOnly), [getting started](Sources/HotMicPlayer/HotMicPlayer.docc/GettingStarted.md) |
 | Player + engagement overlay + your data | `HotMicPlayer`, `HotMicPlayerUI` | [PlayerWithUI Example](Examples/PlayerWithUI), [UI guide](Sources/HotMicPlayerUI/HotMicPlayerUI.docc/GettingStarted.md) |
-| HotMic content + engagement | Above plus separate `HotMicPlayerCore` | [HotMicPlayerCore package](https://github.com/hotmic-wp/hotmic-player-core-ios) |
+| HotMic content + engagement | Above plus separate `HotMicPlayerConnect` | [HotMicPlayerConnect package](https://github.com/hotmic-wp/hotmic-player-connect-ios) |
 
 ## Install
 
-In Xcode, add `https://github.com/hotmic-wp/hotmic-player-sdk.git` as a Package Dependency. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For a Swift package:
+In Xcode, add `https://github.com/hotmic-wp/hotmic-player-ios` as a Package Dependency. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For a Swift package:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-sdk.git", from: "1.0.0")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0-rc.4")
 ```
 
-This branch is `1.0.0-rc.1`. To evaluate the candidate after its tag is published, use `exact: "1.0.0-rc.1"`. The `from: "1.0.0"` requirement is for the final stable release and will resolve once that tag is published.
+This branch is `1.0.0-rc.4`. The requirement above resolves after its tag is published. Use `from: "1.0.0"` for the final stable release once that tag is published.
+
+Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
+
+```swift
+.product(name: "HotMicPlayer", package: "hotmic-player-ios"),
+.product(name: "HotMicPlayerUI", package: "hotmic-player-ios") // Optional UI
+```
 
 ## 1. Player only
 
@@ -71,15 +78,16 @@ Without a source, engagement is empty and read-only. Sources declare supported a
 
 ## 3. HotMic content + engagement
 
-Install [HotMicPlayerCore](https://github.com/hotmic-wp/hotmic-player-core-ios) separately and follow its README to construct its adapters. Once constructed, they plug into these public protocols:
+Install [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect-ios) separately and follow its README to construct its adapters. Its `HotMicItemResolver`, `HotMicPlaylistSource` and `HotMicInteractionSource` implement the player’s public plug-in protocols:
 
 ```swift
 import SwiftUI
 import HotMicPlayer
 import HotMicPlayerUI
-@MainActor func hotMicFeed(resolver: any HMItemResolver,
-                          source: any HMPlaylistSource,
-                          interactions: any HMInteractionSource) -> some View {
+import HotMicPlayerConnect
+@MainActor func hotMicFeed(resolver: HotMicItemResolver,
+                          source: HotMicPlaylistSource,
+                          interactions: HotMicInteractionSource) -> some View {
     let player = HMPlayer(resolver: resolver, interactions: interactions)
     player.playlistSource = source
     return HMVerticalFeedView(player: player, layout: HMOverlayLayout.self)
@@ -111,4 +119,4 @@ Read the [benchmark guide](docs/BENCHMARKING.md) before drawing performance conc
 
 From 1.0, public non-SPI API follows semantic versioning: patches fix behavior, minors add compatible API, and majors may remove or change contracts. Renames retain deprecated forwarding API with compiler fix-its. New cases may be added to non-frozen public enums in minor releases; use `@unknown default` in client switches. Benchmark SPI, private implementation and demo tooling may change without compatibility guarantees. Pre-release versions carry an explicit suffix and are for evaluation.
 
-Report SDK problems through [repository issues](https://github.com/hotmic-wp/hotmic-player-sdk/issues) or your HotMic partner contact. Include SDK/Xcode/iOS versions, a minimal reproduction, expected behavior, and relevant events. Use the Core package's support channel for adapter-specific issues. Remove credentials and private media URLs from shared reports.
+Report SDK problems through [repository issues](https://github.com/hotmic-wp/hotmic-player-ios/issues) or your HotMic partner contact. Include SDK/Xcode/iOS versions, a minimal reproduction, expected behavior, and relevant events. Use the Connect package's support channel for adapter-specific issues. Remove credentials and private media URLs from shared reports.

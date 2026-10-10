@@ -7,7 +7,7 @@ Prepare MP4 and HLS VOD so HotMicPlayer can fetch and decode the first frame qui
 Content preparation matters as much as player configuration. Internal device runs on
 an iPhone 14 with a roughly 30 Mbps origin showed swipe first frames at approximately
 67–117 ms (p50) with content following these rules. These are internal device results,
-not a latency guarantee; see the [benchmark guide](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/docs/BENCHMARKING.md)
+not a latency guarantee; see the [benchmark guide](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/BENCHMARKING.md)
 for measurement context.
 
 ## MP4
@@ -17,7 +17,7 @@ payload. Encode H.264 High, or HEVC for devices that support it, with a keyframe
 0 s and a 1–2 s GOP. A 720×1280 frame is a good vertical feed default. Use constant
 frame rate and AAC audio.
 
-This is the 720×1280 command from [bench/encode.sh](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/bench/encode.sh)
+This is the 720×1280 command from [bench/encode.sh](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/bench/encode.sh)
 with its defaults expanded: 30 fps, a 2 s GOP, and optional source audio.
 
 ```bash
@@ -79,5 +79,5 @@ With the default configuration, HotMicPlayer prefetches the start of the next fe
 videos and prepares/prerolls the next one to keep it decoded for a swipe, subject
 to buffer health and app limits. A cached byte prefix alone does not guarantee a
 decoded frame. See <doc:PrefetchAndPerformance> for budgets and configuration, and
-[adaptive prefetch details](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/docs/ADAPTIVE_PREFETCH.md)
+[adaptive prefetch details](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/ADAPTIVE_PREFETCH.md)
 for readiness tiers and safety limits.

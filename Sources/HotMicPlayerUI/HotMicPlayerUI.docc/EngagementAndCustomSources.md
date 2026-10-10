@@ -6,7 +6,7 @@ Connect the overlay to the same headless engagement data your own views can use.
 
 Create `HMPlayer(interactions: yourSource)` on the main actor. Implement the main-actor `HMInteractionSource` protocol from HotMicPlayer. `timeline(for:)` is required and must not open a session. The current-plus-next lifecycle hooks open, promote and close sessions. Declare supported actions with `capabilities(for:)`; otherwise components remain display-only.
 
-The [complete source guide](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/Sources/HotMicPlayer/HotMicPlayer.docc/EngagementAndCustomSources.md) explains timeline offsets, server-ID adoption, echoes, ownership and moderation. [MemorySource.swift](https://github.com/hotmic-wp/hotmic-player-sdk/blob/main/Examples/PlayerWithUI/PlayerWithUI/MemorySource.swift) demonstrates a local source with no network or SPI.
+The [complete source guide](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sources/HotMicPlayer/HotMicPlayer.docc/EngagementAndCustomSources.md) explains timeline offsets, server-ID adoption, echoes, ownership and moderation. [MemorySource.swift](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Examples/PlayerWithUI/PlayerWithUI/MemorySource.swift) demonstrates a local source with no network or SPI.
 
 ## Components and clocks
 

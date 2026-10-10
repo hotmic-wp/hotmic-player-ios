@@ -1,4 +1,5 @@
 import SwiftUI
+import HotMicPlayerUI
 @_spi(Benchmark) import HotMicPlayer
 
 struct BenchmarkScreen: View {
@@ -12,7 +13,9 @@ struct BenchmarkScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let controller = runner.controller {
-                if runner.isInline {
+                if runner.showsSocialOverlay {
+                    BenchmarkSocialSurface(player: controller, inline: runner.isInline).id(ObjectIdentifier(controller))
+                } else if runner.isInline {
                     HMPlayerView(player: controller).id(ObjectIdentifier(controller))
                 } else {
                     HMVerticalFeedView(player: controller) { item, snapshot in
@@ -75,5 +78,33 @@ private struct BenchmarkEngagementOverlay: View {
         .task {
             if engagement.supports(.loadComments) { try? await engagement.loadComments() }
         }
+    }
+}
+
+/// Only the UI varies in paired smoke cells; both use the same observed engagement state.
+private struct BenchmarkSocialSurface: View {
+    let player: HMPlayer
+    let inline: Bool
+    @State private var data = BenchmarkSocialData()
+    var body: some View {
+        HMSocialPlayerView(player: player, surface: inline ? .inline : .feed) { item in
+            data.adapter(player: player, item: item)
+        }
+        .task(id: player.currentItem?.id) {
+            guard let item = player.currentItem else { return }
+            let engagement = player.engagement(for: item)
+            if engagement.supports(.loadComments) { try? await engagement.loadComments() }
+        }
+    }
+}
+
+@MainActor private final class BenchmarkSocialData {
+    private var adapters: [String: HMEngagementSocialAdapter] = [:]
+    func adapter(player: HMPlayer, item: HMMediaItem) -> HMEngagementSocialAdapter {
+        if let adapter = adapters[item.id] { return adapter }
+        let adapter = HMEngagementSocialAdapter(engagement: player.engagement(for: item), metadata: HMSocialContent(
+            title: "A moment to share", description: "Watch, react and join the conversation.", hashtags: ["Highlights"], community: "Community"))
+        adapters[item.id] = adapter
+        return adapter
     }
 }

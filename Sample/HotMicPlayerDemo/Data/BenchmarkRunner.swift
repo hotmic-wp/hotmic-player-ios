@@ -6,6 +6,7 @@ import UIKit
 /// All device paths run this autopilot. XCTest only starts it and waits.
 @MainActor @Observable
 final class BenchmarkRunner {
+    private(set) var showsSocialOverlay = false
     private(set) var isInline = false
     private(set) var controller: HMPlayer?
     private(set) var isRunning = false
@@ -95,10 +96,11 @@ final class BenchmarkRunner {
               ["http", "https"].contains(playlist.scheme) else { throw BenchmarkOptions.Invalid("playlist_url") }
         var values = ["strategy": cell.strategy, "format": cell.format, "network": grid.network,
                       "manifest-url": playlist.absoluteString, "run-id": "grid", "script": cell.script]
-        let supported: Set<String> = ["engagement", "captions", "players", "ahead", "behind", "prefetch-bytes", "prefetch-seconds", "threshold", "cache-cap", "startup-bitrate", "startup-window", "steady-bitrate", "steady-buffer", "warm-buffer", "adaptive", "prefetch-concurrency", "resolve-ahead", "cached-start-bytes", "adaptive-slow-bytes-per-second", "adaptive-fast-bytes-per-second", "adaptive-high-latency-seconds", "adaptive-speed-hysteresis-fraction", "adaptive-low-hit-rate", "adaptive-binge-dwell-seconds", "adaptive-long-dwell-seconds", "adaptive-safety-buffer-seconds", "adaptive-recovery-buffer-seconds", "adaptive-slow-budget-fraction", "adaptive-medium-budget-fraction", "adaptive-binge-budget-multiplier", "adaptive-long-dwell-budget-multiplier", "adaptive-long-dwell-delay-fraction", "adaptive-maximum-delay-seconds", "adaptive-slow-ahead", "adaptive-medium-ahead", "adaptive-slow-bit-rate", "adaptive-medium-bit-rate", "adaptive-fast-bit-rate", "adaptive-ewma-alpha"]
+        let supported: Set<String> = ["social-overlay", "engagement", "captions", "players", "ahead", "behind", "prefetch-bytes", "prefetch-seconds", "threshold", "cache-cap", "startup-bitrate", "startup-window", "steady-bitrate", "steady-buffer", "warm-buffer", "adaptive", "prefetch-concurrency", "resolve-ahead", "cached-start-bytes", "adaptive-slow-bytes-per-second", "adaptive-fast-bytes-per-second", "adaptive-high-latency-seconds", "adaptive-speed-hysteresis-fraction", "adaptive-low-hit-rate", "adaptive-binge-dwell-seconds", "adaptive-long-dwell-seconds", "adaptive-safety-buffer-seconds", "adaptive-recovery-buffer-seconds", "adaptive-slow-budget-fraction", "adaptive-medium-budget-fraction", "adaptive-binge-budget-multiplier", "adaptive-long-dwell-budget-multiplier", "adaptive-long-dwell-delay-fraction", "adaptive-maximum-delay-seconds", "adaptive-slow-ahead", "adaptive-medium-ahead", "adaptive-slow-bit-rate", "adaptive-medium-bit-rate", "adaptive-fast-bit-rate", "adaptive-ewma-alpha"]
         for (key, number) in cell.knobs ?? [:] {
             guard supported.contains(key), number.isFinite else { throw BenchmarkOptions.Invalid("knob \(key)") }
             if key == "engagement", ![0, 1, 2].contains(number) { throw BenchmarkOptions.Invalid("engagement must be 0, 1 or 2") }
+            if key == "social-overlay", number != 0 && number != 1 { throw BenchmarkOptions.Invalid("social-overlay must be 0 or 1") }
             if key == "captions", number != 0 && number != 1 { throw BenchmarkOptions.Invalid("captions must be 0 or 1") }
             values[key] = String(format: "%.15g", number)
         }
@@ -111,13 +113,14 @@ final class BenchmarkRunner {
         let cellOptions = try cellOptions(cell, grid: grid, base: base)
         var configuration = try cellOptions.configuration()
         configuration.presentation = cell.presentation ?? configuration.presentation
+        showsSocialOverlay = cell.knobs?["social-overlay"] == 1
         isInline = cell.scenario == "inline" || cell.scenario == "ads-inline"
         let source = try await cellOptions.dataSource()
         let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("BenchRuns/\(runID).jsonl")
         let createdSink = try HMJSONLFileSink(fileURL: file, runID: runID, configuration: configuration,
             format: cell.format, network: grid.network, script: cell.script,
             buildSHA: options.values["build-sha"] ?? (Bundle.main.object(forInfoDictionaryKey: "HMBuildSHA") as? String ?? "unknown"),
-            dimensions: ["grid_url": base.absoluteString, "cell_id": cell.id, "reset_cache": String(cell.resetCache ?? true), "paging": isInline ? "inline-next" : "in-app-settled-page", "swipes": String(cell.swipes ?? 50), "engagement": String(Int(cell.knobs?["engagement"] ?? 0))])
+            dimensions: ["grid_url": base.absoluteString, "cell_id": cell.id, "reset_cache": String(cell.resetCache ?? true), "paging": isInline ? "inline-next" : "in-app-settled-page", "swipes": String(cell.swipes ?? 50), "engagement": String(Int(cell.knobs?["engagement"] ?? 0)), "social_overlay": String(showsSocialOverlay)])
         sink = createdSink
         observedIDs = []; playbackError = nil; pageNumber = 0
         let hub = HMAnalyticsHub(sinks: [createdSink])

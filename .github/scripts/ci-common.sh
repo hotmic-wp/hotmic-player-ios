@@ -13,7 +13,8 @@ run_step() {
   local elapsed=$((SECONDS - began))
   echo "$name: ${elapsed}s"
   echo "::endgroup::"
-  if [ "$elapsed" -gt "$budget" ]; then
+  # An empty budget records the step and leaves the job total as the guard.
+  if [ -n "$budget" ] && [ "$elapsed" -gt "$budget" ]; then
     echo "::error::${name} took ${elapsed}s, over the ${budget}s budget. Failing before the 10-minute job timeout."
     exit 1
   fi

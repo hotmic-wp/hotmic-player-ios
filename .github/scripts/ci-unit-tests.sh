@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package tests only. Build without a device, then boot and test. Nothing overlaps.
+# Package tests only. Start simulator boot, build generically, then await readiness.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 source .github/scripts/ci-common.sh
@@ -142,21 +142,25 @@ prepare_cached_products() {
   printf '%s\n%s\ngeneric-simulator-v1:%s\n' "$xcode_id" "$packages" "$simulator_arch" > "$stamp"
 }
 prepare_cached_products
-boot_simulator() {
+start_simulator() {
   if [ -z "$simulator_id" ]; then
     local selection runtime simulator_type
     unit_step simulator-list 30 xcrun simctl list -j
     selection=$(python3 .github/scripts/select-simulator.py < "$validation_dir/simulator-list.log") || return 1
     runtime=${selection%%$'\n'*}
     simulator_type=${selection#*$'\n'}
+    # Interrupted reuse must never recover a UUID from an earlier invocation.
+    rm -f "$validation_dir/simulator-create.log"
     creating_simulator=1
     unit_step simulator-create 30 xcrun simctl create HotMic-player-ci "$simulator_type" "$runtime"
     read_created_simulator
     creating_simulator=0
   fi
   unit_step simulator-boot 30 xcrun simctl boot "$simulator_id" || true
-  unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
 }
+# Boot returns before readiness; let migration proceed during compilation.
+# Watchdogs remain sequential, and ownership stays in the parent shell.
+start_simulator
 # A generic destination does not need a booted device or device discovery during
 # compilation. Explicit ARCHS keeps generic builds to the same native slice used
 # by test-without-building, including Intel hosts.
@@ -166,7 +170,7 @@ unit_step simulator-build "$budget_simulator_build" xcodebuild build-for-testing
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" \
   -only-testing:HotMicPlayerTests -showBuildTimingSummary \
   ARCHS="$simulator_arch" ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}"
-boot_simulator
+unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
 # The iOS unit target includes native-player tests omitted by macOS swift test.
 unit_step unit-tests "$budget_unit_tests" xcodebuild test-without-building \
   -scheme HotMicPlayer-Package \

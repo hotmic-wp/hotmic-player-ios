@@ -63,6 +63,8 @@ During a swipe, the current entry means the last committed page, which can be a 
 
 `next()` and `previous()` do nothing at the ends. `jump(toID:)` reports an error for unknown IDs. `seek(to:)` takes seconds, rejects negative/non-finite values, and clamps to the known duration. `isMuted` applies to current and prepared players. `play()` and `pause()` preserve position. `seek(toProgress:)` and toggle helpers support overlays. Animated `requestPage(at:)` and async `requestPlay(at:requestedAt:)` are Benchmark SPI.
 
+Seeking while paused preserves paused intent, including across hide/show and application lifecycle transitions. A resumed seek invalidates old display continuity at seek start and completion; only fresh post-completion display boundaries can establish a new first frame. Keep `isFeedVisible` tied to the host's presentation and call `teardown()` on permanent dismissal.
+
 ## Optional paging
 
 ```swift

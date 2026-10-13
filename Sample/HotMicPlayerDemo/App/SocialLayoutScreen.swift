@@ -13,7 +13,7 @@ struct SocialLayoutScreen: View {
     @State private var host = CustomEngagementBackend()
     @State private var connect = DemoConnectInteractionSource()
     init() {
-        let milliseconds = Int(BenchmarkOptions().values["engagement-latency-ms"] ?? "350") ?? 350
+        let milliseconds = Int(DemoOptions().values["engagement-latency-ms"] ?? "350") ?? 350
         let latency = Duration.milliseconds(min(5_000, max(0, milliseconds)))
         let host = CustomEngagementBackend(), connect = DemoConnectInteractionSource()
         host.client.latency = latency; connect.client.backend.latency = latency
@@ -29,10 +29,11 @@ struct SocialLayoutScreen: View {
 }
 
 private struct SocialEngagementScreen: View {
-    @State private var player: HMPlayer
+    @StateObject private var owner: DemoPlayerOwner
+    private var player: HMPlayer { owner.player }
     @State private var model: SocialLayoutModel
     init(source: HMInteractionSource, sourceName: String, switchSource: @escaping () -> Void, failNext: @escaping () -> Void) {
-        _player = State(initialValue: HMPlayer(configuration: HMPlayerConfiguration(startsMuted: true), interactions: source))
+        _owner = StateObject(wrappedValue: DemoPlayerOwner(player: HMPlayer(configuration: HMPlayerConfiguration(startsMuted: true), interactions: source)))
         _model = State(initialValue: SocialLayoutModel(sourceName: sourceName, switchSource: switchSource, failNext: failNext))
     }
     var body: some View {
@@ -46,21 +47,22 @@ private struct SocialEngagementScreen: View {
         }
         .preferredColorScheme(.dark)
         .task {
+            guard player.items.isEmpty else { return }
             player.configuration.presentation = .fill
             player.analytics.add(model.trace)
             do {
-                if let fixture = BenchmarkOptions().values["social-fixture"] {
+                if let fixture = DemoOptions().values["social-fixture"] {
                     let landscape = fixture == "landscape"
                     let url = try await socialVideoFixture(landscape: landscape)
                     let ids = fixture == "feed" ? ["social-fixture", "social-fixture-next"] : ["social-fixture"]
                     player.replaceAll(ids.map { HMMediaItem(id: $0, url: url, title: "A moment to share", aspectRatio: landscape ? 16.0 / 9 : 9.0 / 16) })
                 } else {
-                    player.playlistSource = try await BenchmarkOptions().dataSource()
+                    player.playlistSource = try await DemoOptions().dataSource()
                 }
                 await player.start()
                 model.trace.player = player
                 #if DEBUG
-                if BenchmarkOptions().values["social-trace"] == "1" { await model.trace.record() }
+                if DemoOptions().values["social-trace"] == "1" { await model.trace.record() }
                 #endif
             } catch {
                 if !socialCancellation(error) { model.error = error.localizedDescription }
@@ -83,7 +85,8 @@ private struct SocialEngagementScreen: View {
                 model.previewRotation += 1
             }
         }
-        .onDisappear { player.teardown() }
+        .onAppear { player.isFeedVisible = true }
+        .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 

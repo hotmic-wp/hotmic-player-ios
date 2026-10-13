@@ -1,5 +1,5 @@
 import SwiftUI
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 import HotMicPlayerUI
 
 /// Everything drawn on top of one feed cell: the public `HMOverlayLayout`, plus
@@ -36,7 +36,7 @@ struct FeedOverlayView: View {
             HMOverlayLayout(player: controller, item: item, snapshot: snapshot, options: options)
 
             #if DEBUG
-            if isActive && BenchmarkOptions().values["moderation"] == "1" {
+            if isActive && DemoOptions().values["moderation"] == "1" {
                 VStack {
                     ModerationDebugView(engagement: controller.engagement(for: item), mediaTime: snapshot.currentTime,
                                         player: controller, session: settings.moderation)
@@ -55,7 +55,6 @@ struct FeedOverlayView: View {
                         // most people have before they find the toolbar toggle.
                         DebugHUDView(
                             snapshot: snapshot,
-                            poolBusy: controller.preparedItemCount,
                             poolSize: controller.configuration.poolSize,
                             prefetchLabel: settings.prefetch.displayName
                         )

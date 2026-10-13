@@ -1,7 +1,7 @@
 import AVFoundation
 import Observation
 import SwiftUI
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 
 /// Everything the control panel can change at runtime.
 ///

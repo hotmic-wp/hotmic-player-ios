@@ -15,7 +15,7 @@ struct HotMicPlayerDemoApp: App {
 final class HorizontalLabAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
         #if DEBUG
-        if BenchmarkOptions().values["portrait-only"] == "1" { return .portrait }
+        if DemoOptions().values["portrait-only"] == "1" { return .portrait }
         #endif
         return .allButUpsideDown
     }

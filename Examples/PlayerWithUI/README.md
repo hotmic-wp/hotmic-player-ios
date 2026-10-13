@@ -12,3 +12,5 @@ xcodebuild build -project Examples/PlayerWithUI/PlayerWithUI.xcodeproj -scheme P
 ```
 
 Run from the repository root. [UI guide](../../Sources/HotMicPlayerUI/HotMicPlayerUI.docc/GettingStarted.md), [source contract](../../Sources/HotMicPlayer/HotMicPlayer.docc/EngagementAndCustomSources.md).
+
+The retained screen owner tears the player down only when released. Temporary disappearance changes visibility; reappearing keeps the same player and engagement.

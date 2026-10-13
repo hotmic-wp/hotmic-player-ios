@@ -28,6 +28,7 @@
 		AA0000000000000000000006 /* HotMicPlayerDemo */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = HotMicPlayerDemo; sourceTree = "<group>"; };
 		BB0000000000000000000006 = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = HotMicPlayerDemoUITests; sourceTree = "<group>"; };
         CC0000000000000000000006 = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = ../Tests/HotMicPlayerTests; sourceTree = "<group>"; };
+        FF0000000000000000000006 = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = TestSupport; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,6 +52,7 @@
                 DD0000000000000000000002,
                 DD0000000000000000000004,
 				AA0000000000000000000006 /* HotMicPlayerDemo */,
+                FF0000000000000000000006,
                 BB0000000000000000000006,
                 CC0000000000000000000006,
 				AA0000000000000000000003 /* Products */,
@@ -85,6 +87,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				AA0000000000000000000006 /* HotMicPlayerDemo */,
+                FF0000000000000000000006,
 			);
 			name = HotMicPlayerDemo;
 			packageProductDependencies = (
@@ -264,7 +267,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_FILE = "Debug-Info.plist";
-                HM_BUILD_SHA = unknown;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarHidden = YES;

@@ -6,8 +6,14 @@ import HotMicPlayerUI
     var body: some Scene { WindowGroup { PlayerWithUIScreen() } }
 }
 
+@MainActor private final class PlayerWithUIOwner: ObservableObject {
+    let player = HMPlayer(interactions: MemorySource())
+    deinit { MainActor.assumeIsolated { player.teardown() } }
+}
+
 @MainActor struct PlayerWithUIScreen: View {
-    @State private var player = HMPlayer(interactions: MemorySource())
+    @StateObject private var owner = PlayerWithUIOwner()
+    private var player: HMPlayer { owner.player }
     private var theme: HMTheme {
         var theme = HMTheme.default
         theme.colors.accent = .orange
@@ -26,10 +32,12 @@ import HotMicPlayerUI
             .hmTheme(theme)
             .hmOverlayOptions(options)
             .task {
+                guard player.items.isEmpty else { return }
                 player.replaceAll([HMMediaItem(id: "demo", url: URL(string:
                     "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
                     format: .hls, title: "Your brand, your engagement", author: "In-memory example")])
             }
-            .onDisappear { player.teardown() }
+            .onAppear { player.isFeedVisible = true }
+        .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }

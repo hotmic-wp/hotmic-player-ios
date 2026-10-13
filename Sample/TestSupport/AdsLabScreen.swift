@@ -1,10 +1,11 @@
+#if DEBUG
 import SwiftUI
 @_spi(Benchmark) import HotMicPlayer
 
 /// Both surfaces use the same host-owned skip UI and ad-state suppression.
 struct AdsLabScreen: View {
     @State private var player = HMPlayer(configuration: HMPlayerConfiguration(startsMuted: true))
-    @State private var inline = BenchmarkOptions().values["ads-inline"] == "1"
+    @State private var inline = DemoOptions().values["ads-inline"] == "1"
     @State private var status = "Preparing offline media"
     @State private var error: String?
     @Environment(\.scenePhase) private var phase
@@ -33,10 +34,10 @@ struct AdsLabScreen: View {
                 let ad = try await socialVideoFixture(landscape: true, name: "ads-preroll", seconds: 6)
                 let content = try await socialVideoFixture(landscape: false, name: "ads-content")
                 player.adBreakProvider = DemoAdProvider(preRollURL: ad)
-                if BenchmarkOptions().values["ads-block-swipe"] == "1" { player.configuration.allowsSwipeDuringAds = false }
-                if let duration = Double(BenchmarkOptions().values["ads-max-duration"] ?? "") { player.configuration.adBreakMaxDuration = duration }
-                if let timeout = Double(BenchmarkOptions().values["ads-no-progress"] ?? "") { player.configuration.adNoProgressTimeout = timeout }
-                let start = Int(BenchmarkOptions().values["start-index"] ?? "0") ?? 0
+                if DemoOptions().values["ads-block-swipe"] == "1" { player.configuration.allowsSwipeDuringAds = false }
+                if let duration = Double(DemoOptions().values["ads-max-duration"] ?? "") { player.configuration.adBreakMaxDuration = duration }
+                if let timeout = Double(DemoOptions().values["ads-no-progress"] ?? "") { player.configuration.adNoProgressTimeout = timeout }
+                let start = Int(DemoOptions().values["start-index"] ?? "0") ?? 0
                 let events = player.events
                 player.replaceAll(["url-ad", "host-ad", "slow-ad", "content", "hung-ad", "endless-ad"].map {
                     HMMediaItem(id: $0, url: content, title: $0, aspectRatio: 9.0 / 16)
@@ -46,7 +47,7 @@ struct AdsLabScreen: View {
             } catch { self.error = error.localizedDescription }
         }
         .onChange(of: phase) { _, phase in player.isFeedVisible = phase == .active }
-        .onDisappear { player.teardown() }
+        .onDisappear { if !player.isFullscreen { player.teardown() } }
     }
     private var chrome: some View {
         VStack {
@@ -113,3 +114,5 @@ struct AdsLabScreen: View {
         #endif
     }
 }
+
+#endif

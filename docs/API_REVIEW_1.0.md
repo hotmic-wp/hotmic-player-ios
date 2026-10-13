@@ -39,6 +39,6 @@ The existing parameterized moderation test now checks authoritative-count persis
 
 ## Documentation and release contract
 
-The two DocC catalogs cover each integration level, playlist editing, performance/benchmark interpretation, engagement/custom sources and theming. Strict `xcodebuild docbuild` uses `--warnings-as-errors --analyze`; the symbol-graph exporter independently rejects any undocumented explicit non-SPI public symbol. The compiled Examples enforce ordinary public imports, and the Sample intentionally retains benchmark access.
+The two DocC catalogs cover each integration level, playlist editing, performance/benchmark interpretation, engagement/custom sources and theming. Strict `xcodebuild docbuild` uses `--warnings-as-errors --analyze`; the symbol-graph exporter independently rejects any undocumented explicit non-SPI public symbol. The compiled Examples enforce ordinary public imports, and the partner Sample also uses public imports. Native UI regression diagnostics are isolated in DEBUG test support.
 
 The README documents final-release SPM selection and exact candidate selection, requirements, support and semantic versioning. From 1.0, public non-SPI API follows semver; renames preserve deprecated forwarding entry points. Benchmark SPI/private implementation and demo tooling are excluded. New cases may arrive in minor releases of non-frozen public enums. Consumers should use `@unknown default` in switches to remain compatible.

@@ -1,58 +1,18 @@
 import XCTest
 
-/// Thin Device Farm / remote-Mac wrapper. The app owns scripts, repeats, page
-/// commits and result uploads, so standalone and XCTest runs use the same path.
-final class BenchmarkUITests: XCTestCase {
-    func testBenchmarkGrid() throws {
+/// Public native behavior acceptance; no benchmark grid or private dependencies.
+final class PlayerRegressionUITests: XCTestCase {
+    func testNativeCancelledDragAndLift() throws {
         continueAfterFailure = false
-        let env = ProcessInfo.processInfo.environment
-        if let manifest = env["HM_NATIVE_ACCEPTANCE_MANIFEST"] { try nativeQueueAcceptance(manifest: manifest); return }
-        let app = XCUIApplication()
-        app.launchEnvironment = env.filter { $0.key.hasPrefix("HM_") }
-        let typed = env["HM_GRID_INPUT"] == "typed"
-        if typed { app.launchEnvironment["HM_GRID_URL"] = nil }
-        app.launch()
-        if env["HM_GRID_URL"] == nil || typed {
-            // Device Farm's standard runner can supply an extra grid-url.txt
-            // resource without relying on its generated xctestrun environment.
-            let bundled = Bundle(for: Self.self).url(forResource: "grid-url", withExtension: "txt")
-            let url: String
-            if typed, let supplied = env["HM_GRID_URL"] { url = supplied }
-            else if let bundled { url = try String(contentsOf: bundled).trimmingCharacters(in: .whitespacesAndNewlines) }
-            else { throw XCTSkip("Set HM_GRID_URL or package grid-url.txt with the XCTest runner") }
-            app.buttons["benchmark-mode"].tap()
-            let field = app.textFields["benchmark-grid-url"]
-            XCTAssertTrue(field.waitForExistence(timeout: 10)); app.buttons["benchmark-grid-clear"].tap(); field.tap(); field.typeText(url)
-            app.buttons["benchmark-grid-start"].tap()
-        }
-        XCTAssertTrue(app.staticTexts["benchmark-grid-progress"].waitForExistence(timeout: 30))
-        if let seconds = Double(env["HM_BACKGROUND_SECONDS"] ?? ""), seconds > 0 {
-            Thread.sleep(forTimeInterval: 3)
-            XCUIDevice.shared.press(.home)
-            Thread.sleep(forTimeInterval: seconds)
-            app.activate()
-        }
-        let timeout = Double(env["HM_GRID_TIMEOUT"] ?? "7200") ?? 7200
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if app.staticTexts["benchmark-grid-error"].exists { XCTFail(app.staticTexts["benchmark-grid-error"].label); return }
-            if app.staticTexts["benchmark-grid-complete"].exists {
-                if env["HM_REQUIRE_UPLOAD"] == "1" { XCTAssertTrue(app.staticTexts["benchmark-grid-complete"].label.contains("upload failures: 0")) }
-                let attachment = XCTAttachment(screenshot: app.screenshot())
-                attachment.name = "grid-complete"; attachment.lifetime = .keepAlways; add(attachment)
-                return
-            }
-            Thread.sleep(forTimeInterval: 2)
-        }
-        XCTFail("Grid timeout: \(app.staticTexts["benchmark-grid-progress"].label)")
+        try nativeQueueAcceptance(manifest: ProcessInfo.processInfo.environment["HM_NATIVE_ACCEPTANCE_MANIFEST"])
     }
-    /// Optional native acceptance mode; reuses the existing test function so the suite stays flat.
-    private func nativeQueueAcceptance(manifest: String) throws {
+    /// Generated offline media by default; a public HTTP fixture manifest can exercise the cache transport.
+    private func nativeQueueAcceptance(manifest: String?) throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--hm-manifest-url", manifest, "--hm-auto-start", "1", "--hm-run-id", "sdk213-native-acceptance",
-            "--hm-reset-cache", "1", "--hm-probe", "1", "--hm-hud", "1", "--hm-build-sha", "native-acceptance-source"]
+        app.launchArguments = ["--hm-regression-feed", "1", "--hm-probe", "1"]
+        if let manifest { app.launchArguments += ["--hm-manifest-url", manifest] }
         app.launch()
-        let status = app.staticTexts["benchmark-status"], starts = app.staticTexts["probe-starts"]
+        let status = app.staticTexts["regression-status"], starts = app.staticTexts["probe-starts"]
         XCTAssertTrue(status.waitForExistence(timeout: 10))
         expectation(for: NSPredicate(format: "label CONTAINS 'displayed'"), evaluatedWith: status)
         waitForExpectations(timeout: 15)
@@ -78,8 +38,7 @@ final class BenchmarkUITests: XCTestCase {
         app.buttons["hm-video-surface"].firstMatch.tap()
         app.swipeUp(); app.swipeUp(); app.swipeDown()
         XCTAssertLessThanOrEqual(app.staticTexts["probe-assignments"].label.split(separator: ",").count, 2)
-        app.buttons["benchmark-finish"].tap()
-        XCTAssertTrue(app.staticTexts["benchmark-complete"].waitForExistence(timeout: 10))
+
     }
 
     func testHorizontalRestrictedHost() throws {
@@ -101,7 +60,7 @@ final class BenchmarkUITests: XCTestCase {
             XCTAssertLessThan(try XCTUnwrap(startup), 3000) // catches a watcher sleeping until a 12s fixture loops
             let exit = app.buttons["hm-exit-fullscreen"]
             app.buttons["horizontal-fullscreen"].tap()
-            XCTAssertTrue(exit.waitForExistence(timeout: 5))
+            XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
             XCTAssertTrue(app.staticTexts["horizontal-caption"].exists)
             if portraitOnly { XCTAssertLessThan(app.frame.width, app.frame.height) }
             exit.tap()
@@ -109,7 +68,7 @@ final class BenchmarkUITests: XCTestCase {
             app.buttons["horizontal-sheet"].tap()
             XCTAssertTrue(app.staticTexts["horizontal-host-sheet"].waitForExistence(timeout: 5))
             app.buttons["sheet-fullscreen"].tap()
-            XCTAssertTrue(exit.waitForExistence(timeout: 5))
+            XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
             XCTAssertTrue(app.staticTexts["horizontal-caption"].exists)
             if portraitOnly { XCTAssertLessThan(app.frame.width, app.frame.height) }
             exit.tap()
@@ -119,14 +78,14 @@ final class BenchmarkUITests: XCTestCase {
             if portraitOnly {
                 // The feed scene cannot rotate. Device orientation must still enter fullscreen.
                 XCUIDevice.shared.orientation = .landscapeLeft
-                XCTAssertTrue(exit.waitForExistence(timeout: 5))
+                XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
                 XCTAssertLessThan(app.frame.width, app.frame.height)
                 XCUIDevice.shared.orientation = .portrait
                 XCTAssertTrue(evidence.waitForExistence(timeout: 5)); XCTAssertEqual(evidence.label, original)
             }
             // Begin the swipe immediately after exit, within the restore quiet period.
             app.buttons["horizontal-fullscreen"].tap()
-            XCTAssertTrue(exit.waitForExistence(timeout: 5)); exit.tap()
+            XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)"); exit.tap()
             app.swipeUp()
             expectation(for: NSPredicate(format: "label CONTAINS '003-portrait'"), evaluatedWith: app.staticTexts["horizontal-status"])
             waitForExpectations(timeout: 10)
@@ -174,7 +133,7 @@ final class BenchmarkUITests: XCTestCase {
         try shot("feed-landscape-mp4")
         app.buttons["horizontal-fullscreen"].tap()
         let exit = app.buttons["hm-exit-fullscreen"]
-        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
         try shot("feed-fullscreen-api")
         app.swipeUp() // fullscreen must not page the feed
         exit.tap()
@@ -182,7 +141,7 @@ final class BenchmarkUITests: XCTestCase {
         XCTAssertEqual(evidence.label, original)
         try shot("feed-return-api")
         XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
         try shot("feed-fullscreen-rotation")
         XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(status.waitForExistence(timeout: 5))
@@ -192,7 +151,7 @@ final class BenchmarkUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Inline 16:9 player"].waitForExistence(timeout: 5))
         try shot("standalone-inline")
         app.buttons["horizontal-fullscreen"].tap()
-        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
         try shot("standalone-fullscreen")
         exit.tap()
         XCTAssertTrue(status.waitForExistence(timeout: 5))
@@ -212,7 +171,7 @@ final class BenchmarkUITests: XCTestCase {
         let hls = evidence.label
         try shot("feed-landscape-hls")
         XCUIDevice.shared.orientation = .landscapeRight
-        XCTAssertTrue(exit.waitForExistence(timeout: 5))
+        XCTAssertTrue(exit.waitForExistence(timeout: 5), "\(app.staticTexts["horizontal-runtime"].label) status=\(app.staticTexts["horizontal-status"].label) ownership=\(evidence.label)")
         try shot("feed-hls-fullscreen-rotation")
         XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(status.waitForExistence(timeout: 5))

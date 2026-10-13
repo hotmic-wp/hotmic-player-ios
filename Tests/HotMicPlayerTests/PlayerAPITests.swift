@@ -1097,15 +1097,16 @@ struct PlayerNativeReviewTests {
                 // same-entry discovery does not need an unrelated reservation.
                 _ = try await URLSession.shared.data(from: transport.url(for: warm)!)
             }
-            let native = Task {
-                var request = URLRequest(url: transport.state.url(url, item: warm)); request.timeoutInterval = 6
-                _ = try? await URLSession.shared.data(for: request)
-            }
-            var prefixPreemptions = 0, completed: Set<String> = []
+            // One explicit TCP request, with receipts. URLSession may retry a GET
+            // disconnected before headers; those are new native owners, not repeat
+            // retirements of the same connection. Keep exactly-one retirement strict.
+            var prefixPreemptions = 0, completed: Set<String> = [], acceptedBytes: [String: Int] = [:]
             await transport.setEventHandler { event, item in
                 if event.properties["reason"] == "prefix-shared-resource-preemption" { prefixPreemptions += 1 }
                 if event.properties["prefetch_work"] == "completed" { completed.insert(item.id) }
+                acceptedBytes[item.id, default: 0] += Int(event.metrics["prefetch_bytes"] ?? 0)
             }
+            let native = NativeRequestReceipt(url: transport.state.url(url, item: warm))
             let plan = HMPrefetchPlan(itemsAhead: 2, bytesPerItem: cap, secondsPerItem: 4, reason: "parked owner acceptance")
             if lateParking {
                 let started = Date().addingTimeInterval(2)
@@ -1137,7 +1138,12 @@ struct PlayerNativeReviewTests {
             #expect(prefixPreemptions == 1 && completed.contains(alias.id) && completed.contains(farther.id))
             #expect(fixture.requestCount(path: "/farther.mp4") > 0)
             print("Transport parked: mode=\(mode) known_total=\(knownTotal) same_ID=\(sameID) prefix_preemptions=\(prefixPreemptions) farther_GETs=\(fixture.requestCount(path: "/farther.mp4"))")
-            native.cancel(); await native.value
+            let retired = Date().addingTimeInterval(2)
+            while !native.finished, Date() < retired { await Task.yield() }
+            #expect(native.sentRequests == 1 && native.finished)
+            #expect(acceptedBytes[warm.id, default: 0] <= cap && acceptedBytes[alias.id, default: 0] <= cap)
+            print("Transport native receipts: \(native.receipts) accepted_bytes=\(acceptedBytes)")
+            native.connection.cancel()
         }
         // GET-only origins must produce an explicit complete prefix, not just native fallback.
         for mode in [PrefixOrigin.Mode.head403, .head405, .unknownLength, .oversized200] {
@@ -1174,6 +1180,47 @@ struct PlayerNativeReviewTests {
         #expect(await transport.parkedNativeRequestCount == 0)
     }
 
+    /// No automatic retry, one send and explicit per-connection receive/EOF receipts.
+    final class NativeRequestReceipt: @unchecked Sendable {
+        let connection: NWConnection
+        private let lock = NSLock()
+        private var events: [String] = []
+        private var sends = 0
+        private var ended = false
+        var sentRequests: Int { lock.lock(); defer { lock.unlock() }; return sends }
+        var finished: Bool { lock.lock(); defer { lock.unlock() }; return ended }
+        var receipts: [String] { lock.lock(); defer { lock.unlock() }; return events }
+        private func record(_ event: String, sent: Bool = false, end: Bool = false) {
+            lock.lock(); events.append(event); if sent { sends += 1 }; if end { ended = true }; lock.unlock()
+        }
+        init(url: URL) {
+            connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(url.port!))!, using: .tcp)
+            let request = Data("GET \(url.path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".utf8)
+            let attempt = UUID().uuidString
+            connection.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    self.record("\(attempt):send", sent: true)
+                    self.connection.send(content: request, completion: .contentProcessed { [weak self] error in
+                        if let error { self?.record("\(attempt):send-error \(error)", end: true) }
+                    })
+                    self.receive(attempt)
+                case .failed(let error): self.record("\(attempt):failed \(error)", end: true)
+                default: break
+                }
+            }
+            connection.start(queue: .global())
+        }
+        private func receive(_ attempt: String) {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] bytes, _, complete, error in
+                guard let self else { return }
+                self.record("\(attempt):received=\(bytes?.count ?? 0) eof=\(complete) error=\(String(describing: error))", end: complete || error != nil)
+                if !complete && error == nil { self.receive(attempt) }
+            }
+        }
+    }
+
     /// Deliberately never completes its range. A full-buffer proxy cannot pass.
     final class PrefixOrigin: @unchecked Sendable {
         enum Mode: Sendable { case hanging, shortRange, ignoresRange, head403, head405, unknownLength, oversized200, gatedRange, gatedOversized200, bulk }
@@ -1208,9 +1255,17 @@ struct PlayerNativeReviewTests {
         init(mode: Mode = .hanging) throws {
             listener = try NWListener(using: .tcp, on: .any)
             listener.newConnectionHandler = { [weak self] connection in
+                let attempt = UUID().uuidString
+                print("Origin receipt: mode=\(mode) attempt=\(attempt) accepted")
+                connection.stateUpdateHandler = { state in
+                    if case .cancelled = state { print("Origin receipt: mode=\(mode) attempt=\(attempt) closed") }
+                    if case .failed(let error) = state { print("Origin receipt: mode=\(mode) attempt=\(attempt) failed=\(error)") }
+                }
                 connection.start(queue: .global())
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] request, _, _, _ in
-                    self?.record(String(decoding: request ?? Data(), as: UTF8.self))
+                    let received = String(decoding: request ?? Data(), as: UTF8.self)
+                    print("Origin receipt: mode=\(mode) attempt=\(attempt) request=\(received.replacingOccurrences(of: "\r\n", with: " | "))")
+                    self?.record(received)
                     if mode != .hanging {
                         let text = String(decoding: request ?? Data(), as: UTF8.self)
                         if [.head403, .head405, .unknownLength, .oversized200, .gatedOversized200].contains(mode) {

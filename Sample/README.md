@@ -1,8 +1,8 @@
 # HotMicPlayer Sample
 
-The full SwiftUI demo includes a vertical feed with `HMOverlayLayout`, in-memory engagement, playlist and reference labs, and benchmark controls. It intentionally uses Benchmark SPI. For smaller integrations using only public API, start with [PlayerOnly](../Examples/PlayerOnly) or [PlayerWithUI](../Examples/PlayerWithUI).
+Open `HotMicPlayerDemo.xcodeproj`, select **HotMicPlayerDemo**, and run on an iPhone simulator. The partner demo, horizontal/inline view and playlist editing screens use ordinary public SDK imports. The default feed streams public test media; no video or poster is bundled in Git. [PlayerOnly](../Examples/PlayerOnly) and [PlayerWithUI](../Examples/PlayerWithUI) are smaller integration starting points.
 
-Open `HotMicPlayerDemo.xcodeproj`, select **HotMicPlayerDemo**, and run on an iPhone simulator. The default feed streams public test media and needs an internet connection. No video or poster is bundled in the repository. For benchmark origin setup, fixtures, launch options and result analysis, see [Benchmarking](../docs/BENCHMARKING.md).
+The separate **HotMicPlayerRegression** scheme retains public SDK behavior tests. Its opt-in DEBUG diagnostics live in [TestSupport](TestSupport/README.md), distinct from partner flows; no benchmark grid, upload or Device Farm runner is included.
 
 ## Default media and attribution
 
@@ -30,80 +30,15 @@ Alternatively, set the **`HOTMIC_DEMO_MEDIA_URL`** environment variable in the X
 
 Only `id` and `url` are required. `format` is `mp4` or `hls`, inferred from `.m3u8` when omitted. `duration`, when supplied, must be positive seconds. Media and poster URLs resolve relative to the manifest. HTTP/HTTPS manifests are supported; use HTTPS for public sources. A `file://` manifest and relative local files also work when accessible inside the app sandbox (a simulator cannot assume arbitrary host-file access). Invalid manifests display an error instead of silently playing other content. Supply attribution for your chosen media in `author`.
 
-An explicit benchmark grid or `--hm-manifest-url` retains its existing behavior and takes precedence over these demo overrides. The separate playlist/reference labs use the local folder or remote defaults.
+Use **Horizontal** for the same-player feed/inline/fullscreen example and **Playlist** for append, insert, remove, reconcile, navigation and seeking. Both use the demo source above without an origin service. **Partner demo** and **Social layout** show public engagement, overlay and gesture integrations with host-owned fake services and synthetic media.
 
-## Local benchmark networking
+Debug builds allow local networking for opt-in regression fixtures. Release builds omit that exception. Use HTTPS for public sources; the SDK does not require a host ATS exception.
 
-The Sample's **Debug-only** `NSAllowsLocalNetworking` exception in `Debug-Info.plist` permits HTTP connections to local benchmark origins. It supports simulator loopback and local-network fixture servers during development. It is not a requirement for partner apps or an exception supplied by the SDK. Release builds omit this exception; use HTTPS for remote or public benchmark origins.
-
-Select a device for compilation without setting up signing:
+To compile without signing, from the repository root:
 
 ```bash
 xcodebuild build -project Sample/HotMicPlayerDemo.xcodeproj -scheme HotMicPlayerDemo \
   -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO
 ```
 
-Run the command from the repository root. Installation on a physical device requires your normal development signing and device setup.
-
-## Ranked feed lab
-
-Open Playlist lab and enable **Ranked feed refresh (3s, finish once)** after setting a local fixture origin. The origin must serve `item-0/clip.mp4` through `item-7/clip.mp4` (the adaptive smoke fixture generator creates these). Launch with `--hm-playlist-lab 1 --hm-ranked-refresh 1 --hm-lab-origin URL` to enable it automatically. Swipe above the controls while identical replacements, metadata refreshes and tail re-ranking run every three seconds. The scripted removal near the end seeks to the final second, then waits for the real media-end notification with looping enabled; a later removal leaves via an animated page move. Diagnostics record assignment generations, warm tiers, edit releases and playback events under Documents. The sequence ends after twelve refreshes; disable/re-enable the toggle to restart.
-
-For extended local ranked-refresh diagnostics, launch the Playlist lab with `--hm-ranked-refresh 1 --hm-review-refresh 1`. It also re-signs a configured query, changes visible current, reconciles empty/history-only feeds, and removes already-ended or failed current entries. Operation logs include native assignment generations (seeks do not change them), states and edit summaries.
-
-## Horizontal video lab
-
-`--hm-horizontal-lab 1 --hm-manifest-url http://127.0.0.1:18490/mixed-orientation.json` opens `HorizontalLabScreen`, showing vertical/landscape MP4 and HLS, policy controls, video-frame bounds, fullscreen and an Inline/Feed switch. Add `--hm-horizontal-inline 1` to start at 16:9 inline. The Sample allows portrait and both landscape orientations. See [Horizontal video](../Sources/HotMicPlayer/HotMicPlayer.docc/HorizontalVideo.md) for the public SwiftUI/UIKit paths.
-
-The Debug-only Documents control file `horizontal-command.txt` accepts `action|unique-nonce`, with actions `enter`, `exit`, `inline`, `feed`, `next`, `previous`, and policy raw values, for simulator captures while preserving playback. `horizontal-state.json` records current node assignment, activation, playhead, TTFF and stall count; `horizontal-lab.jsonl` records analytics in Documents. These are local Sample diagnostics.
-
-## Host-built social layout
-
-Open **Social layout** or launch with `--hm-social-layout 1`. This screen uses public HotMicPlayer API for persistent bottom nav, full-bleed video, metadata, rail, Fire at a tap location and an interactive comment sheet. Tap empty video to pause/resume, double tap to Fire, tap Comments and drag the sheet handle. Debug-only `--hm-social-trace 1` enables `social-layout.jsonl` in Documents with public analytics identity, first frames, stalls and playhead. Recording is off by default. Use `--hm-social-fixture 1` for generated offline media and the always-runnable gesture UI test. See [Building your own overlay](../Sources/HotMicPlayer/HotMicPlayer.docc/BuildingYourOwnOverlay.md).
-
-## Ads lab
-
-Open **Ads lab** or launch with `--hm-ads-lab 1`. All media are generated offline. The four entries demonstrate a six-second landscape URL pre-roll, a six-second colored host-played break with countdown, a slow decision that times out after one second, and content without an ad. The host overlay hides Comments, its preview and the squeezeback trigger while `adState.isActive`; Skip ad calls `skipAd()`.
-
-Use `--hm-ads-inline 1` for standalone, `--hm-start-index 1` to start with the host break, or `--hm-ads-block-swipe 1` to disable pre-roll paging. The Feed/Standalone switch keeps the same player. Debug-only Documents diagnostics are `ads-events.jsonl`, `ads-state.json` and `ads-command.txt` (`action|unique-nonce`, actions: `swipe`, `next`, `skip`, `pause`, `play`, `feed`, `standalone`). The state records content's zero playhead and retained assignments during ads, plus content readiness and TTFF afterwards. See [Ads](../Sources/HotMicPlayer/HotMicPlayer.docc/Ads.md) for integration ownership and timeout details.
-
-## Captions, audio and accessibility lab
-
-Generate twelve seconds of synthetic video/audio plus English/Spanish WebVTT (requires ffmpeg). No remote media is downloaded:
-
-```sh
-python3 bench/prepare_captions_smoke.py
-python3 bench/origin.py --root bench/generated/captions --port 18433 --log bench/results/captions-origin.jsonl
-```
-
-Open **Captions + audio** or launch with `--hm-accessibility-lab 1 --hm-captions 1`. MP4 uses bundled `bench.en.vtt`; HLS uses a real subtitle rendition discovered through AVMediaSelection. Toggle CC, choose English, swipe, and inspect the caption above the registered metadata/rail. Omit `--hm-captions 1` to follow the platform CC setting. Use `--hm-lab-origin URL` for another owned fixture origin. `--hm-host-audio 1` disables SDK session management; `--hm-background-audio 1` opts into background playback policy (the Sample does not enable an Audio background mode).
-
-Debug-only Documents files: `caption-state.json` includes timing, caption preferences/languages, caption bounds and native accessibility labels/values/custom actions; `caption-events.jsonl` records ordered player events. Write `action|unique-nonce` to `caption-command.txt`: `cc`, `system`, `system-on`, `system-off`, `swipe`, `next`, `previous`, `pause`, `play`, `began`, `began-suspended`, `began-was-suspended`, `language-missing`, `ended`, `ended-no-resume`, `route`, `background`, `foreground`, `reset`, `a11y-pause`, `a11y-mute`, `a11y-cc`, `a11y-increment`, `a11y-decrement`. System commands change the dedicated simulator's MediaAccessibility preference for validation; restore its original value afterwards. The in-memory original is restored when the lab is normally dismissed. Synthetic audio notifications test the handler, rather than actual telephony/hardware. Use `--hm-selection-fixture 1` to inspect regular English/French versus forced-only English HLS tracks. With CC off, the forced English track follows English audio; `language-missing` requests an unavailable language and must not select French.
-
-For paired S3 MP4/HLS binge smoke (CC off/on, six settled swipes each), start a loopback results receiver and launch with `--hm-grid-url http://127.0.0.1:18433/grid.json`:
-
-```sh
-python3 bench/results_receiver.py --host 127.0.0.1 --port 18435 --output bench/results/captions
-```
-
-The benchmark manifest accepts `"captions": {"en": "relative/file.vtt"}` and a grid cell can set `"knobs": {"captions": 1}`. These runs are simulator smoke evidence, not physical-device latency measurements.
-
-## Host or HotMic engagement
-
-The Social layout screen shares one `HMEngagement` UI between **Host backend** and **Fake Connect**. Source switching creates a new screen/player lifetime; each fake client keeps its own per-item backend data. Preview comments rotate every three seconds. Fire toggles from the rail; double tap only adds fire; the sheet loads older pages and posts comments. **Fail next** injects a transport error before the next request commits, showing optimistic rollback and retaining failed drafts.
-
-The host adapter is compiled directly from [CustomEngagementBackend](../Examples/CustomEngagementBackend). The fake Connect client is an offline stand-in; use the separate Connect package for a real HotMic session. See [Engagement from your backend or HotMic](../Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) for the contract. Benchmark grid cells accept `"engagement": 0` (off), `1` (fake host) or `2` (fake Connect) in `knobs`, exercising the same observed preview/count state during playback.
-
-For an offline two-item social feed, launch with `--hm-social-layout 1 --hm-social-fixture feed`. Use `--hm-engagement-latency-ms 1500` to inspect pending requests and edit a draft while posting (clamped to 0–5000 ms). Preview selection resets on each item; rapid rail taps settle to the latest intended membership.
-
-## Partner demo
-
-Open **Partner demo**, or launch with `--hm-partner-demo 1`. It generates offline vertical and landscape clips, uses a fake host engagement backend, and keeps bottom navigation visible. **Demo options** switches between kit UI and custom UI on public hooks, enables mute/scrubbing, replaces sheet/rail/metadata content, limits previews to once per item, or selects landscape and host-ad placeholders. The kit shows caption controls for the bundled WebVTT track and admits a sidecar placeholder only when its complete slot is free. Share opens a native activity sheet. No environment variables or network fixtures are needed for its core gesture UI test.
-
-Benchmark grid cells accept `"social-overlay": 0` or `1` in `knobs` for paired S3 MP4/HLS runs through the actual kit. Set the same `"engagement": 1` backend in both cells to isolate UI overhead.
-
-The Debug-only `--hm-partner-trace 1` option records public player state, Reduce Motion/Dynamic Type settings and native accessibility actions in Documents `partner-state.json`. Its `partner-command.txt` accepts `fire|unique-nonce` to activate the native VoiceOver Fire action. Diagnostics are off by default.
-
-## Partner demo
-
-Launch with `--hm-partner-demo 1` for persistent Feed/Guide tabs, mixed portrait/landscape MP4 and HLS, ready-made/custom overlays, fake host/Connect sources, ranking refresh, captions, sidecar and both URL/host-played ad modes. Demo options select each capability. MP4, ads and social data are generated/offline. HLS uses a public sample by default; pass `--hm-partner-hls-url URL` for your own fixture (including a loopback origin). Fake Connect simulates capabilities beyond the current HotMic backend. See the [Partner integration guide](../Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md) and checklist.
+Physical installation requires the host's normal development signing. See [horizontal video](../Sources/HotMicPlayer/HotMicPlayer.docc/HorizontalVideo.md), [playlist management](../Sources/HotMicPlayer/HotMicPlayer.docc/PlaylistManagement.md), [ads](../Sources/HotMicPlayer/HotMicPlayer.docc/Ads.md) and [captions/audio/accessibility](../Sources/HotMicPlayer/HotMicPlayer.docc/Captions.md) for integration contracts.

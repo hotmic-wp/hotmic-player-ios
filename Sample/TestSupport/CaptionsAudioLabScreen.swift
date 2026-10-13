@@ -1,12 +1,13 @@
+#if DEBUG
 import SwiftUI
 import AVFAudio
 import MediaAccessibility
 @_spi(Benchmark) import HotMicPlayer
 
-/// Local, generated fixtures: run bench/prepare_captions_smoke.py and its loopback origin first.
+/// Local, generated fixtures: use the generic public regression fixture helper first.
 struct CaptionsAudioLabScreen: View {
     @State private var player: HMPlayer = {
-        let options = BenchmarkOptions()
+        let options = DemoOptions()
         var configuration = HMPlayerConfiguration()
         configuration.managesAudioSession = options.values["host-audio"] != "1"
         configuration.allowsBackgroundAudio = options.values["background-audio"] == "1"
@@ -15,7 +16,7 @@ struct CaptionsAudioLabScreen: View {
     @State private var message = "Preparing caption fixtures"
     @State private var status = ""
     @State private var originalDisplayType: MACaptionAppearanceDisplayType?
-    private let options = BenchmarkOptions()
+    private let options = DemoOptions()
     var body: some View {
         HMVerticalFeedView(player: player) { item, _ in
             CaptionLabSafeChrome {
@@ -50,7 +51,7 @@ struct CaptionsAudioLabScreen: View {
         .hmCaptionInsets(HMVideoInsets(top: 120, bottom: 30))
         .task {
             let origin = URL(string: options.values["lab-origin"] ?? "http://127.0.0.1:18433")!
-            let sidecar = Bundle.main.url(forResource: "bench.en", withExtension: "vtt") ?? origin.appendingPathComponent("fixture/en.vtt")
+            let sidecar = Bundle.main.url(forResource: "demo.en", withExtension: "vtt") ?? origin.appendingPathComponent("fixture/en.vtt")
             if options.values["captions"] == "1" { player.captionsEnabled = true }
             if options.values["host-audio"] == "1" {
                 player.configuration.managesAudioSession = false
@@ -70,7 +71,7 @@ struct CaptionsAudioLabScreen: View {
         }
         .onDisappear {
             if let originalDisplayType { MACaptionAppearanceSetDisplayType(.user, originalDisplayType) }
-            player.teardown()
+            if !player.isFullscreen { player.teardown() }
         }
     }
     private func post(_ name: Notification.Name, _ values: [String: Any] = [:]) {
@@ -159,3 +160,5 @@ private struct CaptionLabSafeChrome<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View { content().padding(.top, safeArea.top).padding(.bottom, safeArea.bottom) }
 }
+
+#endif

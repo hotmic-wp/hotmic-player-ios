@@ -18,7 +18,7 @@ docbuild_and_api() {
     -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" \
     ARCHS=arm64 ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}" \
     OTHER_DOCC_FLAGS='--warnings-as-errors --analyze' &&
-  python3 bench/export_public_api.py \
+  python3 .github/scripts/export_public_api.py \
     --derived-data "$derived" --output "$validation_dir/PUBLIC_API.md"
 }
 run_step partner-docs "$budget_partner_docs" bash .github/scripts/check-partner-docs.sh

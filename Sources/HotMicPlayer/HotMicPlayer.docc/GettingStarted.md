@@ -80,7 +80,7 @@ Start with `.default`, `.instantStart` or `.highQuality`; see <doc:PrefetchAndPe
 
 For paging implement ``HMPlaylistSource``. For opaque identifiers use `.reference(namespace:id:)` items and an ``HMItemResolver``. See <doc:PlaylistManagement>. A player without an interaction source has empty, read-only engagement.
 
-Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerOnly) for a complete 40-line app with all five operations. It links only public API and requires no backend.
+Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerOnly) for a complete small app with all five operations. It links only public API and requires no backend.
 
 ## Handle future enum cases
 

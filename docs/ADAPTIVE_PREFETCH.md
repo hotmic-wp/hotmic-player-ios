@@ -68,7 +68,7 @@ include adaptive mode, every threshold, resolution horizon and concurrency cap.
 
 ## Default thresholds and benchmark knobs
 
-All thresholds are mutable on `configuration.adaptiveThresholds` under `@_spi(Benchmark) import HotMicPlayer`. They are experimental tuning, excluded from partner API. Grid knobs use
+All thresholds are mutable on `configuration.adaptiveThresholds` under `@_spi(Benchmark) import HotMicPlayer`. They are experimental tuning, excluded from partner API. External lab parameters may use
 numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 `resolve-ahead` (0–32), and `cached-start-bytes` (tier-2 readiness floor). Direct arguments/environment use the same names:
 `--hm-adaptive 0`, `HM_ADAPTIVE=0`. Existing knobs still override strategy presets.
@@ -125,7 +125,7 @@ The cache remains immutable VOD; existing advanced-HLS/auth/DRM/live limitations
 apply. Simulator shaping is shared origin payload pacing, not radio/TLS/netem.
 Validate threshold changes against a physical-device benchmark grid.
 
-See [benchmark setup](BENCHMARKING.md) for reproducible simulator checks and
+See [performance interpretation](BENCHMARKING.md) and the [public regression harness](../Sample/TestSupport/README.md) for reproducible simulator checks and
 physical-device measurement workflows.
 
 ## Playback priority and independent fixed bootstrap

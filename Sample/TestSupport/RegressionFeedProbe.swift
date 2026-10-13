@@ -19,6 +19,16 @@ struct RegressionFeedProbe: View {
             Spacer()
         }.font(.system(size: 8)).allowsHitTesting(false)
         .task { await RegressionCommands.advance(controller) }
+        .task {
+            guard ProbeReceipts.enabled else { return }
+            while !Task.isCancelled {
+                ProbeReceipts.write("status", controller: controller)
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            ProbeReceipts.write("background", controller: controller)
+        }
     }
 }
 
@@ -26,12 +36,43 @@ struct RegressionFeedProbe: View {
     static func interactions() -> any HMInteractionSource { HMMockInteractionSource() }
     static func source() async throws -> any HMPlaylistSource {
         if DemoOptions().values["manifest-url"] != nil { return try await DemoOptions().dataSource() }
+        return try await generatedSource(prefix: "regression")
+    }
+    /// Explicit offline source for the normal feed/engagement walkthrough, independent of regression mode.
+    static func publicFixtures() async throws -> any HMPlaylistSource {
+        try await generatedSource(prefix: "public-fixture")
+    }
+    private static func generatedSource(prefix: String) async throws -> any HMPlaylistSource {
         let vertical = try await socialVideoFixture(landscape: false, name: "regression-portrait")
         let horizontal = try await socialVideoFixture(landscape: true, name: "regression-landscape")
         return HMStaticPlaylistSource(items: (0..<6).map {
-            HMMediaItem(id: "regression-\($0)", url: $0.isMultiple(of: 2) ? vertical : horizontal,
-                title: "Generated regression clip \($0)", aspectRatio: $0.isMultiple(of: 2) ? 9.0 / 16 : 16.0 / 9)
+            HMMediaItem(id: "\(prefix)-\($0)", url: $0.isMultiple(of: 2) ? vertical : horizontal,
+                title: "Generated \(prefix) clip \($0)", aspectRatio: $0.isMultiple(of: 2) ? 9.0 / 16 : 16.0 / 9)
         }, pageSize: 6, loopsForever: false)
+    }
+}
+
+/// Opt-in receipts live in the simulator app's Documents/HMProbe directory.
+/// The public host driver requires readiness, held interaction and actual command/lifecycle receipts.
+@MainActor private enum ProbeReceipts {
+    static var enabled: Bool { DemoOptions().values["probe-receipts"] == "1" }
+    static let session = UUID().uuidString
+    static var commandsReady = false
+    static func write(_ name: String, controller: HMPlayer, extra: [String: Any] = [:]) {
+        guard enabled else { return }
+        let directory = URL.documentsDirectory.appendingPathComponent("HMProbe", isDirectory: true)
+        var payload: [String: Any] = ["session": session, "timestamp": Date().timeIntervalSince1970,
+            "commandsReady": commandsReady, "itemID": controller.currentItem?.id ?? "",
+            "mediaURL": controller.currentItem?.url?.absoluteString ?? "", "index": controller.activeIndex,
+            "interacting": controller.isInteracting, "applicationState": UIApplication.shared.applicationState.rawValue,
+            "playbackState": String(describing: controller.snapshot.state), "position": controller.snapshot.currentTime,
+            "frameReady": controller.snapshot.isFrameReady, "fullscreen": controller.isFullscreen]
+        payload.merge(extra) { _, new in new }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]).write(
+                to: directory.appendingPathComponent(name + ".json"), options: .atomic)
+        } catch { assertionFailure("Probe receipt: \(error)") }
     }
 }
 
@@ -54,7 +95,10 @@ enum RegressionCommands {
                 }, name as CFString, nil, .deliverImmediately)
             }
         }
+        ProbeReceipts.commandsReady = true
+        ProbeReceipts.write("ready", controller: controller)
         defer {
+            ProbeReceipts.commandsReady = false
             for name in names { CFNotificationCenterRemoveObserver(center, nil, CFNotificationName(name as CFString), nil) }
             Box.continuation = nil
         }
@@ -66,6 +110,8 @@ enum RegressionCommands {
         }
         for await name in stream {
             let command = String(name.dropFirst("com.hotmic.probe.".count))
+            let beforeID = controller.currentItem?.id ?? ""
+            let beforeInteracting = controller.isInteracting
             switch command {
             #if DEBUG
             case "inspect": break
@@ -111,6 +157,8 @@ enum RegressionCommands {
             case "teardown": controller.teardown()
             default: break
             }
+            ProbeReceipts.write("command", controller: controller,
+                extra: ["command": command, "beforeItemID": beforeID, "beforeInteracting": beforeInteracting])
             if let item = controller.currentItem {
                 let assignments = (try? JSONSerialization.data(withJSONObject: controller.preparedItemIdentities, options: .sortedKeys)) ?? Data()
                 var diagnostics: [String: String] = [:]

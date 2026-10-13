@@ -52,6 +52,6 @@ import HotMicPlayerUI
             .overlay(alignment: .top) { Text(notice).padding().allowsHitTesting(false) }
             .sheet(item: $shareItem) { item in if let url = item.url { HMShareSheet(items: [url]) } }
             .onAppear { owner.player.isFeedVisible = true }
-            .onDisappear { owner.player.isFeedVisible = false }
+            .onDisappear { if !owner.player.isFullscreen { owner.player.isFeedVisible = false } }
     }
 }

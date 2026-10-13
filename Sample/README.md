@@ -2,7 +2,7 @@
 
 Open `HotMicPlayerDemo.xcodeproj`, select **HotMicPlayerDemo**, and run on an iPhone simulator. The partner demo, horizontal/inline view and playlist editing screens use ordinary public SDK imports. The default feed streams public test media; no video or poster is bundled in Git. [PlayerOnly](../Examples/PlayerOnly) and [PlayerWithUI](../Examples/PlayerWithUI) are smaller integration starting points.
 
-The separate **HotMicPlayerRegression** scheme retains public SDK behavior tests. Its opt-in DEBUG diagnostics live in [TestSupport](TestSupport/README.md), distinct from partner flows; no benchmark grid, upload or Device Farm runner is included.
+The separate **HotMicPlayerRegression** scheme retains public SDK behavior tests. Its opt-in DEBUG diagnostics live in [TestSupportTools](TestSupportTools/README.md), distinct from partner flows; no benchmark grid, upload or Device Farm runner is included.
 
 ## Default media and attribution
 

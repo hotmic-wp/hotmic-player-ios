@@ -26,7 +26,7 @@ import HotMicPlayerUI
             .hmTheme(.default)
             .task { guard player.items.isEmpty else { return }; player.replaceAll(items) }
             .onAppear { player.isFeedVisible = true }
-            .onDisappear { player.isFeedVisible = false }
+            .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 ```

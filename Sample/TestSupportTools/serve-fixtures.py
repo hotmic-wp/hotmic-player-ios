@@ -2,7 +2,7 @@
 """Generate tiny synthetic UI-regression MP4/HLS fixtures, then serve loopback only.
 
 Requires ffmpeg. No input media, private checkout, grid, network shaping or result export.
-Run from the repository root; generated media stays in ignored .bench/public-fixtures.
+Run python3 Sample/TestSupportTools/serve-fixtures.py from the repository root; generated media stays in ignored .bench/public-fixtures.
 """
 import argparse
 import functools

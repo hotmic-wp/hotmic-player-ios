@@ -20,6 +20,9 @@ struct DemoOptions {
     }
     var startIndex: Int { Int(values["start-index"] ?? "0") ?? 0 }
     func dataSource() async throws -> any HMPlaylistSource {
+        #if DEBUG
+        if values["public-fixtures"] == "1" { return try await RegressionSupport.publicFixtures() }
+        #endif
         guard let raw = values["manifest-url"] else { return try await DemoContent.dataSource() }
         guard let url = URL(string: raw), ["http", "https", "file"].contains(url.scheme) else { throw Invalid("manifest URL") }
         let data: Data

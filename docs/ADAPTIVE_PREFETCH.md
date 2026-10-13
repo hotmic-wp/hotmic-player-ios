@@ -125,7 +125,7 @@ The cache remains immutable VOD; existing advanced-HLS/auth/DRM/live limitations
 apply. Simulator shaping is shared origin payload pacing, not radio/TLS/netem.
 Validate threshold changes against a physical-device benchmark grid.
 
-See [performance interpretation](BENCHMARKING.md) and the [public regression harness](../Sample/TestSupport/README.md) for reproducible simulator checks and
+See [performance interpretation](BENCHMARKING.md) and the [public regression harness](../Sample/TestSupportTools/README.md) for reproducible simulator checks and
 physical-device measurement workflows.
 
 ## Playback priority and independent fixed bootstrap

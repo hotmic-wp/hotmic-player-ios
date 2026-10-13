@@ -14,13 +14,13 @@ Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.doc
 
 ## Install
 
-For the latest features, pin the commit SHA HotMic provides from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). The ready-made social overlay is not yet tagged. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the published core API baseline only:
+For the latest features, pin the commit SHA HotMic provides from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the latest published alpha baseline:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.2")
 ```
 
-`1.1.0-alpha.1` contains core layout, ads, captions and engagement, but does not include the ready-made overlay. Pin the commit SHA HotMic provides for that path and subsequent fixes, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
+`1.1.0-alpha.2` includes the ready-made overlay, core layout, ads, captions and engagement. The measured defaults and subsequent playback/transport fixes described here remain unreleased; pin the reviewed commit SHA HotMic provides for them, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -50,7 +50,7 @@ import HotMicPlayer
         HMVerticalFeedView(player: player)
             .task { guard player.items.isEmpty else { return }; player.replaceAll([.init(id: "hls", url: hlsURL, format: .hls), .init(id: "mp4", url: mp4URL, format: .mp4)]) }
             .onAppear { player.isFeedVisible = true }
-            .onDisappear { player.isFeedVisible = false }
+            .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 ```
@@ -204,7 +204,7 @@ Poor-link S0 MP4 started 17/20 swipes, p90 1,133.8 ms. HLS in all modes and S3 M
 
 Supplied later observations, without matched raw provenance: normal swipe first-frame medians approximately 85 ms on iPhone 16 Pro and 118–135 ms on iPhone 11; slower-link pause-burst fixed 92–119 ms versus adaptive approximately 950 ms; continuous one-second swipes approximately 575–600 ms with downloading the bottleneck. Lift activation reportedly saved approximately 355 ms while iPhone 16 Pro settling increased 38–81 ms. Fixed unused bytes were approximately 1.5–2.3 MB/run versus adaptive 0.2–0.7 MB/run on slower-link normal/pause-burst workloads. Repeated full reshuffles increased waste/stalls. MP4 sometimes showed a frame earlier but moving playback came later and stalls were worse; HLS remains the example default. These are observations, not reproduced results or guarantees; first-frame medians include only started views.
 
-Future comparisons must include attempted/started/never-started coverage; first versus swipe p50/p90; first frame and first moving playback; stall count/time; network and unused bytes; reuse, memory/player counts and settling. Keep lift/settle clocks distinct. See [performance interpretation](docs/BENCHMARKING.md) and the [public regression harness](Sample/TestSupport/README.md). `prefetchPlan` exposes the applied plan; detailed JSONL telemetry remains available through Benchmark SPI and the analytics hub.
+Future comparisons must include attempted/started/never-started coverage; first versus swipe p50/p90; first frame and first moving playback; stall count/time; network and unused bytes; reuse, memory/player counts and settling. Keep lift/settle clocks distinct. See [performance interpretation](docs/BENCHMARKING.md) and the [public regression harness](Sample/TestSupportTools/README.md). `prefetchPlan` exposes the applied plan; detailed JSONL telemetry remains available through Benchmark SPI and the analytics hub.
 
 ## Examples and documentation
 

@@ -80,7 +80,7 @@ struct DemoRootView: View {
             var interactions: any HMInteractionSource = CustomEngagementBackend()
             var source: any HMPlaylistSource
             #if DEBUG
-            let regression = options.values["regression-feed"] == "1" || options.values["probe"] == "1"
+            let regression = options.values["regression-feed"] == "1"
             if regression { configuration.startsMuted = true; source = try await RegressionSupport.source() }
             else { source = try await options.dataSource() }
             if regression || options.values["open-feed"] != nil { interactions = RegressionSupport.interactions() }

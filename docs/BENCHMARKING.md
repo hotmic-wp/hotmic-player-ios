@@ -2,7 +2,7 @@
 
 The [root README](../README.md#requirements-and-performance) inventories historical runs, supplied observations, unsuccessful/reverted work and pending physical-device comparisons. Current defaults are HLS in the examples, two players, fixed 3/1, four seconds/8 MiB per entry, adaptive off and known-target lift. Existing historical configurations may override them; a configuration or grid on disk does not prove it ran.
 
-The benchmark runner, grids, encoding/origin tooling, result receivers/analyzers and Device Farm workflow are maintained separately from this public SDK. They are not required to build the SDK, use the partner examples or run the [public UI regressions](../Sample/TestSupport/README.md). The SDK retains experimental Benchmark SPI analytics and JSONL dispatch for an external lab; these are excluded from the stable partner API.
+The benchmark runner, grids, encoding/origin tooling, result receivers/analyzers and Device Farm workflow are maintained separately from this public SDK. They are not required to build the SDK, use the partner examples or run the [public UI regressions](../Sample/TestSupportTools/README.md). The SDK retains experimental Benchmark SPI analytics and JSONL dispatch for an external lab; these are excluded from the stable partner API.
 
 ## Comparable workloads
 

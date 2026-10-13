@@ -51,7 +51,7 @@ import HotMicPlayer
         }
         .ignoresSafeArea(.keyboard).foregroundStyle(.white).preferredColorScheme(.dark)
         .onAppear { player.isFeedVisible = true }
-        .onDisappear { player.isFeedVisible = false }
+        .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 

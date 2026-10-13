@@ -14,6 +14,8 @@
 
 ### Partner delivery
 
+- Extract benchmark tooling from the public SDK, retain a separate `HotMicPlayerRegression` scheme and Swift-only DEBUG support, and provide public synthetic fixtures plus a reproducible held-scrub cancellation driver.
+
 - Add a Partner integration guide, capability matrix, integration checklist and ad SDK adapter recipe. Give ready-made and custom overlays equal starting paths with two small buildable example apps.
 - Consolidate the Partner demo with persistent tabs, mixed MP4/HLS and orientations, source/overlay selection, captions, URL and host-played ads, ranked refresh and a sidecar.
 - Compile README/DocC Swift snippets in the examples job; the third-party ad SDK recipe is explicitly pseudocode and adds no dependency.

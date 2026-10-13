@@ -6,7 +6,10 @@ cap. Unit external commands run under a monotonic Python watchdog: build and
 test deadlines are the smaller of their cap and the remaining total allowance.
 Thirty seconds of the total are reserved for termination, owned-device cleanup
 and result extraction. A timeout fails with status 124, sends TERM only to that
-command's new process group, then KILL after at most five seconds. Original
+command's new process group, then KILL after at most five seconds if the owned
+leader remains unreaped. Once the leader is reaped, no further group signal or
+probe is attempted; residual descendants are not claimed verified. Cleanup
+errors are retained and cannot turn a failed command into success. Original
 nonzero command exits and handled interrupt statuses are preserved. Apps/checks
 retain their existing shared helper and post-command budget checks.
 

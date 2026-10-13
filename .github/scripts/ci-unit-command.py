@@ -77,25 +77,36 @@ def main():
     status = 125
 
     def finish_command():
-        """Attempt each group signal once; always reap even if a signal fails."""
+        """Signal only while the owned leader has not been reaped; bound waits."""
         errors = []
+        record["residual_group_verified"] = False
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-            say("TERM sent to owned command group")
-            # Do not probe with killpg(..., 0), or reap the leader during grace.
-            # Keep its PID reserved until the final group signal when possible.
-            time.sleep(args.grace)
-            os.killpg(process.pid, signal.SIGKILL)
-            say("KILL sent to owned command group after grace")
+            if process.poll() is not None:
+                record["group_cleanup"] = "leader reaped; no further group signals"
+            else:
+                os.killpg(process.pid, signal.SIGTERM)
+                say("TERM sent to owned command group")
+                try:
+                    process.wait(timeout=args.grace)
+                    record["group_cleanup"] = "leader reaped after TERM; residual group unverified"
+                    say(record["group_cleanup"])
+                except subprocess.TimeoutExpired:
+                    # wait timed out without reaping the leader, so its PID is
+                    # still reserved. Never probe or signal after a reaped exit.
+                    if process.returncode is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        record["group_cleanup"] = "KILL sent while owned leader unreaped"
+                        say(record["group_cleanup"])
         except ProcessLookupError:
-            pass
+            record["group_cleanup"] = "group no longer found; no signal retry"
         except OSError as error:
             errors.append(f"owned group cleanup: {error}")
         finally:
-            try:
-                process.wait(timeout=1)
-            except (subprocess.TimeoutExpired, OSError) as error:
-                errors.append(f"owned command reap: {error}")
+            if process.returncode is None:
+                try:
+                    process.wait(timeout=1)
+                except (subprocess.TimeoutExpired, OSError) as error:
+                    errors.append(f"owned command reap: {error}")
             record["command_exit"] = process.returncode
         if errors:
             record["cleanup_errors"] = errors

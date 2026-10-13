@@ -27,8 +27,8 @@ import HotMicPlayerUI
             .hmOverlayOptions(options)
             .task {
                 player.replaceAll([HMMediaItem(id: "demo", url: URL(string:
-                    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!,
-                    title: "Your brand, your engagement", author: "In-memory example", durationHint: 10)])
+                    "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
+                    format: .hls, title: "Your brand, your engagement", author: "In-memory example")])
             }
             .onDisappear { player.teardown() }
     }

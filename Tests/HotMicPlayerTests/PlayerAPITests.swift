@@ -62,7 +62,9 @@ struct PlayerPlaylistTests {
         if policy == .finishThenAdvance {
             #expect(list.items.map(\.id) == ["a", "b", "x", "d"])
             #expect(list.current?.id == "b" && list.finishingID == "b")
-            try list.reconcile([clip("b"), clip("x")], policy: policy)
+            let replacement = HMMediaItem(id: "b", url: URL(string: "https://example.com/restarted.mp4")!)
+            try list.reconcile([replacement, clip("x")], policy: policy)
+            #expect(list.current?.source == clip("b").source)
             #expect(list.finishingID == "b")
             list.remove(ids: ["b"])
         }
@@ -116,6 +118,7 @@ struct PlayerResolverTests {
         var calls = 0
         func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
             calls += 1
+            try await Task.sleep(for: .milliseconds(20))
             return HMResolvedItem(url: URL(string: "https://unit-format.test/media")!, poster: URL(string: "https://metadata-only.invalid/poster.jpg"))
         }
     }
@@ -133,6 +136,21 @@ struct PlayerResolverTests {
         let promoted = try await store.resolve(entry, using: resolver)
         #expect(promoted.format == .hls && promoted.posterURL == result.posterURL)
         #expect(await resolver.calls == 1)
+        let concurrent = HMResolutionStore(session: session), shared = MetadataResolver()
+        let metadata = Task { try await concurrent.resolve(entry, using: shared, metadataOnly: true) }
+        await Task.yield()
+        let media = Task { try await concurrent.resolve(entry, using: shared) }
+        #expect(try await metadata.value.format == .auto)
+        #expect(try await media.value.format == .hls)
+        #expect(await shared.calls == 1)
+        let cancellationStore = HMResolutionStore(), delayed = Resolver()
+        let cancelled = Task { try await cancellationStore.resolve(entry, using: delayed) }
+        let survivor = Task { try await cancellationStore.resolve(entry, using: delayed) }
+        await Task.yield(); cancelled.cancel()
+        #expect(try await survivor.value.url != nil)
+        do { _ = try await cancelled.value; Issue.record("Cancelled waiter returned") } catch { #expect(error is CancellationError) }
+        #expect(await delayed.calls == 1)
+
     }
     @Test("Leaving the window cancels pending work and a missing resolver is a recoverable error")
     func cancellation() async throws {
@@ -385,6 +403,33 @@ struct PlayerNativeReviewTests {
         coordinator.scrollViewDidEndDragging(scroll, willDecelerate: false)
         #expect(committed == "b")
         coordinator.fallback?.cancel()
+        var reports: [(String, HMPageCommit)] = []
+        let known = HMPageCommitProbe.Coordinator(commit: { reports.append(($0, $1)) }, reference: HMScrollViewReference(), interaction: { _ in })
+        let inset = UIScrollView(frame: CGRect(x: 0, y: 0, width: 390, height: 800))
+        inset.contentInset.top = 20; inset.contentSize = CGSize(width: 390, height: 2400)
+        inset.contentOffset.y = -20
+        known.observe(inset); known.reconcile(items: ["a", "b", "c"], current: "a")
+        known.scrollViewWillBeginDragging(inset)
+        var target = CGPoint(x: 0, y: -20)
+        known.scrollViewWillEndDragging(inset, withVelocity: .zero, targetContentOffset: &target)
+        #expect(reports.isEmpty) // A cancelled return-to-origin never activates a neighbour at lift.
+        known.scrollViewDidEndDragging(inset, willDecelerate: false)
+        #expect(reports.last?.0 == "a" && reports.last?.1.source == .settle)
+        reports.removeAll(); known.scrollViewWillBeginDragging(inset)
+        target.y = 1580 // Multi-page target with adjusted top inset.
+        known.scrollViewWillEndDragging(inset, withVelocity: CGPoint(x: 0, y: 9), targetContentOffset: &target)
+        #expect(reports.count == 1 && reports[0].0 == "c" && reports[0].1.source == .lift)
+        known.reconcile(items: ["a", "b", "c"], current: "c"); inset.contentOffset.y = 1580
+        known.scrollViewDidEndDecelerating(inset)
+        #expect(reports.last?.0 == "c" && reports.last?.1.correction == nil)
+        reports.removeAll(); known.scrollViewWillBeginDragging(inset)
+        target.y = 900 // Fractional/unknown target: never use the supplied velocity to guess.
+        known.scrollViewWillEndDragging(inset, withVelocity: CGPoint(x: 0, y: -99), targetContentOffset: &target)
+        #expect(reports.isEmpty)
+        inset.bounds.size.height = 700; target.y = 680
+        known.scrollViewWillEndDragging(inset, withVelocity: .zero, targetContentOffset: &target)
+        #expect(reports.isEmpty) // Resize keeps the current-ID restoration guard.
+        known.fallback?.cancel(); known.cancelRequest()
     }
     #endif
 
@@ -678,7 +723,11 @@ struct PlayerNativeReviewTests {
             keepReadyPlayer: true, startingBitRate: 600000, concurrency: 2, startAfterSeconds: 0, reason: "test")
         await transport.prefetch([a, b], keeping: [a, b], plan: plan)
         let tokens = await transport.activePrefetchTokens
-        #expect(tokens.count == 2)
+        #expect(tokens.count == 1)
+        #expect(transport.state.isPrefixing(b) && !transport.state.isPrefixRunning(b))
+        var presentationOnly = configuration; presentationOnly.presentation = .fit; presentationOnly.removedCurrentPolicy = .finishThenAdvance
+        await transport.updateConfiguration(presentationOnly)
+        #expect(await transport.activePrefetchTokens == tokens)
         let metadata = HMMediaItem(id: a.id, source: a.source, title: "New")
         await transport.retainWindow([b, metadata])
         await transport.prefetch([b, metadata], keeping: [b, metadata], plan: plan)
@@ -689,6 +738,7 @@ struct PlayerNativeReviewTests {
         #expect(await transport.activePrefetchTokens == tokens)
         await transport.retainWindow([signed])
         #expect(await transport.activePrefetchTokens == ["a": tokens["a"]!])
+        #expect(!transport.state.isPrefixing(b))
         _ = await transport.finish()
     }
     actor Source: HMPlaylistSource {
@@ -819,7 +869,42 @@ struct PlayerNativeReviewTests {
         #expect(await transport.heldPlaybackRequestCount == 1)
         // Promoting a held neighbour releases its original proxy request.
         await transport.prioritizePlayback(entry, urgent: true)
+        await transport.markPlayed(entry)
         #expect(try await reader.value == Data(repeating: 7, count: 16))
+        let sharedMedia = URL(string: "http://127.0.0.1:\(port.rawValue)/shared-large.mp4")!
+        await cache.put(key: sharedMedia.absoluteString, start: 0, data: Data([7, 7]), total: 262144,
+            mime: "video/mp4", base: sharedMedia, owner: sharedMedia.absoluteString, prefetched: false, played: false)
+        let warmOwner = HMMediaItem(id: "warm-shared", url: sharedMedia), promoted = HMMediaItem(id: "current-shared", url: sharedMedia)
+        var receivedWarmPrefix = false, preemptions = 0
+        await transport.setEventHandler { event, _ in
+            if event.properties["reason"] == "current-shared-resource-preemption" { preemptions += 1 }
+        }
+        await transport.retainWindow([warmOwner, promoted])
+        transport.state.prune(keeping: [warmOwner, promoted])
+        await transport.prioritizePlayback(old, urgent: false)
+        let nativeOwner = Task {
+            var request = URLRequest(url: transport.url(for: warmOwner)!)
+            request.setValue("bytes=0-262143", forHTTPHeaderField: "Range")
+            let (bytes, _) = try await URLSession.shared.bytes(for: request)
+            var received = 0
+            for try await _ in bytes {
+                received += 1
+                if received == 16 { receivedWarmPrefix = true; try await Task.sleep(for: .seconds(60)) }
+            }
+        }
+        let parked = Date().addingTimeInterval(2)
+        while !receivedWarmPrefix, Date() < parked { await Task.yield() }
+        #expect(receivedWarmPrefix)
+        await transport.prioritizePlayback(promoted, urgent: true)
+        await transport.markPlayed(promoted)
+        var sharedRequest = URLRequest(url: transport.url(for: promoted)!)
+        sharedRequest.setValue("bytes=0-15", forHTTPHeaderField: "Range"); sharedRequest.timeoutInterval = 2
+        let (sharedBytes, _) = try await URLSession.shared.data(for: sharedRequest)
+        #expect(sharedBytes == Data(repeating: 7, count: 16))
+        #expect(preemptions == 1)
+        #expect(origin.requestCount(path: "/shared-large.mp4") == 1) // Current consumes the cancelled owner's received bytes.
+        nativeOwner.cancel()
+        _ = try? await nativeOwner.value
         for mode in [PrefixOrigin.Mode.shortRange, .ignoresRange] {
             let fixture = try PrefixOrigin(mode: mode)
             defer { fixture.listener.cancel() }
@@ -828,11 +913,16 @@ struct PlayerNativeReviewTests {
             let fixturePort = try #require(fixture.listener.port)
             try #require(fixturePort.rawValue != 0)
             let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/bounded.mp4")!
+            var headRequest = URLRequest(url: url); headRequest.httpMethod = "HEAD"
+            let headResult = try await HMHTTPFetcher(limit: 1).load(headRequest)
+            #expect(headResult.data.isEmpty && headResult.response.expectedContentLength == 32)
+
             let bounded = HMMediaItem(id: "bounded-\(fixturePort)", url: url)
             await cache.put(key: url.absoluteString, start: 31, data: Data([7]), total: 32,
                             mime: "video/mp4", base: url, owner: url.absoluteString, prefetched: false, played: true)
             transport.state.prune(keeping: [bounded])
             await transport.prioritizePlayback(bounded, urgent: true)
+            await transport.markPlayed(bounded)
             var request = URLRequest(url: transport.url(for: bounded)!)
             let count = mode == .shortRange ? 32 : 8
             request.setValue("bytes=0-\(count - 1)", forHTTPHeaderField: "Range")
@@ -840,6 +930,21 @@ struct PlayerNativeReviewTests {
             let (data, response) = try await URLSession.shared.data(for: request)
             #expect((response as? HTTPURLResponse)?.expectedContentLength == Int64(count))
             #expect(data == Data(repeating: 7, count: count))
+            if mode == .ignoresRange {
+                var directFallbacks = 0
+                await transport.setEventHandler { event, item in
+                    if item.id == bounded.id, event.properties["native_direct_fallback"] == "origin-range-unsupported" { directFallbacks += 1 }
+                }
+                // A missing suffix must request native direct fallback rather than
+                // repeat truncated 200 responses. The zero-start bounded read above
+                // remains reusable and is not treated as a terminal media failure.
+                var tail = URLRequest(url: transport.url(for: bounded)!)
+                tail.setValue("bytes=8-15", forHTTPHeaderField: "Range"); tail.timeoutInterval = 3
+                _ = try? await URLSession.shared.data(for: tail)
+                let deliveredDeadline = Date().addingTimeInterval(1)
+                while directFallbacks == 0, Date() < deliveredDeadline { await Task.yield() }
+                #expect(directFallbacks == 1)
+            }
         }
         _ = await transport.finish()
     }
@@ -848,13 +953,25 @@ struct PlayerNativeReviewTests {
     final class PrefixOrigin: @unchecked Sendable {
         enum Mode: Sendable { case hanging, shortRange, ignoresRange }
         let listener: NWListener
+        private let requestLock = NSLock()
+        private var requests: [String: Int] = [:]
+        func requestCount(path: String) -> Int { requestLock.lock(); defer { requestLock.unlock() }; return requests[path, default: 0] }
+        private func record(_ request: String) {
+            guard request.hasPrefix("GET "), let path = request.split(separator: " ").dropFirst().first else { return }
+            requestLock.lock(); requests[String(path), default: 0] += 1; requestLock.unlock()
+        }
         init(mode: Mode = .hanging) throws {
             listener = try NWListener(using: .tcp, on: .any)
-            listener.newConnectionHandler = { connection in
+            listener.newConnectionHandler = { [weak self] connection in
                 connection.start(queue: .global())
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { request, _, _, _ in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] request, _, _, _ in
+                    self?.record(String(decoding: request ?? Data(), as: UTF8.self))
                     if mode != .hanging {
                         let text = String(decoding: request ?? Data(), as: UTF8.self)
+                        if text.hasPrefix("HEAD ") {
+                            let head = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 32\r\nConnection: close\r\n\r\n"
+                            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() }); return
+                        }
                         let header = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
                         let range = HMByteRange.parse(header.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }, total: 32)!
                         let count = mode == .shortRange ? min(4, range.count) : 32

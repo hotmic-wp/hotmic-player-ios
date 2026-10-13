@@ -1,17 +1,16 @@
-# Integrating HotMicPlayer 0.3.1
+# Integrating HotMicPlayer
 
 The SDK is a source Swift package with no third-party dependencies, for iOS 17+. Playback supports immutable VOD MP4 and HLS; hosts supply their catalogue, overlays and optional adapters.
 
 ## Step 1 — create a player and supply entries
 
 ```swift
-@State private var player = HMPlayer(configuration: .default)
-
-// Run on the main actor (use await when calling from another actor).
-player.replaceAll([
-    HMMediaItem(id: "clip-a", source: .url(mp4URL, format: .mp4), title: "Intro"),
-    HMMediaItem(id: "clip-b", source: .url(hlsURL, format: .hls), title: "Replay")
-])
+@MainActor func loadInitialPlaylist(_ player: HMPlayer, hlsURL: URL, mp4URL: URL) {
+    player.replaceAll([
+        HMMediaItem(id: "clip-hls", url: hlsURL, format: .hls, title: "Replay"),
+        HMMediaItem(id: "clip-mp4", url: mp4URL, format: .mp4, title: "Intro")
+    ])
+}
 ```
 
 IDs are app-chosen, nonempty and unique within the playlist. Duplicate edits are rejected as a whole and emit `.error(item:kind:)`. Items carry an explicit source, optional poster/title/author/duration hint and `[String: String]` metadata. `.auto` uses the extension, then HTTP content type for extensionless URLs (HEAD, with a GET of bytes 0–1 if HEAD fails); supplying `.mp4` or `.hls` avoids that detection request. Ergonomic `.url(url, poster: poster, id: "clip")` and `.reference("partner", id: "external", playlistID: "clip")` constructors are available. Without an explicit playlist ID the URL constructor uses its absolute URL and the reference constructor uses namespace plus reference ID.
@@ -21,13 +20,14 @@ IDs are app-chosen, nonempty and unique within the playlist. Duplicate edits are
 ```swift
 struct FeedScreen: View {
     @State private var player = HMPlayer()
+    let source: any HMPlaylistSource
 
     var body: some View {
         HMVerticalFeedView(player: player) { item, snapshot in
-            HouseOverlay(item: item, snapshot: snapshot)
+            Text(item.title ?? item.id).foregroundStyle(.white)
         }
         .task {
-            player.playlistSource = ClipPlaylist()
+            player.playlistSource = source
             await player.start()
         }
     }
@@ -46,17 +46,20 @@ let player = HMPlayer(configuration: configuration)
 
 ## Atomic editing and navigation
 
-All five operations are synchronous `@MainActor` methods returning `Bool` (discardable). They validate the entire resulting list before committing. An empty replacement is valid only with `startAt: 0`; an out-of-range start is rejected. Upcoming/insert/append on an empty playlist start it at the first incoming entry. Removal ignores unknown IDs. Removing current selects the first surviving entry after its old position, or the last surviving entry before it; removing everything becomes idle.
+All playlist operations are synchronous `@MainActor` methods returning `Bool` (discardable). They validate the entire resulting list before committing. An empty replacement is valid only with `startAt: 0`; an out-of-range start is rejected. Upcoming/insert/append on an empty playlist start it at the first incoming entry. Removal ignores unknown IDs. Removing current selects the first surviving entry after its old position, or the last surviving entry before it; removing everything becomes idle.
 
 ```swift
-player.replaceUpcoming(newTail)
-player.insertNext(promotions)
-player.append(page)
-player.remove(ids: ["expired"])
-player.replaceAll(newPlaylist, startAt: 2)
+@MainActor func editPlaylist(_ player: HMPlayer, newTail: [HMMediaItem],
+                            promotions: [HMMediaItem], page: [HMMediaItem], newPlaylist: [HMMediaItem]) {
+    player.replaceUpcoming(newTail)
+    player.insertNext(promotions)
+    player.append(page)
+    player.remove(ids: ["expired"])
+    player.replaceAll(newPlaylist, startAt: newPlaylist.count > 2 ? 2 : 0)
+}
 ```
 
-During a swipe, the current entry means the last settled page. Swipes commit by stable item ID. Appends preserve an in-progress drag or animation. Other edits preserve it when both current and destination IDs remain at the same positions; otherwise the bridge cancels the move and anchors to current (or its selected survivor). Edits to an unrelated tail therefore preserve the swipe. Empty append/insert and removal of unknown IDs emit no event and do not change revision. No surviving current item is reattached, activated, sought, or paused by an edit. New next media replaces a displaced warm assignment, subject to current-buffer gating.
+During a swipe, the current entry means the last committed page, which can be a known target activated at lift. Swipes commit by stable item ID. Appends preserve an in-progress drag or animation. Other edits preserve it when both current and destination IDs remain at the same positions; otherwise the bridge cancels the move and anchors to current (or its selected survivor). Edits to an unrelated tail therefore preserve the swipe. Empty append/insert and removal of unknown IDs emit no event and do not change revision. No surviving current item is reattached, activated, sought, or paused by an edit. New next media replaces a displaced warm assignment, with independent bounded immediate-next preparation in fixed mode.
 
 `next()` and `previous()` do nothing at the ends. `jump(toID:)` reports an error for unknown IDs. `seek(to:)` takes seconds, rejects negative/non-finite values, and clamps to the known duration. `isMuted` applies to current and prepared players. `play()` and `pause()` preserve position. `seek(toProgress:)` and toggle helpers support overlays. Animated `requestPage(at:)` and async `requestPlay(at:requestedAt:)` are Benchmark SPI.
 
@@ -64,16 +67,14 @@ During a swipe, the current entry means the last settled page. Swipes commit by 
 
 ```swift
 struct ClipPlaylist: HMPlaylistSource {
+    let load: @Sendable (String?) async throws -> HMPlaylistPage
     func loadPage(cursor: String?) async throws -> HMPlaylistPage {
-        let page = try await ClipsAPI.clips(after: cursor)
-        return HMPlaylistPage(items: page.clips.map {
-            HMMediaItem(id: $0.id, url: $0.hlsURL, posterURL: $0.posterURL, title: $0.headline)
-        }, nextCursor: page.nextCursor)
+        try await load(cursor) // Supply your actual API mapping at initialization.
     }
 }
 ```
 
-Assign `player.playlistSource`, then `await player.start()`. Pages drop already-loaded IDs and within-page repetitions, emit the non-fatal `.sourcePageDuplicates(ids:)` event, and append new entries through the usual prefetch path. The cursor advances even on an all-duplicate page. Partner-called operations still reject duplicates atomically. Paging triggers when three entries remain after current (the low-water tuning is Benchmark SPI). A nil next cursor ends the source; a repeated cursor ends automatic paging to prevent a request loop. Append, insert, upcoming replacement and removal preserve an in-flight source request and cursor; the returned page merges against the latest list. A successful `replaceAll` resets the source cursor to nil, restores source availability and clears the retry budget. A page already in flight finishes without cancellation, but its old-cursor result is ignored; subsequent paging starts from nil. An invalid `replaceAll` leaves the cursor intact. Assigning a new source resets the cursor and cancels the old request.
+Assign `player.playlistSource`, then `await player.start()`. Pages drop already-loaded IDs and within-page repetitions, emit the non-fatal `.sourcePageDuplicates(ids:)` event, and append new entries through the usual prefetch path. The cursor advances even on an all-duplicate page. Partner-called operations still reject duplicates atomically. Paging triggers when three entries remain after current (the low-water tuning is Benchmark SPI). A nil next cursor ends the source; a repeated cursor ends automatic paging to prevent a request loop. Append, insert, upcoming replacement and removal preserve an in-flight source request and cursor; the returned page merges against the latest list. A successful `replaceAll` resets the source cursor to nil, restores source availability and clears the retry budget. A page already in flight finishes without cancellation, but its old-cursor result is ignored; subsequent paging starts from nil. An invalid `replaceAll` leaves the cursor intact. Assigning any source, including the same instance, resets the cursor and cancels the old request but retains loaded entries. Use loadNextPage() to fetch immediately after reassigning a source; start() loads the first page once, or when the playlist is empty.
 
 Thrown source errors and rejected pages each emit one `.error` event and update `loadError` per failed attempt. Near the end, paging allows four total attempts, waiting 1, 2 and 4 seconds between them. After the fourth failure it stops automatic requests while `hasMoreContent` stays true. Moving to another current item or explicitly calling `loadNextPage()` resets the budget; repeated `start()` calls and unrelated playlist edits do not. Explicit loads during an existing fetch do nothing. Successful pages clear the error and retry budget. `HMStaticPlaylistSource` supports samples/tests, finite lists and looping lists with distinct IDs.
 
@@ -81,16 +82,17 @@ Thrown source errors and rejected pages each emit one `.error` event and update 
 
 ```swift
 struct CatalogueResolver: HMItemResolver {
+    let urls: [String: URL]
     func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
-        let clip = try await Catalogue.lookup(namespace: ref.namespace, id: ref.id)
-        return HMResolvedItem(url: clip.url, format: .hls, title: clip.title)
+        guard let url = urls[ref.id] else { throw HMPlayerError.resolution("Unknown catalogue ID") }
+        return HMResolvedItem(url: url, format: .hls)
     }
 }
-let player = HMPlayer(resolver: CatalogueResolver())
+let player = HMPlayer(resolver: CatalogueResolver(urls: ["episode-7": hlsURL]))
 player.replaceAll([.reference("partner", id: "episode-7")])
 ```
 
-Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window or teardown (hiding pauses media work but allows in-flight resolution to finish). Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Non-connectivity resolution failures use three total automatic attempts, waiting 1 and 2 seconds between them. Connectivity/timeout errors stay selected and retry without exhausting that terminal budget. Explicit navigation to a failed entry resets its budget; automatic skips and duplicate page-settle callbacks do not. Pending work is promoted to user-initiated priority when its item becomes current or next, without a second resolver call. Already-resolved entries activate synchronously. A current unresolved reference activates and attaches its video surface automatically when its result arrives, including after initial selection, jump, swipe and insert/next. Its snapshot reports `.loading` with readiness `.resolving` until resolution succeeds. TTFF includes resolution and media loading from the selection tap or page commit. Swipes and programmatic pages (including benchmark autopilot) start timing when the page settles/commits, never at gesture start or animation request. Duplicate settle callbacks do not reset the committed clock. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The HotMicPlayerConnect adapter will use namespace `hotmic` in a separate package.
+Resolution covers current plus the configured data/warm window, independently of buffer gating for media downloads. Concurrent requests for one immutable entry are coalesced, completed results persist for the player session, and pending work is cancelled on leaving the window or teardown (hiding pauses media work but allows in-flight resolution to finish). Resolver implementations should cooperate with cancellation. Late results cannot activate removed entries. Non-connectivity resolution failures use three total automatic attempts, waiting 1 and 2 seconds between them. Connectivity/timeout errors stay selected and retry without exhausting that terminal budget. Explicit navigation to a failed entry resets its budget; automatic skips and duplicate page-settle callbacks do not. Pending work is promoted to user-initiated priority when its item becomes current or next, without a second resolver call. Already-resolved entries activate synchronously. A current unresolved reference activates and attaches its video surface automatically when its result arrives, including after initial selection, jump, swipe and insert/next. Its snapshot reports `.loading` with readiness `.resolving` until resolution succeeds. TTFF includes resolution and media loading from the selection tap or page commit. Known-target touch swipes start timing at lift; unknown touch targets and programmatic pages (including benchmark autopilot) start at settle/commit, never at gesture start or animation request. Duplicate settle callbacks do not reset the committed clock. Playlist metadata overrides resolved hints. A missing resolver produces `.missingResolver`; it never constructs a fake playback URL. The HotMicPlayerConnect adapter will use namespace `hotmic` in a separate package.
 
 ## Terminal item failures
 
@@ -102,7 +104,7 @@ let player = HMPlayer(configuration: HMPlayerConfiguration(failedItemPolicy: .st
 player.configuration.failedItemPolicy = .skip
 ```
 
-`.stay` keeps the failed entry current and still emits the error. Explicit `jump(toID:)` (including the same ID), `next()` or `previous()` retries the selected failed entry; `replaceAll` starts a fresh failure traversal. Changing a failed item's immutable source/metadata makes it a new entry for this purpose. Merely editing another part of the playlist does not retry known failures.
+`.stay` keeps the failed entry current and still emits the error. Explicit `jump(toID:)` (including the same ID), `next()` or `previous()` retries the selected failed entry; actual source/selection changes start a fresh visit, while unchanged media retains its failure memory. Changing a failed item's immutable source makes it a new media lifetime; display metadata alone does not. Merely editing another part of the playlist does not retry known failures.
 
 With `HMVerticalFeedView`, automatic skips use the animated page request and commit only after scrolling settles. The feed internally tracks touches (including overlay scrubbing), dragging, deceleration and page animations; `isInteracting` is read-only. For controls outside the feed, call `beginInteraction()` on begin and `endInteraction()` on release/cancellation. Repeated begin calls renew a 30-second timeout, so a missing end cannot strand a failed item forever. A pending automatic page request/commit also waits for an interaction that starts after the request. A player with no feed surface commits the same navigation directly after interaction ends.
 
@@ -156,7 +158,7 @@ To write another layout, conform a view to `HMEngagementLayout` (`init(context: 
     for await event in player.events {
         // currentItemChanged, itemReady, firstFrame(ttff:readiness:),
         // stallStarted, stallEnded, error, playlistChanged, nearingEnd, sourcePageDuplicates
-        handle(event)
+        print(event)
     }
 }
 ```
@@ -167,17 +169,17 @@ Create an `HMAnalyticsHub`, register sinks and pass `analytics:` to init. Existi
 
 ## Transport settings and limits
 
-The default preset has two native players, a 128 MB disk cap and adaptive prefetch within an app-bounded data window. Media prefetch waits for a safe current buffer. Resolution does not wait for that gate. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. A dead listener is re-armed on next use or foreground, and each restart repeats the health check before publishing its port. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
+The default has two native content players, a 128,000,000-byte disk cap and fixed 3 ahead / 1 behind preparation, target 4 seconds and cap 8 MiB per entry. Immediate next prepares independently of current first frame/unknown dwell. Current reads lead, then next, then serial farther work. True rebuffering parks speculative progress; surviving requests retain tokens/bytes. Native and prefix reads share downloads in either direction, with current preemption of a warm native owner of that same resource. The loopback listener publishes its port only after ATS/health verification; failure falls back to direct URLs. A dead listener is re-armed on next use or foreground, and each restart repeats the health check before publishing its port. Current requests use high priority and speculative requests have a separate low-priority session. Stream inactivity times out after 20 seconds of permitted upstream work; intentional full-buffer backpressure pauses that clock. HLS playlists are memory-only with configurable `configuration.playlistTTL` (default 30 seconds).
 
-Use versioned VOD paths. Query parameters are preserved in cache identity; volatile signing-parameter tuning is Benchmark SPI. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, HLS byte-range/alternate-audio coverage and concurrent active players sharing the same disk directory remain outside the supported contract. The player/feed compile for iOS/tvOS; HotMicPlayerUI is iOS-only. macOS package tests exercise platform-independent logic.
+Use versioned VOD paths. Query parameters are preserved in cache identity; only `configuration.volatileSigningQueryParameters` explicitly declares names that are volatile. Shared known resources survive removal of another owner and the LRU remains a hard cap. Live, DRM, authenticated origins, signed-playlist renewal, variable-substitution HLS and automatic authenticated-origin renewal remain outside the supported contract. The player/feed compile for iOS/tvOS; HotMicPlayerUI is iOS-only. macOS package tests exercise platform-independent logic.
 
 ## Stable configuration
 
-Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), `playlistTTL` (memory-only, seconds), `loops`, `startsMuted`, `managesAudioSession` and `failedItemPolicy`. `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
+Start from `.default`, `.instantStart` or `.highQuality`. The supported tuning surface is `poolSize` (1–4), `prefetch.ahead`/`behind` (0–8), `prefetch.bytesPerItem` (up to 8 MiB), optional `prefetch.secondsPerItem`, `cacheCapacityBytes`, `startupPeakBitRate` (bits/s, zero unrestricted), `playlistTTL` (memory-only, seconds), `loops`, `startsMuted`, `managesAudioSession` and `failedItemPolicy`, `removedCurrentPolicy`, `activationTrigger` and explicitly configured `volatileSigningQueryParameters`. `HMPrefetchPolicy` also supplies `off`, `nextOnly`, `balanced` and `aggressive` window presets. For example:
 
 ```swift
 var configuration = HMPlayerConfiguration.instantStart
-configuration.prefetch = HMPrefetchPolicy(ahead: 2, behind: 1, bytesPerItem: 800_000, secondsPerItem: 3)
+configuration.prefetch = HMPrefetchPolicy(ahead: 3, behind: 1, bytesPerItem: 8 * 1024 * 1024, secondsPerItem: 4)
 configuration.cacheCapacityBytes = 64_000_000
 let player = HMPlayer(configuration: configuration)
 ```
@@ -185,8 +187,7 @@ let player = HMPlayer(configuration: configuration)
 All other engine tuning, S0–S3 names, configuration serialization (`benchmarkRecord` is Codable)/fingerprint, cache reset and benchmark entry points require `@_spi(Benchmark) import HotMicPlayer`. SPI is experimental and is excluded from [the compiled partner API inventory](PUBLIC_API.md).
 
 
-Measured adaptive prefetch is enabled by default. The app's prefetch budgets
-remain maxima; `HMPlayerConfiguration(adaptive: false)` selects fixed settings.
+Measured adaptive prefetch is explicit opt-in with `HMPlayerConfiguration(adaptive: true)`. Fixed defaults bypass custom providers; app budgets remain maxima.
 See [adaptive prefetch](ADAPTIVE_PREFETCH.md) for the replaceable public policy,
 readiness tiers, thresholds and telemetry. No network-type rules are applied.
 
@@ -213,3 +214,7 @@ case .idle, .loading, .ready, .paused, .buffering, .failed: showOtherState()
 ## Captions and core accessibility
 
 See [Captions](../Sources/HotMicPlayer/HotMicPlayer.docc/Captions.md), [Audio and interruptions](../Sources/HotMicPlayer/HotMicPlayer.docc/AudioAndInterruptions.md), and [Accessibility](../Sources/HotMicPlayer/HotMicPlayer.docc/Accessibility.md) for CC/sidecar language selection, overlay reservations, session ownership, lifecycle events and the shared ten-second VoiceOver seek policy.
+
+## Lift clocks and stable queue work
+
+`activationTrigger` defaults to `.lift` only when the forwarded native paging callback supplies a valid final aligned target ID. Unknown targets use settle. The engine never predicts from velocity or transient scrollPosition; return-to-origin/cancelled drags keep current. Fullscreen/resize/inset and edit guards remain active; an early ID update does not force another animation. Detailed gesture telemetry records touch/lift/activation/frame/settle separately and marks target/settle mismatch as unsuccessful. Public readiness and lastPlaylistChange recipes are in the [playlist guide](../Sources/HotMicPlayer/HotMicPlayer.docc/PlaylistManagement.md).

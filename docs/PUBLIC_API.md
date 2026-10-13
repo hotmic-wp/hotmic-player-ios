@@ -33,6 +33,14 @@ static func seekTarget(position: TimeInterval, start: TimeInterval, duration: Ti
 static let seekStep: TimeInterval
 ```
 
+## HMActivationTrigger
+
+```swift
+case lift
+case settle
+enum HMActivationTrigger
+```
+
 ## HMAdBreak
 
 ```swift
@@ -672,11 +680,12 @@ enum HMPlaybackState
 ## HMPlayerConfiguration
 
 ```swift
-init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(), cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000, playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false, managesAudioSession: Bool = true, adaptive: Bool = true, failedItemPolicy: HMFailedItemPolicy = .skip)
+init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(), cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000, playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false, managesAudioSession: Bool = true, adaptive: Bool = false, failedItemPolicy: HMFailedItemPolicy = .skip)
 static let `default`: HMPlayerConfiguration
 static let highQuality: HMPlayerConfiguration
 static let instantStart: HMPlayerConfiguration
 struct HMPlayerConfiguration
+var activationTrigger: HMActivationTrigger
 var adBreakMaxDuration: TimeInterval
 var adDecisionTimeout: TimeInterval
 var adLoadTimeout: TimeInterval
@@ -700,6 +709,7 @@ var removedCurrentPolicy: HMRemovedCurrentPolicy
 var resolveAhead: Int
 var startsMuted: Bool
 var startupPeakBitRate: Double
+var volatileSigningQueryParameters: [String]
 ```
 
 ## HMPlayerError
@@ -862,7 +872,7 @@ var startingBitRate: Double
 ## HMPrefetchPolicy
 
 ```swift
-init(ahead: Int = 5, behind: Int = 1, bytesPerItem: Int = 800_000, secondsPerItem: TimeInterval? = nil)
+init(ahead: Int = 3, behind: Int = 1, bytesPerItem: Int = 8 * 1024 * 1024, secondsPerItem: TimeInterval? = 4)
 static let aggressive: HMPrefetchPolicy
 static let balanced: HMPrefetchPolicy
 static let maximumBytesPerItem: Int

@@ -6,6 +6,7 @@ final class BenchmarkUITests: XCTestCase {
     func testBenchmarkGrid() throws {
         continueAfterFailure = false
         let env = ProcessInfo.processInfo.environment
+        if let manifest = env["HM_NATIVE_ACCEPTANCE_MANIFEST"] { try nativeQueueAcceptance(manifest: manifest); return }
         let app = XCUIApplication()
         app.launchEnvironment = env.filter { $0.key.hasPrefix("HM_") }
         let typed = env["HM_GRID_INPUT"] == "typed"
@@ -45,6 +46,42 @@ final class BenchmarkUITests: XCTestCase {
         }
         XCTFail("Grid timeout: \(app.staticTexts["benchmark-grid-progress"].label)")
     }
+    /// Optional native acceptance mode; reuses the existing test function so the suite stays flat.
+    private func nativeQueueAcceptance(manifest: String) throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--hm-manifest-url", manifest, "--hm-auto-start", "1", "--hm-run-id", "sdk213-native-acceptance",
+            "--hm-reset-cache", "1", "--hm-probe", "1", "--hm-hud", "1", "--hm-build-sha", "native-acceptance-source"]
+        app.launch()
+        let status = app.staticTexts["benchmark-status"], starts = app.staticTexts["probe-starts"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "label CONTAINS 'displayed'"), evaluatedWith: status)
+        waitForExpectations(timeout: 15)
+        let origin = status.label.components(separatedBy: "|")[1]
+        let baseline = starts.label
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+        for delta in [-0.12, 0.12] {
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6 + delta))
+            start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.8)
+            // A recognized slow drag with a stationary release must settle on origin.
+            expectation(for: NSPredicate(format: "label == 'idle'"), evaluatedWith: app.staticTexts["interaction-state"])
+            waitForExpectations(timeout: 5)
+            XCTAssertEqual(status.label.components(separatedBy: "|")[1], origin)
+            XCTAssertEqual(starts.label, baseline) // Includes transient activations, not just final ID.
+        }
+        app.swipeUp()
+        expectation(for: NSPredicate(format: "NOT label CONTAINS %@", "|" + origin + "|"), evaluatedWith: status)
+        waitForExpectations(timeout: 8)
+        XCTAssertEqual(starts.label.split(separator: ",").count, 2)
+        let assignments = app.staticTexts["probe-assignments"].label.split(separator: ",")
+        XCTAssertLessThanOrEqual(assignments.count, 2)
+        // Pause-burst and back navigation exercise the same retained two-node engine.
+        app.buttons["hm-video-surface"].firstMatch.tap()
+        app.swipeUp(); app.swipeUp(); app.swipeDown()
+        XCTAssertLessThanOrEqual(app.staticTexts["probe-assignments"].label.split(separator: ",").count, 2)
+        app.buttons["benchmark-finish"].tap()
+        XCTAssertTrue(app.staticTexts["benchmark-complete"].waitForExistence(timeout: 10))
+    }
+
     func testHorizontalRestrictedHost() throws {
         let env = ProcessInfo.processInfo.environment
         guard let manifest = env["HM_HORIZONTAL_MANIFEST"] else { throw XCTSkip("Set HM_HORIZONTAL_MANIFEST for the local horizontal walkthrough") }

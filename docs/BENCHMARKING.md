@@ -1,3 +1,7 @@
+# Benchmark provenance and current defaults
+
+The [root README](../README.md#requirements-and-performance) is the public inventory of historical runs, supplied observations, unsuccessful/reverted work and pending device comparisons. Existing grids may override the current defaults (HLS examples, two players, fixed 3/1, 4 seconds/8 MiB, adaptive off, known-target lift); their presence is not evidence that they ran. Direct manual launches accept `--hm-activation-trigger lift` or `settle`, and grid cells accept `activation_trigger`; automated requestPage grids remain programmatic settled moves. Do not mix their clocks or infer a touch-lift benefit from a programmatic grid. Report attempted/started/never-started views and start coverage alongside first/swipe p50/p90, first frame/moving playback, stalls, bytes/reuse/memory/player count and animation settling. Physical comparisons on iPhone 16 Pro/iPhone 11 need at least three matched repeats; currently pending.
+
 # Headless HotMicPlayer benchmarking
 
 You can do content preparation, serving, shaping and analysis on **Linux**.
@@ -388,9 +392,9 @@ Grid runs take their playback knobs from cells, not unrelated launch overrides.
 | Grid knob | Meaning / S3 default |
 | --- | --- |
 | `players` | Live allocation 1–4, default 2 |
-| `ahead`, `behind` | Data window 0–8 per side, default 5/1; S2 warm window |
-| `prefetch-bytes` | Response-payload budget/item, default 800000, max 8388608 (8 MiB), 512 KiB chunks; cancellation may overshoot a transport block |
-| `prefetch-seconds` | Optional time budget, byte cap retained; MP4 estimate, HLS segment selection |
+| `ahead`, `behind` | Data window 0–8 per side, default 3/1; S2 warm window |
+| `prefetch-bytes` | Response-payload budget/item, default/max 8388608 (8 MiB), aggregate speculative payload, 512 KiB chunks |
+| `prefetch-seconds` | Default 4-second target; optional time budget, byte cap retained; MP4 estimate, HLS segment selection |
 | `threshold` | Current seconds ahead before speculation (default 3), or fully buffered short remainder |
 | `cache-cap` | Hard disk bytes cap, default 128000000 |
 | `startup-bitrate`, `startup-window` | Initial bps ceiling (1600000, zero uncapped), duration 4s |
@@ -509,7 +513,7 @@ other attached cells do not run display links. The hosted layer must exactly
 match the surface bounds. Resume seeks hide the old frame, invalidate continuity
 at both seek start and completion, and require fresh display boundaries after
 completion. No pre-seek frame or preroll timestamp is reported as TTFF: the request clock is
-still the settled page callback, and firstFrame uses the current post-commit
+the final-target lift clock for known touch destinations, or the settled callback for programmatic/unknown targets; firstFrame uses the current post-commit
 display boundary. HMPlayerNode still validates activation identity, native item
 status and layer readiness. Cold frames retain the two-boundary requirement.
 

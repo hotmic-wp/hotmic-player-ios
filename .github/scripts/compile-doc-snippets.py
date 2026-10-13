@@ -16,8 +16,8 @@ parser.add_argument('--derived-data', type=pathlib.Path, required=True)
 parser.add_argument('--output', type=pathlib.Path, required=True)
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
-paths = sorted({*root.rglob('README.md'), *root.glob('Sources/*/*.docc/*.md')})
-paths = [p for p in paths if not any(part.startswith('.') or part in ('bench', 'DerivedData') for part in p.relative_to(root).parts)]
+paths = sorted({*root.rglob('README.md'), *root.glob('Sources/*/*.docc/*.md'), *root.glob('docs/*.md')})
+paths = [p for p in paths if p.name not in ('PUBLIC_API.md', 'ARCHITECTURE.md', 'API_REVIEW_1.0.md', 'BENCHMARKING.md') and not any(part.startswith('.') or part in ('bench', 'DerivedData') for part in p.relative_to(root).parts)]
 imports = 'import SwiftUI\nimport UIKit\nimport HotMicPlayer\nimport HotMicPlayerUI\n'
 fixtures = '''
 @MainActor struct HostFixtures {

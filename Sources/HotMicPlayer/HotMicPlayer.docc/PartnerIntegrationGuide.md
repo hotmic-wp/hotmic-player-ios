@@ -237,13 +237,13 @@ Add a sink with `player.analytics.add(HostAnalytics())`. Consume `player.events`
 
 ```swift
 var configuration = HMPlayerConfiguration.default
-configuration.prefetch = HMPrefetchPolicy(ahead: 2, behind: 1, bytesPerItem: 800_000, secondsPerItem: 3)
+configuration.prefetch = HMPrefetchPolicy(ahead: 3, behind: 1, bytesPerItem: 8 * 1024 * 1024, secondsPerItem: 4)
 configuration.maxPrefetchConcurrency = 1
 configuration.cacheCapacityBytes = 128 * 1024 * 1024
 let player = HMPlayer(configuration: configuration)
 ```
 
-Start with defaults; adaptive prefetch stays within host budgets. Keep current/next media preparation ahead of speculative work and observe `prefetchPlan` when diagnosing decisions. Follow <doc:EncodingForFastStart>: fast-start MP4, aligned HLS segments and byte-range capable immutable hosting matter more than increasing the window blindly.
+Start with fixed defaults; adaptive prefetch is explicit opt-in within host budgets. Known final targets activate at lift, while unknown targets wait for settle. See <doc:PrefetchAndPerformance> for independent next preparation, shared downloads and byte limits. Keep current/next media preparation ahead of speculative work and observe `prefetchPlan` when diagnosing decisions. Follow <doc:EncodingForFastStart>: fast-start MP4, aligned HLS segments and byte-range capable immutable hosting matter more than increasing the window blindly.
 
 Use the [benchmark workflow](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/BENCHMARKING.md): encode owned fixtures, run the same grid/cache/network conditions, then `python3 bench/analyze.py bench/results/received --output bench/results/summary`. Inspect first-frame, stalls, bytes and memory together. Simulator runs prove behavior; performance conclusions require comparable device workloads. Keep raw logs/results out of shipped docs. <doc:IntegrationChecklist> lists what to include in a report.
 

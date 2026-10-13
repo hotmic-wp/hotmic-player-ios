@@ -41,8 +41,8 @@ public struct HMPrefetchPolicy: Sendable, Equatable {
     @_spi(Benchmark) public var startThreshold: TimeInterval
 
     /// Creates bounded playback and prefetch settings using the supplied tuning values.
-    @_spi(Benchmark) public init(ahead: Int = 5, behind: Int = 1, warmBufferDuration: TimeInterval,
-                bytesPerItem: Int = 800_000, secondsPerItem: TimeInterval? = nil,
+    @_spi(Benchmark) public init(ahead: Int = 3, behind: Int = 1, warmBufferDuration: TimeInterval,
+                bytesPerItem: Int = 8 * 1024 * 1024, secondsPerItem: TimeInterval? = 4,
                 startThreshold: TimeInterval = 3) {
         self.ahead = max(0, min(8, ahead)); self.behind = max(0, min(8, behind))
         self.warmBufferDuration = warmBufferDuration
@@ -52,7 +52,7 @@ public struct HMPrefetchPolicy: Sendable, Equatable {
     /// Creates a fixed data window and bounded per-item media budgets.
     ///
     /// Use from any task; mutate only an exclusively owned value.
-    public init(ahead: Int = 5, behind: Int = 1, bytesPerItem: Int = 800_000, secondsPerItem: TimeInterval? = nil) {
+    public init(ahead: Int = 3, behind: Int = 1, bytesPerItem: Int = 8 * 1024 * 1024, secondsPerItem: TimeInterval? = 4) {
         self.init(ahead: ahead, behind: behind, warmBufferDuration: 3, bytesPerItem: bytesPerItem, secondsPerItem: secondsPerItem)
     }
     /// Hard upper bound of 8 MiB for speculative bytes per entry.
@@ -62,7 +62,7 @@ public struct HMPrefetchPolicy: Sendable, Equatable {
     /// Disables speculative fetching.
     ///
     /// Use from any task; mutate only an exclusively owned value.
-    public static let off = HMPrefetchPolicy(ahead: 0, behind: 0, warmBufferDuration: 0)
+    public static let off = HMPrefetchPolicy(ahead: 0, behind: 0, warmBufferDuration: 0, bytesPerItem: 0, secondsPerItem: 0)
     /// Prefetches only the next entry.
     ///
     /// Use from any task; mutate only an exclusively owned value.
@@ -110,6 +110,14 @@ public enum HMRemovedCurrentPolicy: String, Sendable, Equatable {
     case finishThenAdvance
 }
 
+/// When a feed swipe activates its destination. Use from any task.
+public enum HMActivationTrigger: String, Sendable, CaseIterable {
+    /// Activate at finger lift only when UIKit supplies the final aligned target; otherwise wait for settle.
+    case lift
+    /// Always wait until paging finishes.
+    case settle
+}
+
 /// Playback, paging and cache settings for an HMPlayer.
 ///
 /// Use from any task; mutate only an exclusively owned value.
@@ -140,7 +148,7 @@ public struct HMPlayerConfiguration: Sendable {
     /// Use from any task; mutate only an exclusively owned value.
     public var playlistTTL: TimeInterval = 30
     /// Exact query parameter names to remove from cache and playback identity. Empty is safe by default.
-    @_spi(Benchmark) public var volatileSigningQueryParameters: [String] = []
+    public var volatileSigningQueryParameters: [String] = []
     /// Benchmark playback strategy; S3 is the default hybrid.
     @_spi(Benchmark) public var strategy: HMPlaybackStrategy
     /// Native player count, bounded to 1...4 by the engine.
@@ -154,7 +162,9 @@ public struct HMPlayerConfiguration: Sendable {
     /// Adapt within app limits using measured performance; false uses fixed numbers.
     ///
     /// Use from any task; mutate only an exclusively owned value.
-    public var adaptive: Bool = true
+    public var adaptive: Bool = false
+    /// Activate at a known final paging target on lift, with a settled fallback for unknown targets.
+    public var activationTrigger: HMActivationTrigger = .lift
     /// All thresholds for the default measured-performance policy.
     @_spi(Benchmark) public var adaptiveThresholds = HMAdaptivePrefetchThresholds()
     /// Maximum simultaneous prefix downloads, bounded to 0...4; default serial.
@@ -213,7 +223,7 @@ public struct HMPlayerConfiguration: Sendable {
                 steadyBufferDuration: TimeInterval = 10, startupPeakBitRate: Double = 1_600_000,
                 steadyPeakBitRate: Double = 0, startupBitRateWindow: TimeInterval = 4,
                 loops: Bool = true, startsMuted: Bool = false, managesAudioSession: Bool = true,
-                restoresPlaybackPosition: Bool = true, lowWaterMark: Int = 3, playlistTTL: TimeInterval = 30, adaptive: Bool = true, failedItemPolicy: HMFailedItemPolicy = .skip) {
+                restoresPlaybackPosition: Bool = true, lowWaterMark: Int = 3, playlistTTL: TimeInterval = 30, adaptive: Bool = false, failedItemPolicy: HMFailedItemPolicy = .skip) {
         self.failedItemPolicy = failedItemPolicy
         self.adaptive = adaptive
         self.lowWaterMark = max(0, lowWaterMark)
@@ -231,7 +241,7 @@ public struct HMPlayerConfiguration: Sendable {
     public init(poolSize: Int = 2, prefetch: HMPrefetchPolicy = HMPrefetchPolicy(),
                 cacheCapacityBytes: Int = 128_000_000, startupPeakBitRate: Double = 1_600_000,
                 playlistTTL: TimeInterval = 30, loops: Bool = true, startsMuted: Bool = false,
-                managesAudioSession: Bool = true, adaptive: Bool = true, failedItemPolicy: HMFailedItemPolicy = .skip) {
+                managesAudioSession: Bool = true, adaptive: Bool = false, failedItemPolicy: HMFailedItemPolicy = .skip) {
         self.init(strategy: .S3, poolSize: poolSize, prefetch: prefetch, cacheCapacityBytes: cacheCapacityBytes,
                   startupPeakBitRate: startupPeakBitRate, loops: loops, startsMuted: startsMuted,
                   managesAudioSession: managesAudioSession, playlistTTL: playlistTTL, adaptive: adaptive, failedItemPolicy: failedItemPolicy)
@@ -265,7 +275,7 @@ public struct HMPlayerConfiguration: Sendable {
     var warmOffsets: [Int] {
         let count = max(0, min(4, poolSize) - 1)
         if strategy == .S2 { return Array(prefetch.windowOffsets.prefix(count)) }
-        if strategy == .S3 { return Array([1, -1, 2].prefix(count)) }
+        if strategy == .S3 { return Array([1, -1, 2].filter { $0 > 0 ? $0 <= prefetch.ahead : -$0 <= prefetch.behind }.prefix(count)) }
         return []
     }
 }
@@ -310,6 +320,7 @@ public struct HMPlayerConfiguration: Sendable {
         private let managesAudioSession: Bool
         private let allowsBackgroundAudio: Bool?
         private let restoresPlaybackPosition: Bool
+        private let activationTrigger: String?
         fileprivate init(_ c: HMPlayerConfiguration) {
             adBreakMaxDuration = c.adBreakMaxDuration; adNoProgressTimeout = c.adNoProgressTimeout
             adDecisionTimeout = c.adDecisionTimeout; adLoadTimeout = c.adLoadTimeout; allowsSwipeDuringAds = c.allowsSwipeDuringAds
@@ -326,6 +337,7 @@ public struct HMPlayerConfiguration: Sendable {
             steadyPeakBitRate = c.steadyPeakBitRate; startupBitRateWindow = c.startupBitRateWindow
             loops = c.loops; startsMuted = c.startsMuted; managesAudioSession = c.managesAudioSession
             restoresPlaybackPosition = c.restoresPlaybackPosition
+            activationTrigger = c.activationTrigger.rawValue
             allowsBackgroundAudio = c.allowsBackgroundAudio
         }
         /// Restores the experimental configuration recorded by a benchmark.
@@ -346,6 +358,7 @@ public struct HMPlayerConfiguration: Sendable {
             c.adaptive = adaptive; c.adaptiveThresholds = adaptiveThresholds
             c.maxPrefetchConcurrency = maxPrefetchConcurrency; c.resolveAhead = resolveAhead; c.minimumCachedStartBytes = minimumCachedStartBytes
             c.volatileSigningQueryParameters = volatileSigningQueryParameters
+            c.activationTrigger = activationTrigger.flatMap(HMActivationTrigger.init(rawValue:)) ?? .settle
             return c
         }
         private enum FailedItemPolicyRecord: String, Codable { case skip, stay }

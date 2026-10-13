@@ -30,9 +30,9 @@ final class DemoSettings {
         }
         var blurb: String {
             switch self {
-            case .instantStart: "Caps the first segment at 900 kbps and warms 3 ahead. Fastest swipe-to-frame."
-            case .balanced: "Two players, 5 ahead / 1 back in disk cache. The shipping default."
-            case .highQuality: "No bitrate cap, 20s buffers, only 1 preloaded. Best picture, slowest start."
+            case .instantStart: "900,000 bits/s for 3 startup seconds; two players with a 3/1 data window."
+            case .balanced: "Two players, fixed 3 ahead / 1 behind; target 4s, cap 8 MiB per entry."
+            case .highQuality: "Unrestricted startup, 20s steady buffer; two players and the same fixed window."
             }
         }
     }
@@ -42,7 +42,7 @@ final class DemoSettings {
         var id: String { rawValue }
         var displayName: String {
             switch self {
-            case .hybrid: "5 / 1 data"
+            case .hybrid: "3 / 1 data"
             case .off: "Off"
             case .next: "1 ahead"
             case .balanced: "2 / 1"

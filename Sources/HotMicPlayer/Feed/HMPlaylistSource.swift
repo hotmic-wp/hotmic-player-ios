@@ -88,11 +88,16 @@ public struct HMStaticPlaylistSource: HMPlaylistSource {
             return HMPlaylistPage(items: [], nextCursor: nil)
         }
 
+        let reserved = Set(items.map(\.id))
         let slice: [HMMediaItem] = (0..<pageSize).compactMap { offset in
             let index = start + offset
             guard loopsForever || index < items.count else { return nil }
             let source = items[index % items.count]
-            guard index < items.count else { return source.identified("\(source.id)-p\(page)-i\(offset)") }
+            guard index < items.count else {
+                var id = "__hm_loop_\(index)"
+                while reserved.contains(id) { id = "_" + id }
+                return source.identified(id)
+            }
             return source
         }
 

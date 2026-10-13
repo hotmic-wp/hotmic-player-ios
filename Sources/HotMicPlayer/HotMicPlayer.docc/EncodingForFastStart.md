@@ -69,8 +69,7 @@ a bounded disk media cache. CORS is not needed for native playback.
   one DNS/TLS setup, and enable keep-alive at the CDN/origin.
 - Avoid redirects and signed-URL acquisition round trips at start-up. Supply ready
   media URLs; authenticated-origin renewal is outside the supported contract.
-- Use immutable, versioned URLs. Live, DRM and advanced HLS byte-range/alternate-audio
-  coverage are outside this release's supported contract.
+- Use immutable, versioned URLs. Live, DRM, variable-substitution HLS and automatic authenticated-origin renewal remain outside the supported contract. Bounded prefetch includes default alternate audio and complete init/segment byte ranges; an unattainable target is reported.
 - Optionally supply `HMMediaItem.posterURL` for the first paint while video prepares.
 
 ## What the player does for you

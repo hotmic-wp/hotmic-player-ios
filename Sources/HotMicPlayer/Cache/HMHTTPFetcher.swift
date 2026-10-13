@@ -31,6 +31,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private let limit: Int
     private let priority: Float
     private var cancelled = false
+    private var isHeadRequest = false
     private var pending: Task<Void, Never>?
     private var streamingError: Error?
     private var watchdog: DispatchWorkItem?
@@ -48,7 +49,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
             try await withCheckedThrowingContinuation { c in
                 lock.lock()
                 if cancelled { lock.unlock(); c.resume(throwing: CancellationError()); return }
-                continuation = c
+                continuation = c; isHeadRequest = request.httpMethod == "HEAD"
                 var request = request
                 // URLSession's timeout can include time spent deliberately suspended.
                 // For streamed responses, the 20s inactivity watchdog below runs only
@@ -146,7 +147,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         let delivered = delivered, limitCancellation = reachedStreamLimit && (error as NSError?)?.code == NSURLErrorCancelled
         task = nil; pending = nil; suspendWatchdogLocked(); lock.unlock()
         if let response, !wasCancelled, streamError == nil,
-           (bytes != nil ? (error == nil || limitCancellation) : (!data.isEmpty && (data.count >= limit || (error == nil && data.count >= max(0, Int(response.expectedContentLength)))))) {
+           (isHeadRequest ? error == nil : bytes != nil ? (error == nil || limitCancellation) : (!data.isEmpty && (data.count >= limit || (error == nil && data.count >= max(0, Int(response.expectedContentLength)))))) {
             c?.resume(returning: Result(data: data, response: response, received: received, delivered: bytes != nil ? delivered : data.count))
         } else { c?.resume(throwing: Failure(underlying: wasCancelled ? CancellationError() : streamError ?? error ?? URLError(.badServerResponse), received: received)) }
     }

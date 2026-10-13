@@ -51,6 +51,10 @@ public final class HMAnalyticsHub {
         for sink in benchmarks { sink.record(decision) }
     }
 
+    func recordBenchmark(_ event: HMPlaybackEvent, item: HMMediaItem) {
+        for sink in sinks.compactMap({ $0 as? HMJSONLFileSink }) { sink.handle(event, item: item) }
+    }
+
     #if canImport(AVFoundation)
     func attach(playerLayer: AVPlayerLayer, playerKey: String, item: HMMediaItem) {
         for sink in sinks { sink.attach(playerLayer: playerLayer, playerKey: playerKey, item: item) }

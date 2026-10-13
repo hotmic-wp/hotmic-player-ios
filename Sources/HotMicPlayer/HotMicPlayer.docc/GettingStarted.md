@@ -45,8 +45,8 @@ import HotMicPlayer
         .task {
             guard player.items.isEmpty else { return }
             player.replaceAll([
-                HMMediaItem(id: "intro", url: mp4URL, format: .mp4),
-                HMMediaItem(id: "replay", url: hlsURL, format: .hls)
+                HMMediaItem(id: "replay", url: hlsURL, format: .hls),
+                HMMediaItem(id: "intro", url: mp4URL, format: .mp4)
             ])
         }
         .onAppear { player.isFeedVisible = true }

@@ -66,9 +66,9 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                         }
                     }
                     .scrollTargetLayout()
-                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, isSuspended: controller.isFullscreen, requestID: controller.pageRequestID, reference: scrollReference, interaction: { controller.setPageMoving($0) }) { id, time in
+                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, isSuspended: controller.isFullscreen, requestID: controller.pageRequestID, reference: scrollReference, trigger: controller.configuration.activationTrigger, interaction: { controller.setPageMoving($0) }) { id, commit in
                         fallbackCommit?.cancel()
-                        controller.commitPage(toID: id, requestedAt: time)
+                        controller.commitPage(toID: id, commit: commit)
                     })
                 }
                 .onChange(of: controller.isFullscreen) { _, _ in
@@ -99,7 +99,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                 .onDisappear { fallbackCommit?.cancel(); controller.detachFeed() }
                 .onChange(of: controller.currentItem?.id) { _, id in
                     fallbackCommit?.cancel()
-                    if id != scrolledID { scrolledID = id }
+                    if scrollReference.liftedItemID != id, id != scrolledID { scrolledID = id }
                 }
                 .task {
                     await controller.start()

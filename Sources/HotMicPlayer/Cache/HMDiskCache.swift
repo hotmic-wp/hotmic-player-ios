@@ -10,6 +10,8 @@ actor HMDiskCache {
         var base: URL
         var touched: Double
         var owner: String
+        var owners: Set<String>?
+        var allOwners: Set<String> { owners ?? [owner] }
         var prefetched: Int
         var played: Bool
         var filename: String { HMCacheKey.hash(key + ":" + String(start)) }
@@ -66,15 +68,19 @@ actor HMDiskCache {
     func markPlayed(_ owner: String) {
         loadIfNeeded()
         var changed = false
-        for (k, var e) in entries where e.owner == owner && !e.played { e.played = true; entries[k] = e; changed = true }
+        for (k, var e) in entries where e.allOwners.contains(owner) && !e.played { e.played = true; entries[k] = e; changed = true }
         if changed { persist() }
     }
     func bytes(for owner: String) -> Int {
         loadIfNeeded()
-        return entries.values.filter { $0.owner == owner }.reduce(0) { $0 + $1.count }
+        return entries.values.filter { $0.allOwners.contains(owner) }.reduce(0) { $0 + $1.count }
     }
     func sizes() -> [String: Int] {
-        loadIfNeeded(); return Dictionary(grouping: entries.values, by: \.owner).mapValues { $0.reduce(0) { $0 + $1.count } } }
+        loadIfNeeded()
+        var result: [String: Int] = [:]
+        for entry in entries.values { for owner in entry.allOwners { result[owner, default: 0] += entry.count } }
+        return result
+    }
     func mime(for key: String) -> String? { loadIfNeeded(); return entries.values.first { $0.key == key }?.mime }
     func total(for key: String) -> Int? {
         loadIfNeeded(); return entries.values.first { $0.key == key }?.total }
@@ -92,13 +98,16 @@ actor HMDiskCache {
         let offset = range.start - entry.start
         return Hit(data: bytes.subdata(in: offset..<(offset + range.count)), total: e.total, mime: e.mime, base: e.base)
     }
-    func put(key: String, start: Int, data: Data, total: Int, mime: String, base: URL, owner: String, prefetched: Bool, played: Bool) {
+    func put(key: String, start: Int, data: Data, total: Int, mime: String, base: URL, owner: String, prefetched: Bool, played: Bool, allowCancelled: Bool = false) {
         loadIfNeeded()
-        guard base.pathExtension.lowercased() != "m3u8", mime != "application/vnd.apple.mpegurl", !Task.isCancelled, start >= 0, total > start, !data.isEmpty, data.count <= total - start, data.count <= capacity else { return }
+        guard base.pathExtension.lowercased() != "m3u8", mime != "application/vnd.apple.mpegurl", (!Task.isCancelled || allowCancelled), start >= 0, total > start, !data.isEmpty, data.count <= total - start, data.count <= capacity else { return }
         let k = key + ":" + String(start)
-        if let existing = entries[k], existing.count >= data.count { return }
+        if var existing = entries[k], existing.count >= data.count {
+            existing.owners = existing.allOwners.union([owner]); existing.played = existing.played || played
+            entries[k] = existing; persist(); return
+        }
         let e = Entry(key: key, start: start, count: data.count, total: total, mime: mime, base: base,
-                      touched: Date().timeIntervalSince1970, owner: owner,
+                      touched: Date().timeIntervalSince1970, owner: owner, owners: (entries[k]?.allOwners ?? []).union([owner]),
                       prefetched: prefetched ? data.count : 0, played: played)
         do {
             try data.write(to: directory.appendingPathComponent(e.filename), options: .atomic)
@@ -108,7 +117,7 @@ actor HMDiskCache {
     private func evict() {
         var size = entries.values.reduce(0) { $0 + $1.count }
         let sorted = entries.sorted {
-            let lp = pinned.contains($0.value.owner), rp = pinned.contains($1.value.owner)
+            let lp = !$0.value.allOwners.isDisjoint(with: pinned), rp = !$1.value.allOwners.isDisjoint(with: pinned)
             return lp == rp ? $0.value.touched < $1.value.touched : !lp
         }
         for (k, e) in sorted where size > capacity {
@@ -120,11 +129,30 @@ actor HMDiskCache {
     func release(owners: Set<String>, sharedResources: [String: String]) {
         loadIfNeeded()
         guard !owners.isEmpty else { return }
-        for (key, var entry) in entries where owners.contains(entry.owner) {
-            if let owner = sharedResources[entry.key] { entry.owner = owner; entries[key] = entry }
-            else { entries[key] = nil; try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry.filename)) }
+        for (key, var entry) in entries where !entry.allOwners.isDisjoint(with: owners) {
+            var survivors = entry.allOwners.subtracting(owners)
+            if let owner = sharedResources[entry.key] { survivors.insert(owner) }
+            if let first = survivors.sorted().first {
+                entry.owner = first; entry.owners = survivors; entries[key] = entry
+            } else {
+                entries[key] = nil
+                if !entry.played { wastedBytes += entry.prefetched }
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry.filename))
+            }
         }
         persist()
+    }
+    /// Cache hits establish shared ownership too, before a previous owner can leave.
+    func associate(key: String, owner: String, played: Bool) {
+        loadIfNeeded()
+        var changed = false
+        for (id, var entry) in entries where entry.key == key {
+            if !entry.allOwners.contains(owner) || (played && !entry.played) {
+                entry.owners = entry.allOwners.union([owner]); entry.played = entry.played || played
+                entries[id] = entry; changed = true
+            }
+        }
+        if changed { persist() }
     }
     func reset() {
         loadIfNeeded()

@@ -67,6 +67,9 @@ struct BenchmarkOptions {
         if let n = try number("adaptive-medium-bit-rate", 0...100_000_000) { c.adaptiveThresholds.mediumBitRate = n }
         if let n = try number("adaptive-fast-bit-rate", 0...100_000_000) { c.adaptiveThresholds.fastBitRate = n }
         if let n = try number("adaptive-ewma-alpha", 0...1) { c.adaptiveThresholds.ewmaAlpha = n }
+        if let trigger = values["activation-trigger"] {
+            guard let value = HMActivationTrigger(rawValue: trigger) else { throw Invalid("activation-trigger") }; c.activationTrigger = value
+        }
         if enabled { c.startsMuted = true; c.restoresPlaybackPosition = false }
         return c
     }
@@ -80,7 +83,7 @@ struct BenchmarkOptions {
         guard !entries.isEmpty, Set(entries.map(\.id)).count == entries.count else { throw Invalid("manifest empty or duplicate IDs") }
         let items = try entries.map { e -> HMMediaItem in
             guard let media = URL(string: e.url, relativeTo: url)?.absoluteURL, ["https", "http"].contains(media.scheme) else { throw Invalid("media URL") }
-            return HMMediaItem(id: e.id, url: media, posterURL: e.poster.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }, title: e.id, durationHint: e.duration, metadata: ["format": e.format], aspectRatio: e.aspectRatio, captionSources: (e.captions ?? [:]).compactMapValues { URL(string: $0, relativeTo: url)?.absoluteURL })
+            return HMMediaItem(id: e.id, url: media, format: e.format == "hls" ? .hls : e.format == "mp4" ? .mp4 : .auto, posterURL: e.poster.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }, title: e.id, durationHint: e.duration, metadata: ["format": e.format], aspectRatio: e.aspectRatio, captionSources: (e.captions ?? [:]).compactMapValues { URL(string: $0, relativeTo: url)?.absoluteURL })
         }
         return HMStaticPlaylistSource(items: items, pageSize: items.count, loopsForever: false, simulatedLatency: .zero)
     }

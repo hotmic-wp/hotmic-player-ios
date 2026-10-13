@@ -42,6 +42,10 @@ struct FeedScreen: View {
                     Text(controller.isInteracting ? "interacting" : "idle")
                         .font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
                         .accessibilityIdentifier("interaction-state")
+                    Text(console.entries.filter { $0.kind == .viewStart }.reversed().map { $0.event.itemID }.joined(separator: ","))
+                        .font(.system(size: 8)).accessibilityIdentifier("probe-starts")
+                    Text(controller.preparedItemIdentities.sorted { $0.key < $1.key }.map { $0.key + "=" + $0.value }.joined(separator: ","))
+                        .font(.system(size: 8)).accessibilityIdentifier("probe-assignments")
                     Spacer()
                 }
                 .allowsHitTesting(false)
@@ -122,13 +126,71 @@ struct FeedScreen: View {
 /// to page forward while a UI test is holding a touch, which XCUITest can't do on its own.
 enum HMProbeNotifications {
     @MainActor static func advance(_ controller: HMPlayer) async {
-        let name = "com.hotmic.probe.next" as CFString
-        let stream = AsyncStream<Void> { continuation in
+        let commands = ["next", "previous", "reconcile", "metadata", "remove-current", "remove-next", "insert-next", "append",
+            "jump-last", "finish-policy", "advance-policy", "pause", "play", "seek", "seek-end", "hide", "show", "fullscreen", "exit-fullscreen", "captions", "teardown"]
+        let names = commands.map { "com.hotmic.probe." + $0 }
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let stream = AsyncStream<String> { continuation in
             Box.continuation = continuation
-            CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), nil,
-                { _, _, _, _, _ in Box.continuation?.yield() }, name, nil, .deliverImmediately)
+            for name in names {
+                CFNotificationCenterAddObserver(center, nil, { _, _, name, _, _ in
+                    if let name { Box.continuation?.yield(name.rawValue as String) }
+                }, name as CFString, nil, .deliverImmediately)
+            }
         }
-        for await _ in stream { controller.next() }
+        defer {
+            for name in names { CFNotificationCenterRemoveObserver(center, nil, CFNotificationName(name as CFString), nil) }
+            Box.continuation = nil
+        }
+        var sequence = 0
+        func copy(_ item: HMMediaItem, id: String? = nil, title: String? = nil) -> HMMediaItem {
+            HMMediaItem(id: id ?? item.id, source: item.source, posterURL: item.posterURL, title: title ?? item.title,
+                author: item.author, durationHint: item.durationHint, metadata: item.metadata, aspectRatio: item.aspectRatio,
+                presentation: item.presentation, captionSources: item.captionSources)
+        }
+        for await name in stream {
+            let command = String(name.dropFirst("com.hotmic.probe.".count))
+            switch command {
+            case "next": controller.next()
+            case "previous": controller.previous()
+            case "reconcile":
+                if let current = controller.currentItem {
+                    let history = Set(controller.items.prefix(controller.activeIndex + 1).map(\.id))
+                    var upcoming = controller.items.filter { !history.contains($0.id) }
+                    if upcoming.count > 1 { upcoming.swapAt(0, 1) }
+                    controller.reconcile([current] + upcoming)
+                }
+            case "metadata": controller.reconcile(controller.items.map { copy($0, title: "Updated " + $0.id) })
+            case "remove-current": if let id = controller.currentItem?.id { controller.remove(ids: [id]) }
+            case "remove-next": if controller.items.indices.contains(controller.activeIndex + 1) { controller.remove(ids: [controller.items[controller.activeIndex + 1].id]) }
+            case "insert-next", "append":
+                if let current = controller.currentItem {
+                    sequence += 1; let entry = copy(current, id: "probe-entry-\(sequence)")
+                    if command == "insert-next" { controller.insertNext([entry]) } else { controller.append([entry]) }
+                }
+            case "jump-last": if let id = controller.items.last?.id { controller.jump(toID: id) }
+            case "finish-policy": controller.configuration.removedCurrentPolicy = .finishThenAdvance
+            case "advance-policy": controller.configuration.removedCurrentPolicy = .advanceNow
+            case "pause": controller.pause()
+            case "play": controller.play()
+            case "seek": controller.seek(to: 0)
+            case "seek-end": controller.seek(to: max(0, controller.snapshot.duration - 0.5))
+            case "hide": controller.isFeedVisible = false
+            case "show": controller.isFeedVisible = true
+            case "fullscreen": controller.enterFullscreen()
+            case "exit-fullscreen": controller.exitFullscreen()
+            case "captions": controller.captionsEnabled.toggle()
+            case "teardown": controller.teardown()
+            default: break
+            }
+            if let item = controller.currentItem {
+                let assignments = (try? JSONSerialization.data(withJSONObject: controller.preparedItemIdentities, options: .sortedKeys)) ?? Data()
+                let event = HMPlaybackEvent(kind: .transfer, itemID: item.id,
+                    metrics: ["prepared_item_count": Double(controller.preparedItemCount), "playlist_revision": Double(controller.playlistRevision)],
+                    properties: ["probe_command": command, "assignments": String(decoding: assignments, as: UTF8.self)])
+                for sink in controller.analytics.sinks { sink.handle(event, item: item) }
+            }
+        }
     }
-    private enum Box { nonisolated(unsafe) static var continuation: AsyncStream<Void>.Continuation? }
+    private enum Box { nonisolated(unsafe) static var continuation: AsyncStream<String>.Continuation? }
 }

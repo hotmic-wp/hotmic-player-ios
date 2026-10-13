@@ -15,6 +15,14 @@ struct PrefetchPolicyTests {
         #expect(HMPrefetchPolicy(ahead: 0, behind: 2).windowOffsets == [-1, -2])
         #expect(HMPrefetchPolicy.off.windowOffsets.isEmpty)
         #expect(HMPrefetchPolicy(ahead: -1, behind: -2).windowOffsets.isEmpty)
+        for config in [HMPlayerConfiguration.default, HMPlayerConfiguration()] {
+            #expect(config.poolSize == 2 && !config.adaptive && config.activationTrigger == .lift)
+            #expect(config.prefetch.ahead == 3 && config.prefetch.behind == 1)
+            #expect(config.prefetch.secondsPerItem == 4 && config.prefetch.bytesPerItem == 8 * 1024 * 1024)
+            #expect(config.startupPeakBitRate == 1_600_000 && config.startupBitRateWindow == 4)
+        }
+        #expect(HMPlayerConfiguration(prefetch: .off).warmOffsets.isEmpty)
+        #expect(HMPrefetchPolicy.off.bytesPerItem == 0 && HMPrefetchPolicy.off.secondsPerItem == 0)
         #expect(HMPlayerConfiguration.default.warmOffsets == [1])
         var three = HMPlayerConfiguration.default; three.poolSize = 3
         #expect(three.warmOffsets == [1, -1])
@@ -200,6 +208,10 @@ struct FeedDataSourceTests {
         // views both collapse.
         #expect(Set(second.items.map(\.id)).isDisjoint(with: Set(first.items.map(\.id))))
         #expect(second.items.first?.url == items.first?.url)
+        let collision = HMMediaItem(id: "__hm_loop_2", url: items[0].url!)
+        let tricky = HMStaticPlaylistSource(items: [items[0], collision], pageSize: 2, simulatedLatency: .zero)
+        let initial = try await tricky.loadPage(cursor: nil), repeated = try await tricky.loadPage(cursor: "1")
+        #expect(Set((initial.items + repeated.items).map(\.id)).count == 4)
     }
 
     @Test("A finite source terminates instead of looping")
@@ -417,7 +429,7 @@ struct CacheTransportTests {
         #expect(HMCacheKey.canonical(a) != HMCacheKey.canonical(URL(string: "https://cdn.example/b.mp4")!))
     }
     @Test("HLS relative media, init, key and alternate rendition URIs are rewritten")
-    func playlist() {
+    func playlist() async throws {
         let base = URL(string: "https://cdn.example/redirected/variant/index.m3u8?sig=x")!
         let text = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key\"\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio.m3u8\"\n#EXTINF:2,\nsegment.m4s\n#EXT-X-BYTERANGE:20@0\nhttps://other.example/a.m4s\n"
         let nonHTTP = "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://license\"\n#EXT-X-KEY:URI=\"data:text/plain,key\"\ncustom://segment\n"
@@ -429,6 +441,33 @@ struct CacheTransportTests {
         #expect(!rewritten.contains("cdn.example"))
         #expect(rewritten.contains("#EXT-X-BYTERANGE:20@0"))
         #expect(HMPlaylist.references(rewritten, base: base).count == 5)
+        let root = URL(string: "https://fixture.example/master.m3u8")!
+        let master = "#EXTM3U\r\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio,main\",DEFAULT=YES,URI=\"audio.m3u8\"\r\n#EXT-X-STREAM-INF:BANDWIDTH=800000\r\nfirst.m3u8\r\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,AUDIO=\"audio,main\"\r\nvideo.m3u8\r\n"
+        let video = "#EXTM3U\n#EXT-X-MAP:URI=\"parts.mp4\",BYTERANGE=\"4@0\"\n#EXTINF:2,\n#EXT-X-BYTERANGE:8@4\nparts.mp4\n#EXTINF:2,\n#EXT-X-BYTERANGE:8\nparts.mp4\n#EXT-X-ENDLIST\n"
+        let audio = "#EXTM3U\n#EXTINF:2,\na.aac\n#EXTINF:2,\nb.aac\n#EXT-X-ENDLIST\n"
+        let first = "#EXTM3U\n#EXTINF:2,\nfirst.ts\n#EXT-X-ENDLIST\n"
+        let files = [root: Data(master.utf8), root.deletingLastPathComponent().appendingPathComponent("video.m3u8"): Data(video.utf8),
+            root.deletingLastPathComponent().appendingPathComponent("audio.m3u8"): Data(audio.utf8),
+            root.deletingLastPathComponent().appendingPathComponent("first.m3u8"): Data(first.utf8),
+            root.deletingLastPathComponent().appendingPathComponent("parts.mp4"): Data(repeating: 1, count: 20),
+            root.deletingLastPathComponent().appendingPathComponent("a.aac"): Data(repeating: 2, count: 4),
+            root.deletingLastPathComponent().appendingPathComponent("b.aac"): Data(repeating: 3, count: 4)]
+        let manifests = master.utf8.count + video.utf8.count + audio.utf8.count + first.utf8.count
+        let loader = HLSFixture(files: files)
+        let complete = try await HMHLSPrefetcher(budget: manifests + 28, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await loader.load(url, start, count) })
+        #expect(complete.targetMet && complete.seconds == 4 && complete.bytes == manifests + 28)
+        let bounded = HLSFixture(files: files)
+        let impossible = try await HMHLSPrefetcher(budget: manifests + 15, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await bounded.load(url, start, count) })
+        #expect(!impossible.targetMet && impossible.seconds == 0 && impossible.reason == "byte-cap-before-target")
+        #expect(await bounded.mediaBodies == 0) // No partial selected audio/video round.
+        let variants = HMHLS.variants(master, base: root)
+        #expect(HMHLS.startVariant(variants, cap: 1_600_000)?.audioGroup == "audio,main")
+        var memory = HMPlaylistMemory<Int>()
+        memory.store(7, for: "playlist", owner: "a", immutable: true, now: 0)
+        memory.associate("playlist", owner: "b"); memory.retain(owners: ["b"], now: 100, ttl: 1)
+        #expect(memory.value(for: "playlist", now: 100, ttl: 1) == 7)
+        memory.retain(owners: [], now: 100, ttl: 1); #expect(memory.count == 0)
+
     }
     @Test("Wasted byte accounting unions probes and intersects delivered ranges")
     func coverage() {
@@ -472,8 +511,12 @@ struct CacheTransportTests {
         await cache.release(owners: ["removed-root"], sharedResources: ["shared-segment": "remaining-root"])
         #expect(await cache.bytes(for: "remaining-root") == 8)
         #expect(await cache.read(key: "shared-segment", range: HMByteRange(start: 0, end: 7)) != nil)
+        await cache.associate(key: "shared-segment", owner: "hit-owner", played: false)
         await cache.release(owners: ["remaining-root"], sharedResources: [:])
         #expect(await cache.bytes(for: "remaining-root") == 0)
+        #expect(await cache.bytes(for: "hit-owner") == 8)
+        await cache.release(owners: ["hit-owner"], sharedResources: [:])
+        #expect(await cache.read(key: "shared-segment", range: HMByteRange(start: 0, end: 7)) == nil)
     }
 }
 
@@ -485,7 +528,7 @@ struct JSONLExportTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hm-jsonl-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("run.jsonl")
-        let configuration = HMPlayerConfiguration.default
+        let configuration = HMPlayerConfiguration(prefetch: .init(ahead: 5, behind: 1, bytesPerItem: 800_000, secondsPerItem: nil), adaptive: true)
         let sink = try HMJSONLFileSink(fileURL: file, runID: "test", configuration: configuration, format: "mp4", network: "lan", script: "binge", buildSHA: "abc")
         let item = HMMediaItem(id: "a", url: URL(string: "https://example.com/a.mp4")!)
         sink.handle(HMPlaybackEvent(kind: .viewStart, itemID: "a", monotonicTime: 100, metrics: ["request_monotonic_s": 99]), item: item)
@@ -530,4 +573,15 @@ struct JSONLExportTests {
     let sinkName = "partner"
     var events: [HMPlaybackEvent.Kind] = []
     func handle(_ event: HMPlaybackEvent, item: HMMediaItem) { events.append(event.kind) }
+}
+
+private actor HLSFixture {
+    let files: [URL: Data]
+    private(set) var mediaBodies = 0
+    init(files: [URL: Data]) { self.files = files }
+    func load(_ url: URL, _ start: Int, _ count: Int) async throws -> HMHLSPrefetcher.Response {
+        guard let data = files[url], start >= 0, start <= data.count else { throw URLError(.badServerResponse) }
+        if count > 0, url.pathExtension != "m3u8" { mediaBodies += 1 }
+        return .init(data: count == 0 ? Data() : data.subdata(in: start..<min(data.count, start + count)), total: data.count, base: url)
+    }
 }

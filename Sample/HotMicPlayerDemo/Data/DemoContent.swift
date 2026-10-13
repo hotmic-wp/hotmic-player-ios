@@ -6,15 +6,15 @@ enum DemoContent {
     // Big Buck Bunny © 2008 Blender Foundation, CC BY 3.0.
     // Hosts, attribution and the excerpt's changes are documented in Sample/README.md.
     private static let remote: [HMMediaItem] = [
-        HMMediaItem(id: "bunny-mp4",
-                    url: URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!,
-                    format: .mp4, title: "Big Buck Bunny · MP4 excerpt",
-                    author: "© 2008 Blender Foundation · CC BY 3.0", durationHint: 10,
-                    metadata: ["series": "Open movies", "source": "remote"]),
         HMMediaItem(id: "bunny-hls",
                     url: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
                     format: .hls, title: "Big Buck Bunny · HLS",
                     author: "© 2008 Blender Foundation · CC BY 3.0",
+                    metadata: ["series": "Open movies", "source": "remote"]),
+        HMMediaItem(id: "bunny-mp4",
+                    url: URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!,
+                    format: .mp4, title: "Big Buck Bunny · MP4 excerpt",
+                    author: "© 2008 Blender Foundation · CC BY 3.0", durationHint: 10,
                     metadata: ["series": "Open movies", "source": "remote"])
     ]
 

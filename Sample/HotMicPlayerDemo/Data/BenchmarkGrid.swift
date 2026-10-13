@@ -11,6 +11,7 @@ struct BenchmarkGrid: Decodable {
         let id: String
         let scenario: String?
         let presentation: HMVideoPresentation?
+        let activationTrigger: String?
         let strategy: String
         let format: String
         let playlistURL: String
@@ -22,6 +23,7 @@ struct BenchmarkGrid: Decodable {
         let resetCache: Bool?
         let requireFrame: Bool?
         enum CodingKeys: String, CodingKey {
+            case activationTrigger = "activation_trigger"
             case id, scenario, presentation, strategy, format, script, repeats, swipes, knobs
             case playlistURL = "playlist_url", dwellSeconds = "dwell_seconds", resetCache = "reset_cache", requireFrame = "require_frame"
         }

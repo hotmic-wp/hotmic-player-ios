@@ -115,6 +115,18 @@ extension CaptionsAudioAccessibilityTests {
         #expect(!player.mediaProgressAllowed)
         player.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
         #expect(!player.wantsPlayback && player.mediaProgressAllowed)
+        #expect(player.lastEvent == .audioSession(.enteredForeground(resumed: false)))
+        // The latest host play/navigation intent wins over the background snapshot.
+        for navigate in [false, true] {
+            player.pause()
+            player.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
+            if navigate { await player.requestPlay(at: 0) } else { player.play() }
+            #expect(player.wantsPlayback && !player.mediaProgressAllowed)
+            player.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
+            #expect(player.wantsPlayback && player.mediaProgressAllowed)
+            #expect(player.lastEvent == .audioSession(.enteredForeground(resumed: true)))
+            player.pause()
+        }
         let oldNodes = player.pool.nodes
         player.captionsEnabled = true
         player.handleAudioNotification(Notification(name: AVAudioSession.mediaServicesWereResetNotification))
@@ -173,6 +185,18 @@ extension CaptionsAudioAccessibilityTests {
         player.teardown()
         #expect(HMAudioSession.configurationCount == count)
         #expect(session.category == category && session.mode == mode)
+        var managedConfiguration = configuration; managedConfiguration.managesAudioSession = true
+        let managed = HMPlayer(configuration: managedConfiguration)
+        defer { managed.teardown() }
+        managed.replaceAll([.reference("test", id: "latest-intent")]); managed.pause()
+        managed.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
+        let beforePlay = HMAudioSession.configurationCount
+        managed.play()
+        #expect(HMAudioSession.configurationCount == beforePlay)
+        managed.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
+        #expect(managed.lastEvent == .audioSession(.enteredForeground(resumed: true)))
+        #expect(HMAudioSession.configurationCount == beforePlay + 1)
+
     }
     @MainActor @Test("Native actions invoke core controls, update names and become inert while disabled")
     func nativeActions() {

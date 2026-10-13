@@ -34,6 +34,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private var cancelled = false
     private var isHeadRequest = false
     private var pending: Task<Void, Never>?
+    private var pendingCallbacks: [UUID: Task<Void, Never>] = [:]
     private var streamingError: Error?
     private var watchdog: DispatchWorkItem?
     private var watchdogID = UUID()
@@ -64,7 +65,7 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         } onCancel: { self.cancel() }
     }
     private func cancel() {
-        lock.lock(); cancelled = true; watchdog?.cancel(); watchdogID = UUID(); task?.cancel(); pending?.cancel(); lock.unlock()
+        lock.lock(); cancelled = true; watchdog?.cancel(); watchdogID = UUID(); task?.cancel(); pending?.cancel(); for callback in pendingCallbacks.values { callback.cancel() }; lock.unlock()
     }
     /// Caller holds lock. The generation prevents an already-enqueued expired timer from cancelling resumed work.
     private func armWatchdogLocked() {
@@ -119,20 +120,30 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
             let atLimit = delivered >= limit
             reachedStreamLimit = atLimit
             let previous = pending
-            pending = Task {
+            let token = UUID()
+            let callback = Task {
                 await previous?.value
+                // The transport retains accepted bytes before checking whether
+                // client delivery may proceed. Drain even cancelled delegate
+                // bursts, so cancelling the last callback cannot lose queued
+                // payload or leave an earlier priority/backpressure wait alive.
                 do {
-                    try Task.checkCancellation()
                     if !accepted.isEmpty { try await bytes(accepted) }
                     self.resumeStream(dataTask, atLimit: atLimit)
                 }
                 catch { self.streamFailed(error) }
+                self.callbackCompleted(token)
             }
+            pending = callback; pendingCallbacks[token] = callback
+            if cancelled { callback.cancel() }
         } else {
             data.append(chunk.prefix(max(0, limit - data.count)))
             let expected = response?.expectedContentLength ?? -1
             if data.count >= limit && (expected < 0 || expected > Int64(limit)) { dataTask.cancel() }
         }
+    }
+    private func callbackCompleted(_ token: UUID) {
+        lock.lock(); pendingCallbacks[token] = nil; lock.unlock()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock(); let previous = pending; suspendWatchdogLocked(); lock.unlock()

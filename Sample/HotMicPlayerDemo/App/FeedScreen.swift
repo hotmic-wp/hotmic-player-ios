@@ -132,7 +132,7 @@ enum HMProbeNotifications {
         var commands = ["next", "previous", "reconcile", "metadata", "remove-current", "remove-next", "insert-next", "append",
             "jump-last", "finish-policy", "advance-policy", "pause", "play", "seek", "seek-end", "hide", "show", "fullscreen", "exit-fullscreen", "captions", "teardown"]
         #if DEBUG
-        commands += ["inspect", "interrupt-began", "interrupt-end-paused", "media-reset", "seek-middle"]
+        commands += ["inspect", "interrupt-began", "interrupt-end-paused", "media-reset", "seek-middle", "background", "foreground"]
         #endif
         let names = commands.map { "com.hotmic.probe." + $0 }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
@@ -159,6 +159,8 @@ enum HMProbeNotifications {
             switch command {
             #if DEBUG
             case "inspect": break
+            case "background": NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+            case "foreground": NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)
             case "interrupt-began": NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
                 userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
             case "interrupt-end-paused": NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
@@ -201,12 +203,17 @@ enum HMProbeNotifications {
             }
             if let item = controller.currentItem {
                 let assignments = (try? JSONSerialization.data(withJSONObject: controller.preparedItemIdentities, options: .sortedKeys)) ?? Data()
+                var diagnostics: [String: String] = [:]
+                #if DEBUG
+                diagnostics["last_event"] = String(describing: controller.lastEvent)
+                diagnostics["audio_session_configurations"] = String(controller.audioSessionConfigurationCount)
+                #endif
                 let event = HMPlaybackEvent(kind: .transfer, itemID: item.id,
                     metrics: ["prepared_item_count": Double(controller.preparedItemCount), "playlist_revision": Double(controller.playlistRevision),
                         "paused": controller.snapshot.state == .paused ? 1 : 0,
                         "frame_ready": controller.snapshot.isFrameReady ? 1 : 0,
                         "position_s": controller.snapshot.currentTime],
-                    properties: ["probe_command": command, "playback_state": String(describing: controller.snapshot.state), "assignments": String(decoding: assignments, as: UTF8.self)])
+                    properties: ["probe_command": command, "playback_state": String(describing: controller.snapshot.state), "assignments": String(decoding: assignments, as: UTF8.self)].merging(diagnostics) { _, latest in latest })
                 for sink in controller.analytics.sinks { sink.handle(event, item: item) }
             }
         }

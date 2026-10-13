@@ -63,8 +63,17 @@ actor HMCacheTransport {
     private var downloadingResources: Set<String> = []
     private var resourceHolders: [String: HMMediaItem] = [:]
     private var nativeResourceConnections: [String: UUID] = [:]
+    /// Wait tokens belong to a specific native connection, never just an entry/URL.
+    private var parkedNativeWaits: [UUID: UUID] = [:]
+    private var nativeSendProgress: [UUID: NativeSendProgress] = [:]
+    private final class NativeSendProgress: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending = true
+        var isPending: Bool { lock.lock(); defer { lock.unlock() }; return pending }
+        func complete() { lock.lock(); pending = false; lock.unlock() }
+    }
     private var metadataPrefixResources: Set<String> = []
-    private var resourceWaiters: [UUID: (key: String, item: HMMediaItem, continuation: CheckedContinuation<Void, Error>)] = [:]
+    private var resourceWaiters: [UUID: (key: String, item: HMMediaItem, prefetch: Bool, continuation: CheckedContinuation<Void, Error>)] = [:]
     private var parkedPrefixes: Set<HMMediaItem.MediaIdentity> = []
     private var prefixWaiters: [HMMediaItem.MediaIdentity: (UUID, CheckedContinuation<Void, Error>)] = [:]
     private var prefixOrder: [HMMediaItem.MediaIdentity] = []
@@ -217,7 +226,7 @@ actor HMCacheTransport {
         activePlaybackItem = item
         wakeBudgetWaiters()
         for (token, (waiting, continuation)) in activationWaiters where waiting.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) {
-            activationWaiters[token] = nil; continuation.resume()
+            activationWaiters[token] = nil; clearNativePark(token); continuation.resume()
         }
         for (key, ranges) in warmDeliveries.removeValue(forKey: identity(item)) ?? [:] { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + ranges) }
         // Repeated playlist IDs share a media path and disk entries.
@@ -244,29 +253,30 @@ actor HMCacheTransport {
             parkedPrefixes.remove(key); prefixWaiters.removeValue(forKey: key)?.1.resume()
         }
         for (id, (owner, waiter)) in priorityWaiters where progressAllowed && (!urgent || isAdmitted(owner) || owner.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters)) {
-            priorityWaiters[id] = nil
+            priorityWaiters[id] = nil; clearNativePark(id)
             emit(.transfer, item: owner, metrics: ["proxy_priority_resume": 1])
             waiter.resume()
         }
+        preemptParkedPrefixHolders()
         startQueuedPrefixes()
     }
     func setProgressAllowed(_ allowed: Bool) {
         progressAllowed = allowed
         if let item = priorityItem { prioritizePlayback(item, urgent: playbackUrgent, admitting: admittedItem) }
     }
-    private func waitUntilPlayed(_ item: HMMediaItem) async throws {
+    private func waitUntilPlayed(_ item: HMMediaItem, connectionID: UUID? = nil) async throws {
         guard !isActivePlayback(item) else { return }
         let token = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
-                else { activationWaiters[token] = (item, continuation) }
+                else { activationWaiters[token] = (item, continuation); parkNative(connectionID, token: token) }
             }
         } onCancel: { Task { await self.cancelActivationWaiter(token) } }
         try Task.checkCancellation()
     }
-    private func cancelActivationWaiter(_ token: UUID) { activationWaiters.removeValue(forKey: token)?.1.resume(throwing: CancellationError()) }
-    private func waitForPlaybackPriority(_ item: HMMediaItem) async throws {
+    private func cancelActivationWaiter(_ token: UUID) { clearNativePark(token); activationWaiters.removeValue(forKey: token)?.1.resume(throwing: CancellationError()) }
+    private func waitForPlaybackPriority(_ item: HMMediaItem, connectionID: UUID? = nil) async throws {
         try Task.checkCancellation()
         guard !isFinishing else { throw CancellationError() }
         if progressAllowed, !playbackUrgent || isAdmitted(item) || priorityItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true { return }
@@ -276,17 +286,21 @@ actor HMCacheTransport {
                 if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
                 else {
                     priorityWaiters[id] = (item, waiter)
+                    parkNative(connectionID, token: id)
                     emit(.transfer, item: item, metrics: ["proxy_priority_hold": 1])
                 }
             }
         } onCancel: { Task { await self.cancelPriorityWaiter(id) } }
     }
     private func cancelPriorityWaiter(_ id: UUID) {
+        clearNativePark(id)
         priorityWaiters.removeValue(forKey: id)?.1.resume(throwing: CancellationError())
     }
     #if DEBUG
     var heldPlaybackRequestCount: Int { priorityWaiters.count }
-    var parkedNativeRequestCount: Int { activationWaiters.count + budgetWaiters.count }
+    var parkedNativeRequestCount: Int {
+        activationWaiters.count + budgetWaiters.count + parkedNativeWaits.keys.filter { nativeSendProgress[$0]?.isPending == true }.count
+    }
     var activePrefetchTokens: [String: UUID] {
         Dictionary(uniqueKeysWithValues: prefixWork.values.map { ($0.item.id, $0.token) })
     }
@@ -614,7 +628,7 @@ actor HMCacheTransport {
         }
         return transfer
     }
-    private func reserve(_ item: HMMediaItem, count: Int, prefetch: Bool) async throws -> Allocation {
+    private func reserve(_ item: HMMediaItem, count: Int, prefetch: Bool, connectionID: UUID? = nil) async throws -> Allocation {
         guard count > 0, !isActivePlayback(item), item.url != nil else { return Allocation(count: count, owner: nil) }
         let owner = identity(item), cap = min(HMPrefetchPolicy.maximumBytesPerItem, max(0, configuration.prefetch.bytesPerItem))
         while !isActivePlayback(item) {
@@ -629,7 +643,7 @@ actor HMCacheTransport {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
-                    else { budgetWaiters[token] = (item, continuation) }
+                    else { budgetWaiters[token] = (item, continuation); parkNative(connectionID, token: token) }
                 }
             } onCancel: { Task { await self.cancelBudgetWaiter(token) } }
         }
@@ -644,11 +658,11 @@ actor HMCacheTransport {
             guard item.url != nil else { continue }
             let owner = identity(item), cap = min(HMPrefetchPolicy.maximumBytesPerItem, max(0, configuration.prefetch.bytesPerItem))
             if isActivePlayback(item) || speculativeReceived[owner, default: 0] + reservedSpeculative[owner, default: 0] < cap {
-                budgetWaiters[token] = nil; continuation.resume()
+                budgetWaiters[token] = nil; clearNativePark(token); continuation.resume()
             }
         }
     }
-    private func cancelBudgetWaiter(_ token: UUID) { budgetWaiters.removeValue(forKey: token)?.1.resume(throwing: CancellationError()) }
+    private func cancelBudgetWaiter(_ token: UUID) { clearNativePark(token); budgetWaiters.removeValue(forKey: token)?.1.resume(throwing: CancellationError()) }
     private func measurementHandler(_ item: HMMediaItem, speculative: Bool) -> @Sendable (Int, Double, Double?) -> Void {
         { [weak self] bytes, seconds, ttfb in
             Task { await self?.recordMeasurement(item, bytes: bytes, seconds: seconds, ttfb: ttfb, speculative: speculative) }
@@ -663,9 +677,27 @@ actor HMCacheTransport {
     /// cache. Cancellation releases the waiter, never another caller's transfer.
     private func isActivePlayback(_ item: HMMediaItem) -> Bool { activePlaybackItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true }
     private func isCurrentRequest(_ item: HMMediaItem) -> Bool { priorityItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true }
-    /// Current or an admitted prefix may preempt a warm native socket holding this exact resource.
-    /// Its bounded received bytes are flushed by stream cancellation and reused;
-    /// explicit prefix owners finish one bounded chunk and remain coalesced.
+    private func clearNativePark(_ token: UUID) { parkedNativeWaits[token] = nil }
+    private func parkNative(_ connectionID: UUID?, token: UUID) {
+        guard let connectionID, connections[connectionID] != nil,
+              nativeResourceConnections.values.contains(connectionID) else { return }
+        parkedNativeWaits[token] = connectionID
+        preemptParkedPrefixHolders()
+    }
+    private func prefixMayProgress(_ item: HMMediaItem) -> Bool {
+        progressAllowed && !isFinishing && (!playbackUrgent || isAdmitted(item)) && !winding.contains(identity(item))
+    }
+    /// A holder can park after a prefix joins. Recheck at that transition, rather
+    /// than leaving the serial prefix slot behind a now-suspended native owner.
+    private func preemptParkedPrefixHolders() {
+        for waiter in resourceWaiters.values where waiter.prefetch && prefixMayProgress(waiter.item) {
+            boostResource(waiter.key, forPrefix: true)
+        }
+    }
+    /// Current promotion keeps immediate exact-resource priority. Prefixes,
+    /// including metadata discovery, coalesce with healthy native downloads and
+    /// only retire genuinely parked connections. Cancellation drains callbacks
+    /// and flushes partial bytes before the original task releases ownership.
     private func boostResource(_ key: String, forPrefix: Bool = false) {
         guard let holder = resourceHolders[key] else { return }
         // Native activation does not need an unresponsive speculative HEAD.
@@ -673,19 +705,20 @@ actor HMCacheTransport {
         if !forPrefix, metadataPrefixResources.contains(key) {
             cancelPrefix(identity(holder)); return
         }
-        guard !isCurrentRequest(holder), let connection = nativeResourceConnections[key] else { return }
+        guard !isCurrentRequest(holder), let connection = nativeResourceConnections[key], connections[connection] != nil else { return }
+        if forPrefix, !parkedNativeWaits.contains(where: { $0.value == connection && nativeSendProgress[$0.key]?.isPending != false }) { return }
         emit(.transfer, item: holder, metrics: ["proxy_priority_preemption": 1])
         close(connection, reason: forPrefix ? "prefix-shared-resource-preemption" : "current-shared-resource-preemption")
     }
     private func acquireResource(_ key: String, item: HMMediaItem, connectionID: UUID? = nil, prefetch: Bool = false) async throws {
         while downloadingResources.contains(key) {
-            if isCurrentRequest(item) || prefetch { boostResource(key, forPrefix: prefetch && !isCurrentRequest(item)) }
+            if isCurrentRequest(item) || (prefetch && prefixMayProgress(item)) { boostResource(key, forPrefix: prefetch && !isCurrentRequest(item)) }
             let token = UUID()
             emit(.transfer, item: item, metrics: ["prefetch_join": 1], properties: ["resource": HMCacheKey.hash(key)])
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                     if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
-                    else { resourceWaiters[token] = (key, item, continuation) }
+                    else { resourceWaiters[token] = (key, item, prefetch, continuation) }
                 }
             } onCancel: { Task { await self.cancelResourceWaiter(token) } }
             try Task.checkCancellation()
@@ -699,7 +732,10 @@ actor HMCacheTransport {
     }
     private func unlockResource(_ key: String) {
         downloadingResources.remove(key)
-        resourceHolders[key] = nil; nativeResourceConnections[key] = nil
+        resourceHolders[key] = nil
+        if let connection = nativeResourceConnections.removeValue(forKey: key) {
+            parkedNativeWaits = parkedNativeWaits.filter { $0.value != connection }
+        }
         let waiters = resourceWaiters.filter { $0.value.key == key }
         for (token, waiter) in waiters {
             resourceWaiters[token] = nil; waiter.continuation.resume()
@@ -781,7 +817,7 @@ actor HMCacheTransport {
                 do {
                     // Another reader may have filled the head while we waited.
                     if await cache.total(for: key) != nil { unlockResource(key); await serve(header, connection: connection, id: id); return }
-                    try await stream(route, range: rangeHeader, headOnly: request[0] == "HEAD", connection: connection, limit: 512 * 1024)
+                    try await stream(route, range: rangeHeader, headOnly: request[0] == "HEAD", connection: connection, connectionID: id, limit: 512 * 1024)
                     unlockResource(key)
                 } catch { unlockResource(key); throw error }
                 close(id); return
@@ -817,7 +853,7 @@ actor HMCacheTransport {
                         let delivered: Int
                         do {
                             delivered = try await stream(route, range: "bytes=\(cursor)-\(range.end)", headOnly: false,
-                                connection: connection, sendHeaders: false, limit: min(512 * 1024, range.end - cursor + 1))
+                                connection: connection, connectionID: id, sendHeaders: false, limit: min(512 * 1024, range.end - cursor + 1))
                             unlockResource(key)
                         } catch { unlockResource(key); throw error }
                         guard delivered > 0 else { throw URLError(.badServerResponse) }
@@ -836,12 +872,12 @@ actor HMCacheTransport {
         }
     }
     @discardableResult
-    private func stream(_ route: Route, range: String?, headOnly: Bool, connection: NWConnection, sendHeaders: Bool = true, limit: Int = Int.max) async throws -> Int {
+    private func stream(_ route: Route, range: String?, headOnly: Bool, connection: NWConnection, connectionID: UUID, sendHeaders: Bool = true, limit: Int = Int.max) async throws -> Int {
         let streamID = UUID()
         let resource = key(route.url); inFlightResources[resource, default: 0] += 1
         defer { releaseResource(resource) }
-        try await waitForPlaybackPriority(route.item)
-        let allocation = try await reserve(route.item, count: headOnly ? 0 : limit, prefetch: false)
+        try await waitForPlaybackPriority(route.item, connectionID: connectionID)
+        let allocation = try await reserve(route.item, count: headOnly ? 0 : limit, prefetch: false, connectionID: connectionID)
         defer { release(allocation) }
         let limit = allocation.count
         var request = URLRequest(url: route.url)
@@ -859,15 +895,15 @@ actor HMCacheTransport {
         }
         request.setValue(upstreamRange, forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        try await waitForPlaybackPriority(route.item)
+        try await waitForPlaybackPriority(route.item, connectionID: connectionID)
         let fetcher = HMHTTPFetcher(limit: limit, priority: isActivePlayback(route.item) ? URLSessionTask.highPriority : URLSessionTask.defaultPriority,
             measurement: measurementHandler(route.item, speculative: !isActivePlayback(route.item)), headers: { [weak self] response in
             guard let self else { throw CancellationError() }
-            try await self.waitForPlaybackPriority(route.item)
+            try await self.waitForPlaybackPriority(route.item, connectionID: connectionID)
             if allocation.owner != nil, response.statusCode == 200, response.expectedContentLength > limit {
                 // A range-less origin can still play. Hold its unbounded body until
                 // activation, with the fetcher's header watchdog suspended.
-                try await self.waitUntilPlayed(route.item)
+                try await self.waitUntilPlayed(route.item, connectionID: connectionID)
             }
             let requestedStart = range?.dropFirst(6).split(separator: "-", omittingEmptySubsequences: false).first.flatMap { Int($0) } ?? 0
             if !headOnly, response.statusCode == 200,
@@ -876,7 +912,7 @@ actor HMCacheTransport {
                 // Keep its body suspended while inactive, then use AVPlayer's direct
                 // origin transport on the same node/activation instead of retrying
                 // truncated 200 responses indefinitely.
-                try await self.waitUntilPlayed(route.item)
+                try await self.waitUntilPlayed(route.item, connectionID: connectionID)
                 await self.emit(.transportError, item: route.item, properties: [
                     "native_direct_fallback": "origin-range-unsupported",
                     "message": "Origin ignored bounded Range; activated playback uses direct transport"])
@@ -896,12 +932,17 @@ actor HMCacheTransport {
             headers["Content-Type"] = headers["Content-Type"] ?? HMCacheKey.mime(route.url)
             headers["Connection"] = "close"; headers["Cache-Control"] = "no-store"
             let head = "HTTP/1.1 \(response.statusCode) OK\r\n" + headers.map { "\($0.key): \($0.value)\r\n" }.joined() + "\r\n"
-            try await self.sendBlock(connection, data: Data(head.utf8))
+            try await self.sendBlock(connection, data: Data(head.utf8), connectionID: connectionID)
         }, bytes: { [weak self] bytes in
             guard let self else { throw CancellationError() }
-            try await self.waitForPlaybackPriority(route.item)
-            try await self.sendBlock(connection, data: bytes)
-            await self.cacheStream(streamID, bytes: bytes, route: route)
+            // Retain accepted payload before a priority/backpressure wait can
+            // cancel its send. Delivery/played accounting requires send success.
+            let start = await self.cacheStream(streamID, bytes: bytes, route: route)
+            try await self.waitForPlaybackPriority(route.item, connectionID: connectionID)
+            try await self.sendBlock(connection, data: bytes, connectionID: connectionID)
+            if let start {
+                await self.recordStreamDelivery(key: resource, item: route.item, start: start, count: bytes.count)
+            }
         })
         do {
             let result = try await fetcher.load(request)
@@ -914,6 +955,12 @@ actor HMCacheTransport {
             await cacheStream(streamID, bytes: Data(), route: route, finishing: true); throw error
         }
     }
+    private func recordStreamDelivery(key: String, item: HMMediaItem, start: Int, count: Int) async {
+        recordDelivery(key: key, item: item, start: start, count: count)
+        if configuration.strategy.usesDataCache, let root = item.url {
+            await cache.associate(key: key, owner: self.key(root), played: isActivePlayback(item))
+        }
+    }
     private func beginStream(_ id: UUID, response: HTTPURLResponse, speculative: Bool, item: HMMediaItem) {
         guard response.statusCode == 200 || response.statusCode == 206 else { return }
         let range = response.value(forHTTPHeaderField: "Content-Range")
@@ -921,9 +968,10 @@ actor HMCacheTransport {
         let cursor = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
         streams[id] = StreamState(cursor: cursor, total: total, mime: response.mimeType ?? HMCacheKey.mime(response.url!), base: response.url!, speculative: speculative && !isActivePlayback(item))
     }
-    private func cacheStream(_ id: UUID, bytes: Data, route: Route, finishing: Bool = false) async {
-        guard var stream = streams[id], let mediaURL = route.item.url else { return }
-        if !bytes.isEmpty { recordDelivery(key: key(route.url), item: route.item, start: stream.cursor + stream.buffer.count, count: bytes.count) }
+    @discardableResult
+    private func cacheStream(_ id: UUID, bytes: Data, route: Route, finishing: Bool = false) async -> Int? {
+        guard var stream = streams[id], let mediaURL = route.item.url else { return nil }
+        let start = stream.cursor + stream.buffer.count
         if stream.speculative, !bytes.isEmpty {
             let resource = key(route.url), start = stream.cursor + stream.buffer.count
             prefetchRanges[resource] = HMRangeCoverage.union((prefetchRanges[resource] ?? []) + [HMByteRange(start: start, end: start + bytes.count - 1)])
@@ -937,8 +985,12 @@ actor HMCacheTransport {
                 let survives = retainedItems.contains { $0.hasSameMedia(as: route.item, ignoring: configuration.volatileSigningQueryParameters) }
                 let owner = waitingCurrent?.url.map { key($0) } ?? key(mediaURL)
                 await cache.put(key: key(route.url), start: stream.cursor, data: chunk, total: stream.total, mime: stream.mime, base: stream.base,
-                                owner: owner, prefetched: false, played: isActivePlayback(route.item),
-                                allowCancelled: finishing && (survives || waitingCurrent != nil))
+                                owner: owner, prefetched: false,
+                                played: isActivePlayback(route.item) && HMRangeCoverage.overlap(playedRanges[key(route.url)] ?? [], [HMByteRange(start: stream.cursor, end: stream.cursor + size - 1)]) == size,
+                                // Cancellation can race a full-chunk write as well
+                                // as the final partial flush. Ownership stays held
+                                // until this stream's callbacks and writes drain.
+                                allowCancelled: survives || waitingCurrent != nil)
             }
             stream.cursor += size
         }
@@ -946,10 +998,24 @@ actor HMCacheTransport {
         if finishing, configuration.strategy.usesDataCache {
             let owner = key(mediaURL); cachedBytes[owner] = await cache.bytes(for: owner); state.setBytes(cachedBytes)
         }
+        return start
     }
-    private func sendBlock(_ connection: NWConnection, data: Data) async throws {
+    private func sendBlock(_ connection: NWConnection, data: Data, connectionID: UUID? = nil) async throws {
+        let token = UUID(), progress = NativeSendProgress()
+        // An ordinary asynchronous send is healthy. Only sustained client
+        // backpressure makes the holder eligible, with a token-fenced timer.
+        let timer: Task<Void, Never>? = connectionID.map { id in
+            nativeSendProgress[token] = progress
+            return Task {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                guard progress.isPending else { return }
+                parkNative(id, token: token)
+            }
+        }
+        defer { progress.complete(); timer?.cancel(); nativeSendProgress[token] = nil; clearNativePark(token) }
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
+                progress.complete()
                 if let error { c.resume(throwing: error) } else { c.resume() }
             })
         }
@@ -962,6 +1028,7 @@ actor HMCacheTransport {
         connection.send(content: packet, completion: .contentProcessed { [weak self] _ in Task { await self?.close(id) } })
     }
     private func close(_ id: UUID, reason: String = "completed") {
+        parkedNativeWaits = parkedNativeWaits.filter { $0.value != id }
         if let item = responseItems.removeValue(forKey: id) {
             emit(.transfer, item: item, metrics: ["proxy_close": 1], properties: ["reason": reason])
         }

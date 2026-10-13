@@ -73,7 +73,6 @@ import UIKit
     private var audioInterrupted = false
     private var appBackgrounded = false
     private var resumeAfterInterruption = false
-    private var resumeAfterBackground = false
     private var audioBlocked: Bool { audioInterrupted || (appBackgrounded && !configuration.allowsBackgroundAudio) }
     func handleAudioNotification(_ note: Notification) {
         guard !ended else { return }
@@ -96,7 +95,7 @@ import UIKit
                 }
                 let eligible = resumeAfterInterruption && shouldResume && wantsPlayback
                 audioInterrupted = false; resumeAfterInterruption = false
-                if !shouldResume { wantsPlayback = false; resumeAfterBackground = false }
+                if !shouldResume { wantsPlayback = false }
                 let resumed = eligible && isFeedVisible && !audioBlocked
                 if resumed { activateAudioIfManaged(); resumeActive() }
                 updateHostPlaybackPermission()
@@ -109,14 +108,14 @@ import UIKit
             emit(.audioSession(.routeChanged(reason: raw)))
         case UIApplication.didEnterBackgroundNotification:
             guard !appBackgrounded else { return }
-            resumeAfterBackground = wantsPlayback
             appBackgrounded = true
             if !configuration.allowsBackgroundAudio { pauseAll() }
             updateHostPlaybackPermission(); emit(.audioSession(.enteredBackground))
         case UIApplication.didBecomeActiveNotification:
-            let eligible = wantsPlayback && (resumeAfterBackground || audioInterrupted || !appBackgrounded)
+            // Latest explicit host intent also includes play/navigation while blocked.
+            let eligible = wantsPlayback
             appBackgrounded = false; audioInterrupted = false
-            resumeAfterBackground = false; resumeAfterInterruption = false
+            resumeAfterInterruption = false
             let resumed = eligible && isFeedVisible && !audioBlocked
             if resumed { activateAudioIfManaged(); resumeActive() }
             updateHostPlaybackPermission()
@@ -545,7 +544,7 @@ import UIKit
     public func pause() {
         wantsPlayback = false
         #if os(iOS)
-        resumeAfterInterruption = false; resumeAfterBackground = false
+        resumeAfterInterruption = false
         #endif
         updateHostPlaybackPermission()
         if currentNode?.isActive == true { currentNode?.pause() }

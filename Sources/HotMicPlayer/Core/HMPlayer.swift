@@ -100,6 +100,7 @@ import UIKit
                 let resumed = eligible && isFeedVisible && !audioBlocked
                 if resumed { activateAudioIfManaged(); resumeActive() }
                 updateHostPlaybackPermission()
+                if mediaProgressAllowed { refreshWindow() }
                 emit(.audioSession(.interruptionEnded(shouldResume: shouldResume, resumed: resumed)))
             }
         case AVAudioSession.routeChangeNotification:
@@ -117,21 +118,25 @@ import UIKit
             appBackgrounded = false; audioInterrupted = false
             resumeAfterBackground = false; resumeAfterInterruption = false
             let resumed = eligible && isFeedVisible && !audioBlocked
-            if resumed { activateAudioIfManaged(); resumeActive(); refreshWindow() }
-            updateHostPlaybackPermission(); emit(.audioSession(.enteredForeground(resumed: resumed)))
+            if resumed { activateAudioIfManaged(); resumeActive() }
+            updateHostPlaybackPermission()
+            if mediaProgressAllowed { refreshWindow() }
+            emit(.audioSession(.enteredForeground(resumed: resumed)))
         case AVAudioSession.mediaServicesWereResetNotification:
             let resume = wantsPlayback
             pauseAll()
             // Rebuild AVPlayerItems, preserving the current playhead and preferences.
             if let item = currentItem { resumePositions[identity(item)] = snapshot.currentTime }
             let position = snapshot.currentTime
+            mediaResetPosition = currentItem.flatMap { item in
+                position.isFinite && position > 0 ? (identity(item), position) : nil
+            }
             if adState.isActive { endAd(.failed, resume: false) }
             for node in pool.nodes { analytics.detach(playerKey: node.id) }
             pool.rebuild()
             activateAudioIfManaged()
             if !resume { wantsPlayback = false }
             refreshWindow()
-            if position > 0 { currentNode?.seek(to: position) }
             emit(.audioSession(.mediaServicesReset))
         default: break
         }
@@ -141,6 +146,8 @@ import UIKit
     #endif
     @ObservationIgnored private var didActivateAudioSession = false
     private var playbackAllowed: Bool { wantsPlayback && !audioBlocked }
+    // Transport may serve a paused seek, but never bypass host visibility/audio policy.
+    var mediaProgressAllowed: Bool { !ended && isFeedVisible && !audioBlocked }
     private func activateAudioIfManaged() {
         guard !ended, currentItem != nil else { return }
         if configuration.managesAudioSession && !audioBlocked {
@@ -380,6 +387,8 @@ import UIKit
     @ObservationIgnored private var startCapLowered = false
     @ObservationIgnored private var headPair = ""
     @ObservationIgnored private var resumePositions: [HMMediaItem.MediaIdentity: TimeInterval] = [:]
+    /// One rebuilt activation, independent of the ordinary back-swipe resume policy.
+    @ObservationIgnored private var mediaResetPosition: (item: HMMediaItem.MediaIdentity, seconds: TimeInterval)?
     @ObservationIgnored private var nearingEndKey = ""
     private var pendingSnapshot = HMPlaybackSnapshot()
 
@@ -669,6 +678,7 @@ import UIKit
         wantsPlayback = true; navigate(to: index, requestedAt: requestedAt); isFeedVisible = true
     }
     private func saveAndDeactivate() {
+        mediaResetPosition = nil
         if adState.isActive { endAd(.cancelled, resume: false) }
         adVisit = nil; adState = .none; adProgress = HMAdProgress(); adContentOutcome = nil
         guard let node = currentNode, let item = currentItem else { return }
@@ -796,6 +806,7 @@ import UIKit
     }
     private func refreshWindow() {
         guard !ended else { return }
+        if mediaResetPosition?.item != currentItem.map(identity) { mediaResetPosition = nil }
         // Fetch the next sidecar alongside the protected media head, including one-player configurations.
         prefetchCaptions()
         consultAdIfNeeded()
@@ -846,7 +857,7 @@ import UIKit
             Task { [weak self] in guard let self else { return }; await prepareTransport(); guard !ended else { return }; refreshWindow() }
             return
         }
-        proxy?.setProgressAllowed(!audioBlocked)
+        proxy?.setProgressAllowed(mediaProgressAllowed)
         refreshWindowAfterTransport()
         scheduleNetworkRetry()
     }
@@ -932,7 +943,7 @@ import UIKit
     }
     private func resumeActive() {
         guard !audioBlocked else { return }
-        if isFeedVisible { proxy?.setProgressAllowed(true) }
+        proxy?.setProgressAllowed(mediaProgressAllowed)
         if adNode?.isActive == true, isFeedVisible, wantsPlayback { adNode?.play() }
         guard isFeedVisible, !ended, let original = currentItem, !terminalFailures.contains(identity(original)),
               networkFailures[identity(original)].map({ $0.nextAttempt.isFinite }) != true, let item = resolutions.cached(original), let url = item.url else { return }
@@ -951,7 +962,9 @@ import UIKit
         }
         if !node.isActive {
             proxy?.markPlayed(item)
-            node.activate(startingAt: configuration.restoresPlaybackPosition ? resumePositions[identity(original)] : nil,
+            let resetPosition = mediaResetPosition.flatMap { $0.item == identity(original) ? $0.seconds : nil }
+            mediaResetPosition = nil
+            node.activate(startingAt: resetPosition ?? (configuration.restoresPlaybackPosition ? resumePositions[identity(original)] : nil),
                           requestedAt: requestTime, reason: requestReason, cachedBytes: proxy?.cachedByteCount(for: item) ?? 0, commit: requestCommit)
             if !playbackAllowed { node.pause() }
         } else if wantsPlayback && (node.snapshot.state == .paused || node.player.timeControlStatus == .paused) { node.play() }
@@ -1298,6 +1311,7 @@ import UIKit
         if configuration.managesAudioSession && didActivateAudioSession { HMAudioSession.deactivate(); didActivateAudioSession = false }
     }
     private func stopWork() {
+        mediaResetPosition = nil
         captionObserver?.cancel(); captionObserver = nil
         #if os(iOS)
         audioObserver?.cancel(); audioObserver = nil
@@ -1371,6 +1385,7 @@ import UIKit
         }
     }
     private func updateHostPlaybackPermission() {
+        proxy?.setProgressAllowed(mediaProgressAllowed)
         // Paused time is not evidence of a stuck SDK; the wall-clock cap still applies.
         adLastProgressAt = ProcessInfo.processInfo.systemUptime
         hostAdContext?.setPlaybackAllowed(isFeedVisible && playbackAllowed && adState.isActive)
@@ -1495,7 +1510,7 @@ import UIKit
             for task in resolutionTasks.values { task.cancel() }
             resolutionTasks.removeAll(); resolutionTaskTokens.removeAll()
             resolutionFailures.removeAll(); networkFailures.removeAll(); terminalFailures.removeAll()
-            resumePositions.removeAll()
+            resumePositions.removeAll(); mediaResetPosition = nil
             resolutionSigningParameters = configuration.volatileSigningQueryParameters
         }
         resolutions.configure(signingParameters: configuration.volatileSigningQueryParameters)

@@ -4,6 +4,7 @@ import Foundation
 /// Locked per-response state, separate speculative connection pool and bounded streaming backpressure.
 final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     struct Result { let data: Data; let response: HTTPURLResponse; let received: Int; let delivered: Int }
+    enum HTTPError: Error { case status(Int) }
     struct Failure: Error { let underlying: Error; let received: Int }
     private static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
@@ -87,7 +88,11 @@ final class HMHTTPFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable
         armWatchdogLocked(); dataTask.resume()
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { completionHandler(.cancel); return }
+        guard let http = response as? HTTPURLResponse else { completionHandler(.cancel); return }
+        guard (200...299).contains(http.statusCode) else {
+            lock.lock(); streamingError = HTTPError.status(http.statusCode); lock.unlock()
+            completionHandler(.cancel); return
+        }
         lock.lock(); self.response = http
         let now = ProcessInfo.processInfo.systemUptime
         measurement?(0, 0, max(0, now - beganAt)); receiveAt = now

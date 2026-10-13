@@ -6,7 +6,12 @@ import Network
 /// opaque routes, bounded upstream ranges, no URLSession implicit disk cache.
 actor HMCacheTransport {
     struct Route { let url: URL; let item: HMMediaItem }
-    struct Transfer { let data: Data; let total: Int; let mime: String; let base: URL; let start: Int }
+    struct Transfer {
+        let data: Data; let total: Int; let mime: String; let base: URL; let start: Int; let cost: Int
+        init(data: Data, total: Int, mime: String, base: URL, start: Int, cost: Int = 0) {
+            self.data = data; self.total = total; self.mime = mime; self.base = base; self.start = start; self.cost = cost
+        }
+    }
     private var startup: Task<Bool, Never>?
     private var playlistOwners: Set<String> = []
     private var listener: NWListener?
@@ -281,6 +286,7 @@ actor HMCacheTransport {
     }
     #if DEBUG
     var heldPlaybackRequestCount: Int { priorityWaiters.count }
+    var parkedNativeRequestCount: Int { activationWaiters.count + budgetWaiters.count }
     var activePrefetchTokens: [String: UUID] {
         Dictionary(uniqueKeysWithValues: prefixWork.values.map { ($0.item.id, $0.token) })
     }
@@ -447,7 +453,7 @@ actor HMCacheTransport {
         let outcome = try await HMHLSPrefetcher(budget: remaining, seconds: seconds, cap: bitRate).run(mediaURL) { [weak self] url, start, count in
             guard let self else { throw CancellationError() }
             let t = try await self.fetch(url, item: item, start: start, count: count, prefetch: true)
-            return HMHLSPrefetcher.Response(data: t.data, total: t.total, base: t.base)
+            return HMHLSPrefetcher.Response(data: t.data, total: t.total, base: t.base, cost: t.cost)
         }
         emit(.transfer, item: item, metrics: ["prefetch_duration_s": outcome.seconds,
             "prefetch_target_met": outcome.targetMet ? 1 : 0, "prefix_payload_bytes": Double(outcome.bytes)],
@@ -457,27 +463,63 @@ actor HMCacheTransport {
                 properties: ["prefix_outcome": error == .exhausted ? "byte-cap-consumed-by-shared-native-reads" : "origin-range-unsupported"])
         }
     }
+    /// HEAD is optional origin metadata. GET probes are bounded, budgeted and cached
+    /// through the ordinary transfer path, after releasing the metadata lock.
+    private func metadata(_ url: URL, item: HMMediaItem, prefetch: Bool) async throws -> Transfer {
+        let key = key(url)
+        if prefetch { try await waitForPrefetchPriority(item) }
+        try await acquireResource(key, item: item, prefetch: prefetch)
+        let known: Transfer?
+        do {
+            defer { unlockResource(key) }
+            if let hit = playlists.value(for: key, now: ProcessInfo.processInfo.systemUptime, ttl: configuration.playlistTTL) {
+                if let root = item.url { playlists.associate(key, owner: self.key(root)) }
+                return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: 0)
+            }
+            if let total = await cache.total(for: key) {
+                return Transfer(data: Data(), total: total, mime: await cache.mime(for: key) ?? HMCacheKey.mime(url), base: url, start: 0)
+            }
+            if prefetch { metadataPrefixResources.insert(key) }
+            defer { if prefetch { metadataPrefixResources.remove(key) } }
+            var request = URLRequest(url: url); request.httpMethod = "HEAD"
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            do {
+                let result = try await HMHTTPFetcher(limit: 0).load(request)
+                let total = Int(result.response.expectedContentLength)
+                known = total > 0 ? Transfer(data: Data(), total: total, mime: result.response.mimeType ?? HMCacheKey.mime(url), base: result.response.url ?? url, start: 0) : nil
+            } catch {
+                let underlying = (error as? HMHTTPFetcher.Failure)?.underlying ?? error
+                guard case HMHTTPFetcher.HTTPError.status(let status) = underlying,
+                      [403, 405, 501].contains(status) else { throw error }
+                known = nil
+            }
+        }
+        if let known { return known }
+        try Task.checkCancellation()
+        let playlist = url.pathExtension.lowercased() == "m3u8" || (url == item.url && item.format == .hls)
+        // A manifest probe can be the whole bounded manifest. Media probes only
+        // learn total size; no segment round is downloaded before admission.
+        return try await fetch(url, item: item, start: 0, count: playlist ? HMHLSPrefetcher.playlistRead : 1, prefetch: prefetch)
+    }
     private func fetch(_ url: URL, item: HMMediaItem, start: Int, count: Int, prefetch: Bool) async throws -> Transfer {
         try Task.checkCancellation()
         guard count >= 0, ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { throw URLError(.unsupportedURL) }
+        if count == 0 { return try await metadata(url, item: item, prefetch: prefetch) }
         let key = key(url)
         if prefetch { try await waitForPrefetchPriority(item) }
-        try await acquireResource(key, item: item)
+        try await acquireResource(key, item: item, prefetch: prefetch)
         var locked = true
         defer { if locked { unlockResource(key) } }
         inFlightResources[key, default: 0] += 1
         defer { releaseResource(key) }
         let playlist = url.pathExtension.lowercased() == "m3u8" || (url == item.url && item.format == .hls)
-        if count == 0, let total = await cache.total(for: key) {
-            return Transfer(data: Data(), total: total, mime: await cache.mime(for: key) ?? HMCacheKey.mime(url), base: url, start: start)
-        }
         if playlist, let hit = playlists.value(for: key, now: ProcessInfo.processInfo.systemUptime, ttl: configuration.playlistTTL) {
             if let root = item.url { playlists.associate(key, owner: self.key(root)) }
             if !prefetch {
                 recordDelivery(key: key, item: item, start: start, count: hit.data.count)
                 emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
             }
-            return hit
+            return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: hit.start)
         }
         guard let mediaURL = item.url else { throw URLError(.unsupportedURL) }
         let owner = self.key(mediaURL)
@@ -502,7 +544,7 @@ actor HMCacheTransport {
         unlockResource(key); locked = false
         let allocation = try await reserve(item, count: count, prefetch: prefetch)
         defer { release(allocation) }
-        try await acquireResource(key, item: item); locked = true
+        try await acquireResource(key, item: item, prefetch: prefetch); locked = true
         // A native owner may have completed while reservation/lock acquisition waited.
         if !playlist, count > 0, let hit = await cache.available(key: key, start: start, count: count) {
             await cache.associate(key: key, owner: owner, played: isActivePlayback(item))
@@ -519,21 +561,23 @@ actor HMCacheTransport {
                 recordDelivery(key: key, item: item, start: start, count: hit.data.count)
                 emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
             }
-            return hit
+            return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: hit.start)
         }
 
         let count = allocation.count
-        if prefetch && count == 0 { metadataPrefixResources.insert(key) }
-        defer { if prefetch && count == 0 { metadataPrefixResources.remove(key) } }
         var request = URLRequest(url: url)
-        if count == 0 { request.httpMethod = "HEAD" }
-        else { request.setValue("bytes=\(start)-\(start + count - 1)", forHTTPHeaderField: "Range") }
+        request.setValue("bytes=\(start)-\(start + count - 1)", forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let result: HMHTTPFetcher.Result
         do { result = try await HMHTTPFetcher(limit: max(1, count), priority: prefetch ? URLSessionTask.lowPriority : URLSessionTask.highPriority,
             measurement: measurementHandler(item, speculative: prefetch), headers: { response in
                 if prefetch, count > 0 {
-                    let ranged = response.statusCode == 206 && response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(start)-") == true
+                    let range = response.value(forHTTPHeaderField: "Content-Range")
+                    let end = range?.dropFirst(6).split(separator: "/").first?.split(separator: "-").last.flatMap { Int($0) }
+                    let total = range?.split(separator: "/").last.flatMap { Int($0) }
+                    let ranged = response.statusCode == 206 && range?.hasPrefix("bytes \(start)-") == true &&
+                        end.map { end in total.map { end >= start && end - start < count && end < $0 } == true &&
+                            (response.expectedContentLength < 0 || response.expectedContentLength == end - start + 1) } == true
                     let complete = response.statusCode == 200 && start == 0 && response.expectedContentLength >= 0 && response.expectedContentLength <= count
                     guard ranged || complete else { throw BudgetError.rangeUnsupported }
                 }
@@ -545,6 +589,7 @@ actor HMCacheTransport {
             }
             throw error
         }
+        account(result.received, url: url, item: item, prefetch: prefetch, speculative: prefetch || allocation.owner != nil)
         let http = result.response
         let contentRange = http.value(forHTTPHeaderField: "Content-Range")
         let total = contentRange?.split(separator: "/").last.flatMap { Int($0) } ?? Int(http.expectedContentLength)
@@ -554,7 +599,6 @@ actor HMCacheTransport {
         }
         let mime = http.mimeType ?? HMCacheKey.mime(url)
         let data = result.data
-        account(result.received, url: url, item: item, prefetch: prefetch, speculative: prefetch || allocation.owner != nil)
         if prefetch || allocation.owner != nil, !data.isEmpty { prefetchRanges[key] = HMRangeCoverage.union((prefetchRanges[key] ?? []) + [HMByteRange(start: start, end: start + data.count - 1)]) }
         if !prefetch, !data.isEmpty { recordDelivery(key: key, item: item, start: start, count: data.count) }
         try Task.checkCancellation()
@@ -563,7 +607,7 @@ actor HMCacheTransport {
                             prefetched: prefetch, played: isActivePlayback(item))
             cachedBytes[owner] = await cache.bytes(for: owner); state.setBytes(cachedBytes)
         }
-        let transfer = Transfer(data: data, total: total, mime: mime, base: http.url ?? url, start: start)
+        let transfer = Transfer(data: data, total: total, mime: mime, base: http.url ?? url, start: start, cost: result.received)
         if playlist, data.count == total {
             playlists.store(transfer, for: key, owner: owner, immutable: HMHLS.text(data).map(HMHLS.isImmutable) ?? false,
                             now: ProcessInfo.processInfo.systemUptime)
@@ -619,22 +663,23 @@ actor HMCacheTransport {
     /// cache. Cancellation releases the waiter, never another caller's transfer.
     private func isActivePlayback(_ item: HMMediaItem) -> Bool { activePlaybackItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true }
     private func isCurrentRequest(_ item: HMMediaItem) -> Bool { priorityItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true }
-    /// Current may preempt a warm native socket holding this exact resource.
+    /// Current or an admitted prefix may preempt a warm native socket holding this exact resource.
     /// Its bounded received bytes are flushed by stream cancellation and reused;
     /// explicit prefix owners finish one bounded chunk and remain coalesced.
-    private func boostResource(_ key: String) {
+    private func boostResource(_ key: String, forPrefix: Bool = false) {
         guard let holder = resourceHolders[key] else { return }
         // Native activation does not need an unresponsive speculative HEAD.
-        if metadataPrefixResources.contains(key) {
+        // Prefix waiters never cancel another explicit prefix owner.
+        if !forPrefix, metadataPrefixResources.contains(key) {
             cancelPrefix(identity(holder)); return
         }
         guard !isCurrentRequest(holder), let connection = nativeResourceConnections[key] else { return }
         emit(.transfer, item: holder, metrics: ["proxy_priority_preemption": 1])
-        close(connection, reason: "current-shared-resource-preemption")
+        close(connection, reason: forPrefix ? "prefix-shared-resource-preemption" : "current-shared-resource-preemption")
     }
-    private func acquireResource(_ key: String, item: HMMediaItem, connectionID: UUID? = nil) async throws {
+    private func acquireResource(_ key: String, item: HMMediaItem, connectionID: UUID? = nil, prefetch: Bool = false) async throws {
         while downloadingResources.contains(key) {
-            if isCurrentRequest(item) { boostResource(key) }
+            if isCurrentRequest(item) || prefetch { boostResource(key, forPrefix: prefetch && !isCurrentRequest(item)) }
             let token = UUID()
             emit(.transfer, item: item, metrics: ["prefetch_join": 1], properties: ["resource": HMCacheKey.hash(key)])
             try await withTaskCancellationHandler {
@@ -888,7 +933,7 @@ actor HMCacheTransport {
             let size = min(512 * 1024, stream.buffer.count)
             let chunk = Data(stream.buffer.prefix(size)); stream.buffer.removeFirst(size)
             if configuration.strategy.usesDataCache, stream.total > 0 {
-                let waitingCurrent = resourceWaiters.values.first { $0.key == key(route.url) && $0.item.hasSameMedia(as: priorityItem ?? $0.item, ignoring: configuration.volatileSigningQueryParameters) }?.item
+                let waitingCurrent = resourceWaiters.values.first { waiter in waiter.key == key(route.url) && priorityItem.map { priority in waiter.item.hasSameMedia(as: priority, ignoring: configuration.volatileSigningQueryParameters) } == true }?.item
                 let survives = retainedItems.contains { $0.hasSameMedia(as: route.item, ignoring: configuration.volatileSigningQueryParameters) }
                 let owner = waitingCurrent?.url.map { key($0) } ?? key(mediaURL)
                 await cache.put(key: key(route.url), start: stream.cursor, data: chunk, total: stream.total, mime: stream.mime, base: stream.base,

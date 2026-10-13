@@ -443,23 +443,33 @@ struct CacheTransportTests {
         #expect(HMPlaylist.references(rewritten, base: base).count == 5)
         let root = URL(string: "https://fixture.example/master.m3u8")!
         let master = "#EXTM3U\r\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio,main\",DEFAULT=YES,URI=\"audio.m3u8\"\r\n#EXT-X-STREAM-INF:BANDWIDTH=800000\r\nfirst.m3u8\r\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,AUDIO=\"audio,main\"\r\nvideo.m3u8\r\n"
-        let video = "#EXTM3U\n#EXT-X-MAP:URI=\"parts.mp4\",BYTERANGE=\"4@0\"\n#EXTINF:2,\n#EXT-X-BYTERANGE:8@4\nparts.mp4\n#EXTINF:2,\n#EXT-X-BYTERANGE:8\nparts.mp4\n#EXT-X-ENDLIST\n"
+        let tail = String(repeating: "#EXTINF:2,\nunused.ts?sig=" + String(repeating: "a", count: 80) + "\n", count: 1000)
+        let video = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key\"\n#EXT-X-MAP:URI=\"parts.mp4\",BYTERANGE=\"4@0\"\n#EXTINF:2,\n#EXT-X-BYTERANGE:8@4\nparts.mp4\n#EXTINF:2,\n#EXT-X-BYTERANGE:8\nparts.mp4\n" + tail + "#EXT-X-ENDLIST\n"
         let audio = "#EXTM3U\n#EXTINF:2,\na.aac\n#EXTINF:2,\nb.aac\n#EXT-X-ENDLIST\n"
         let first = "#EXTM3U\n#EXTINF:2,\nfirst.ts\n#EXT-X-ENDLIST\n"
         let files = [root: Data(master.utf8), root.deletingLastPathComponent().appendingPathComponent("video.m3u8"): Data(video.utf8),
             root.deletingLastPathComponent().appendingPathComponent("audio.m3u8"): Data(audio.utf8),
             root.deletingLastPathComponent().appendingPathComponent("first.m3u8"): Data(first.utf8),
             root.deletingLastPathComponent().appendingPathComponent("parts.mp4"): Data(repeating: 1, count: 20),
+            root.deletingLastPathComponent().appendingPathComponent("key"): Data(repeating: 4, count: 16),
             root.deletingLastPathComponent().appendingPathComponent("a.aac"): Data(repeating: 2, count: 4),
             root.deletingLastPathComponent().appendingPathComponent("b.aac"): Data(repeating: 3, count: 4)]
         let manifests = master.utf8.count + video.utf8.count + audio.utf8.count + first.utf8.count
+        #expect(video.utf8.count > 64 * 1024 && video.utf8.count < HMHLSPrefetcher.playlistRead)
         let loader = HLSFixture(files: files)
-        let complete = try await HMHLSPrefetcher(budget: manifests + 28, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await loader.load(url, start, count) })
-        #expect(complete.targetMet && complete.seconds == 4 && complete.bytes == manifests + 28)
+        let complete = try await HMHLSPrefetcher(budget: manifests + 44, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await loader.load(url, start, count) })
+        #expect(complete.targetMet && complete.seconds == 4 && complete.bytes == manifests + 44)
         let bounded = HLSFixture(files: files)
         let impossible = try await HMHLSPrefetcher(budget: manifests + 15, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await bounded.load(url, start, count) })
         #expect(!impossible.targetMet && impossible.seconds == 0 && impossible.reason == "byte-cap-before-target")
         #expect(await bounded.mediaBodies == 0) // No partial selected audio/video round.
+        let zero = HLSFixture(files: files)
+        let noBudget = try await HMHLSPrefetcher(budget: 0, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await zero.load(url, start, count) })
+        #expect(!noBudget.targetMet && noBudget.bytes == 0)
+        #expect(await zero.calls == 0)
+        let oversized = HLSFixture(files: [root: Data(repeating: 32, count: HMHLSPrefetcher.playlistRead + 1)])
+        let tooLong = try await HMHLSPrefetcher(budget: 8 * 1024 * 1024, seconds: 4, cap: 1_600_000).run(root, load: { url, start, count in try await oversized.load(url, start, count) })
+        #expect(!tooLong.targetMet && tooLong.bytes == 0)
         let variants = HMHLS.variants(master, base: root)
         #expect(HMHLS.startVariant(variants, cap: 1_600_000)?.audioGroup == "audio,main")
         var memory = HMPlaylistMemory<Int>()
@@ -578,8 +588,10 @@ struct JSONLExportTests {
 private actor HLSFixture {
     let files: [URL: Data]
     private(set) var mediaBodies = 0
+    private(set) var calls = 0
     init(files: [URL: Data]) { self.files = files }
     func load(_ url: URL, _ start: Int, _ count: Int) async throws -> HMHLSPrefetcher.Response {
+        calls += 1
         guard let data = files[url], start >= 0, start <= data.count else { throw URLError(.badServerResponse) }
         if count > 0, url.pathExtension != "m3u8" { mediaBodies += 1 }
         return .init(data: count == 0 ? Data() : data.subdata(in: start..<min(data.count, start + count)), total: data.count, base: url)

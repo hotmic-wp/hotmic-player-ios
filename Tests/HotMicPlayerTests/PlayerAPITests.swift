@@ -523,7 +523,7 @@ struct PlayerNativeReviewTests {
     #endif
 
     /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
-    func videoFixture(rotated: Bool) async throws -> URL {
+    func videoFixture(rotated: Bool, duration: TimeInterval = 1) async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-aspect-\(UUID()).mp4")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 90])
@@ -541,7 +541,13 @@ struct PlayerNativeReviewTests {
         let deadline = Date().addingTimeInterval(2)
         while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         try #require(adaptor.append(pixels, withPresentationTime: .zero))
-        writer.endSession(atSourceTime: CMTime(seconds: 1, preferredTimescale: 600))
+        if duration > 1 {
+            for frame in 1..<Int(duration * 10) {
+                while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(1)) }
+                try #require(adaptor.append(pixels, withPresentationTime: CMTime(seconds: Double(frame) / 10, preferredTimescale: 600)))
+            }
+        }
+        writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
         input.markAsFinished()
         await writer.finishWriting()
         try #require(writer.status == .completed)
@@ -946,12 +952,84 @@ struct PlayerNativeReviewTests {
                 #expect(directFallbacks == 1)
             }
         }
+        // A warm native reader parked for budget or activation must not monopolize
+        // the serial prefix slot for a distinct entry sharing its exact URL.
+        for (mode, knownTotal, cap) in [(PrefixOrigin.Mode.shortRange, true, 8), (.oversized200, false, 1024), (.oversized200, true, 1024)] {
+            let fixture = try PrefixOrigin(mode: mode)
+            defer { fixture.listener.cancel() }
+            let ready = Date().addingTimeInterval(2)
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { await Task.yield() }
+            let fixturePort = try #require(fixture.listener.port)
+            let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/parked.mp4")!
+            let warm = HMMediaItem(id: "parked-native", url: url, format: .mp4)
+            let alias = HMMediaItem(id: "distinct-prefix", url: url, format: .mp4)
+            let farther = HMMediaItem(id: "eligible-farther", url: url.deletingLastPathComponent().appendingPathComponent("farther.mp4"), format: .mp4)
+            var config = HMPlayerConfiguration.default; config.prefetch.bytesPerItem = cap
+            await transport.updateConfiguration(config)
+            if knownTotal {
+                let total = mode == .shortRange ? 32 : 2048
+                await cache.put(key: url.absoluteString, start: total - 1, data: Data([7]), total: total, mime: "video/mp4", base: url, owner: url.absoluteString, prefetched: false, played: false)
+            }
+            await transport.retainWindow([old, warm, alias, farther])
+            transport.state.prune(keeping: [old, warm, alias, farther])
+            await transport.prioritizePlayback(old, urgent: false)
+            let native = Task {
+                var request = URLRequest(url: transport.url(for: warm)!); request.timeoutInterval = 6
+                _ = try? await URLSession.shared.data(for: request)
+            }
+            let parked = Date().addingTimeInterval(2)
+            while await transport.parkedNativeRequestCount == 0, Date() < parked { await Task.yield() }
+            #expect(await transport.parkedNativeRequestCount > 0)
+            var prefixPreemptions = 0, completed: Set<String> = []
+            await transport.setEventHandler { event, item in
+                if event.properties["reason"] == "prefix-shared-resource-preemption" { prefixPreemptions += 1 }
+                if event.properties["prefetch_work"] == "completed" { completed.insert(item.id) }
+            }
+            await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: HMPrefetchPlan(itemsAhead: 2, bytesPerItem: cap, secondsPerItem: 4, reason: "parked owner acceptance"))
+            let finished = Date().addingTimeInterval(4)
+            while !completed.contains(farther.id), Date() < finished { await Task.yield() }
+            #expect(prefixPreemptions == 1 && completed.contains(alias.id) && completed.contains(farther.id))
+            #expect(fixture.requestCount(path: "/farther.mp4") > 0)
+            native.cancel(); await native.value
+        }
+        // GET-only origins must produce an explicit complete prefix, not just native fallback.
+        for mode in [PrefixOrigin.Mode.head403, .head405, .unknownLength, .oversized200] {
+            let fixture = try PrefixOrigin(mode: mode)
+            defer { fixture.listener.cancel() }
+            let ready = Date().addingTimeInterval(2)
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { await Task.yield() }
+            let fixturePort = try #require(fixture.listener.port)
+            let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/master.m3u8")!
+            let next = HMMediaItem(id: "get-only-\(fixturePort)", url: url, format: .hls)
+            var config = HMPlayerConfiguration.default; config.prefetch.bytesPerItem = 1024
+            await transport.updateConfiguration(config)
+            await transport.prioritizePlayback(old, urgent: true, admitting: next)
+            var met: Bool?, payload = 0.0
+            await transport.setEventHandler { event, item in
+                guard item.id == next.id else { return }
+                payload += event.metrics["prefetch_bytes"] ?? 0
+                if let value = event.metrics["prefetch_target_met"] { met = value == 1 }
+            }
+            await transport.prefetch([next], keeping: [old, next], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "GET-only acceptance"))
+            let done = Date().addingTimeInterval(4)
+            while met == nil, Date() < done { await Task.yield() }
+            #expect(met == (mode != .oversized200))
+            #expect(payload <= 1024)
+            if mode != .oversized200 {
+                // One cached metadata byte plus the missing suffix, never two full downloads.
+                #expect(fixture.requestCount(path: "/part.ts") == 2)
+                #expect(payload == Double(PrefixOrigin.manifest.utf8.count + 32))
+            } else { #expect(payload == Double(PrefixOrigin.manifest.utf8.count)) }
+        }
         _ = await transport.finish()
+        #expect(await transport.heldPlaybackRequestCount == 0)
+        #expect(await transport.joinedPlaybackRequestCount == 0)
     }
 
     /// Deliberately never completes its range. A full-buffer proxy cannot pass.
     final class PrefixOrigin: @unchecked Sendable {
-        enum Mode: Sendable { case hanging, shortRange, ignoresRange }
+        enum Mode: Sendable { case hanging, shortRange, ignoresRange, head403, head405, unknownLength, oversized200 }
+        static let manifest = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\npart.ts\n#EXT-X-ENDLIST\n"
         let listener: NWListener
         private let requestLock = NSLock()
         private var requests: [String: Int] = [:]
@@ -968,6 +1046,28 @@ struct PlayerNativeReviewTests {
                     self?.record(String(decoding: request ?? Data(), as: UTF8.self))
                     if mode != .hanging {
                         let text = String(decoding: request ?? Data(), as: UTF8.self)
+                        if [.head403, .head405, .unknownLength, .oversized200].contains(mode) {
+                            let path = String(text.split(separator: " ").dropFirst().first ?? "")
+                            let body = path.hasSuffix(".m3u8") ? Data(Self.manifest.utf8) : Data(repeating: 7, count: mode == .oversized200 && !path.contains("farther") ? 2048 : 32)
+                            let isHead = text.hasPrefix("HEAD ")
+                            if isHead {
+                                let status = mode == .head403 ? 403 : mode == .unknownLength ? 200 : 405
+                                let head = "HTTP/1.1 \(status) Metadata\r\nConnection: close\r\n\r\n"
+                                connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() }); return
+                            }
+                            let header = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
+                            let range = HMByteRange.parse(header.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }, total: body.count)!
+                            let ignored = mode == .oversized200 && !path.hasSuffix(".m3u8")
+                            let data = ignored ? body : body.subdata(in: range.start..<(range.end + 1))
+                            let contentRange = ignored ? "" : "Content-Range: bytes \(range.start)-\(range.end)/\(body.count)\r\n"
+                            let length = mode == .unknownLength ? "Transfer-Encoding: chunked\r\n" : "Content-Length: \(data.count)\r\n"
+                            let head = "HTTP/1.1 \(ignored ? 200 : 206) OK\r\n\(length)\(contentRange)Connection: close\r\n\r\n"
+                            var packet = Data(head.utf8)
+                            if mode == .unknownLength {
+                                packet.append(Data("\(String(data.count, radix: 16))\r\n".utf8)); packet.append(data); packet.append(Data("\r\n0\r\n\r\n".utf8))
+                            } else { packet.append(data) }
+                            connection.send(content: packet, completion: .contentProcessed { _ in connection.cancel() }); return
+                        }
                         if text.hasPrefix("HEAD ") {
                             let head = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 32\r\nConnection: close\r\n\r\n"
                             connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() }); return

@@ -1,4 +1,7 @@
 import SwiftUI
+#if DEBUG
+import AVFAudio
+#endif
 @_spi(Benchmark) import HotMicPlayer
 
 /// The vertical feed plus the floating chrome that sits above it.
@@ -126,8 +129,11 @@ struct FeedScreen: View {
 /// to page forward while a UI test is holding a touch, which XCUITest can't do on its own.
 enum HMProbeNotifications {
     @MainActor static func advance(_ controller: HMPlayer) async {
-        let commands = ["next", "previous", "reconcile", "metadata", "remove-current", "remove-next", "insert-next", "append",
+        var commands = ["next", "previous", "reconcile", "metadata", "remove-current", "remove-next", "insert-next", "append",
             "jump-last", "finish-policy", "advance-policy", "pause", "play", "seek", "seek-end", "hide", "show", "fullscreen", "exit-fullscreen", "captions", "teardown"]
+        #if DEBUG
+        commands += ["inspect", "interrupt-began", "interrupt-end-paused", "media-reset", "seek-middle"]
+        #endif
         let names = commands.map { "com.hotmic.probe." + $0 }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let stream = AsyncStream<String> { continuation in
@@ -151,6 +157,16 @@ enum HMProbeNotifications {
         for await name in stream {
             let command = String(name.dropFirst("com.hotmic.probe.".count))
             switch command {
+            #if DEBUG
+            case "inspect": break
+            case "interrupt-began": NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+            case "interrupt-end-paused": NotificationCenter.default.post(name: AVAudioSession.interruptionNotification, object: nil,
+                userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                    AVAudioSessionInterruptionOptionKey: 0])
+            case "media-reset": NotificationCenter.default.post(name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+            case "seek-middle": controller.seek(to: controller.snapshot.duration * 0.65)
+            #endif
             case "next": controller.next()
             case "previous": controller.previous()
             case "reconcile":
@@ -186,8 +202,11 @@ enum HMProbeNotifications {
             if let item = controller.currentItem {
                 let assignments = (try? JSONSerialization.data(withJSONObject: controller.preparedItemIdentities, options: .sortedKeys)) ?? Data()
                 let event = HMPlaybackEvent(kind: .transfer, itemID: item.id,
-                    metrics: ["prepared_item_count": Double(controller.preparedItemCount), "playlist_revision": Double(controller.playlistRevision)],
-                    properties: ["probe_command": command, "assignments": String(decoding: assignments, as: UTF8.self)])
+                    metrics: ["prepared_item_count": Double(controller.preparedItemCount), "playlist_revision": Double(controller.playlistRevision),
+                        "paused": controller.snapshot.state == .paused ? 1 : 0,
+                        "frame_ready": controller.snapshot.isFrameReady ? 1 : 0,
+                        "position_s": controller.snapshot.currentTime],
+                    properties: ["probe_command": command, "playback_state": String(describing: controller.snapshot.state), "assignments": String(decoding: assignments, as: UTF8.self)])
                 for sink in controller.analytics.sinks { sink.handle(event, item: item) }
             }
         }

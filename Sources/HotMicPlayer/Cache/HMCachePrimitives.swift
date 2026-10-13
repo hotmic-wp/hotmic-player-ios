@@ -185,12 +185,17 @@ struct HMPlaylistMemory<Value> {
 /// HEAD metadata (count == 0) determines whether a whole resource fits before a
 /// body is requested. A failed or unattainable target never counts partial media.
 struct HMHLSPrefetcher: Sendable {
-    struct Response: Sendable { let data: Data; let total: Int; let base: URL }
+    struct Response: Sendable {
+        let data: Data; let total: Int; let base: URL; let cost: Int
+        init(data: Data, total: Int, base: URL, cost: Int? = nil) {
+            self.data = data; self.total = total; self.base = base; self.cost = cost ?? data.count
+        }
+    }
     struct Outcome: Sendable { let seconds: Double; let targetMet: Bool; let reason: String; let bytes: Int }
     struct Resource: Hashable { let url: URL; let start: Int; let count: Int? }
     struct Step { let resources: [Resource]; let duration: Double }
     typealias Load = @Sendable (_ url: URL, _ start: Int, _ count: Int) async throws -> Response
-    static let playlistRead = 64 * 1024
+    static let playlistRead = 512 * 1024
     static let chunk = 512 * 1024
     let budget: Int
     let seconds: Double?
@@ -205,12 +210,16 @@ struct HMHLSPrefetcher: Sendable {
         }
         func playlist(_ url: URL) async throws -> (base: URL, text: String)? {
             let head = try await load(url, 0, 0)
+            remaining -= head.cost
+            if head.total > 0, head.data.count == head.total, head.total <= Self.playlistRead,
+               let text = HMHLS.text(head.data) { return (head.base, text) }
             guard head.total > 0, head.total <= min(remaining, Self.playlistRead) else { return nil }
             let response = try await load(url, 0, head.total)
-            remaining -= response.data.count
+            remaining -= response.cost
             guard response.data.count == response.total, let text = HMHLS.text(response.data) else { return nil }
             return (response.base, text)
         }
+        guard remaining > 0, seconds.map({ $0 > 0 }) != false else { return outcome([], "byte-cap-before-target") }
         guard let top = try await playlist(root) else { return outcome([], "playlist-unavailable-or-over-budget") }
         var media: [(base: URL, text: String)] = []
         if HMHLS.isMultivariant(top.text) {
@@ -242,6 +251,7 @@ struct HMHLSPrefetcher: Sendable {
             for track in tracks {
                 for resource in plans[track][next[track]].resources where seen.insert(resource).inserted {
                     let head = try await load(resource.url, resource.start, 0)
+                    remaining -= head.cost
                     let count = resource.count ?? max(0, head.total - resource.start)
                     guard count > 0, resource.start >= 0, resource.start <= head.total - count else { return outcome(elapsed, "invalid-resource-range") }
                     guard count <= remaining - requiredBytes else { return outcome(elapsed, "byte-cap-before-target") }
@@ -255,7 +265,7 @@ struct HMHLSPrefetcher: Sendable {
                     try Task.checkCancellation()
                     let response = try await load(resource.url, resource.start + offset, min(Self.chunk, count - offset))
                     guard !response.data.isEmpty, response.data.count <= count - offset else { throw URLError(.badServerResponse) }
-                    offset += response.data.count; remaining -= response.data.count
+                    offset += response.data.count; remaining -= response.cost
                 }
                 fetched.insert(resource)
             }

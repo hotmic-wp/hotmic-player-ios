@@ -41,13 +41,15 @@ jobs:
             derived-unit-v2-${{ steps.xcode.outputs.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-
       - name: Build and run the package unit tests
         run: bash .github/scripts/ci-unit-tests.sh
-      - name: Upload unit-test evidence on failure
-        if: failure()
+      - name: Upload unit-test evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: player-unit-tests-failure
+          name: player-unit-tests
           path: |
             .bench/unit/*.log
+            .bench/unit/*.json
+            .bench/unit/lifecycle.txt
             .bench/unit/UnitTests.xcresult
           retention-days: 7
 

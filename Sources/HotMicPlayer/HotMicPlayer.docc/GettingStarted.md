@@ -7,10 +7,10 @@ Turn MP4 and HLS VOD URLs into a vertical feed.
 Add `https://github.com/hotmic-wp/hotmic-player-ios` in Xcode's Package Dependencies, then link the **HotMicPlayer** product to your app target. In a package manifest:
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.1")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.2")
 ```
 
-`1.1.0-alpha.1` is the published core API baseline. The ready-made overlay requires the commit SHA HotMic provides until the next stable tag; see <doc:PartnerIntegrationGuide> for installation and version policy.
+`1.1.0-alpha.2` is the latest published alpha baseline and includes the ready-made overlay. The measured defaults and later playback/transport fixes require the reviewed commit SHA HotMic provides; see <doc:PartnerIntegrationGuide> for installation and version policy.
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -45,12 +45,12 @@ import HotMicPlayer
         .task {
             guard player.items.isEmpty else { return }
             player.replaceAll([
-                HMMediaItem(id: "intro", url: mp4URL, format: .mp4),
-                HMMediaItem(id: "replay", url: hlsURL, format: .hls)
+                HMMediaItem(id: "replay", url: hlsURL, format: .hls),
+                HMMediaItem(id: "intro", url: mp4URL, format: .mp4)
             ])
         }
         .onAppear { player.isFeedVisible = true }
-        .onDisappear { player.isFeedVisible = false }
+        .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 ```
@@ -80,7 +80,7 @@ Start with `.default`, `.instantStart` or `.highQuality`; see <doc:PrefetchAndPe
 
 For paging implement ``HMPlaylistSource``. For opaque identifiers use `.reference(namespace:id:)` items and an ``HMItemResolver``. See <doc:PlaylistManagement>. A player without an interaction source has empty, read-only engagement.
 
-Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerOnly) for a complete 40-line app with all five operations. It links only public API and requires no backend.
+Open the [PlayerOnly Example](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Examples/PlayerOnly) for a complete small app with all five operations. It links only public API and requires no backend.
 
 ## Handle future enum cases
 

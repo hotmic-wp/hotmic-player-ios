@@ -86,6 +86,14 @@ final class HMPlayerNode: Identifiable {
     @ObservationIgnored private var summaryTask: Task<Void, Never>?
     @ObservationIgnored private var activationID = ""
     @ObservationIgnored private var activationReason = ""
+    @ObservationIgnored private var activationCommit: HMPageCommit?
+    @ObservationIgnored private var directOnActivation = false
+    @ObservationIgnored private var firstMovingAt: TimeInterval?
+    @ObservationIgnored private var previousTickTime: TimeInterval?
+    @ObservationIgnored private var waitsForSeekProgress = true
+    @ObservationIgnored private var seekWaitBeganAt: TimeInterval?
+    @ObservationIgnored private var seekWaitTask: Task<Void, Never>?
+    var hasStartedMoving: Bool { firstMovingAt != nil }
     @ObservationIgnored private var stallCount10 = 0
     @ObservationIgnored private var stallTime10 = 0.0
     @ObservationIgnored private var didReportSummary = false
@@ -168,7 +176,7 @@ final class HMPlayerNode: Identifiable {
         guard item != newItem, let mediaURL = newItem.url else { return }
 
         let recycledFrom = item
-        finishesThenLeaves = false
+        finishesThenLeaves = false; directOnActivation = false
         wantsPlayback = false
         player.pause()
         setLayerVisible(false)
@@ -184,7 +192,8 @@ final class HMPlayerNode: Identifiable {
         snapshot.state = .loading
         hasReportedFirstFrame = false
         didLiftStartupCap = false
-        activationTime = nil
+        activationTime = nil; activationCommit = nil
+        firstMovingAt = nil; previousTickTime = nil; waitsForSeekProgress = true
         stallStartedAt = nil
         lastReportedVariant = 0
         hasConfirmedDuration = false
@@ -229,14 +238,19 @@ final class HMPlayerNode: Identifiable {
     }
 
     /// Promote this node to the on-screen item and begin playback.
-    func activate(startingAt position: TimeInterval? = nil, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, reason: String = "play", cachedBytes: Int = 0) {
+    func activate(startingAt position: TimeInterval? = nil, requestedAt: TimeInterval = ProcessInfo.processInfo.systemUptime, reason: String = "play", cachedBytes: Int = 0, commit: HMPageCommit? = nil) {
         guard let item else { return }
+        if directOnActivation {
+            self.item = nil
+            warm(with: item, playbackURL: item.url)
+        }
         isActive = true
         didLiftStartupCap = false
         player.currentItem?.preferredPeakBitRate = configuration.startupPeakBitRate
         activationTime = requestedAt
         activationID = UUID().uuidString; snapshot.activationID = activationID
-        activationReason = reason
+        activationReason = reason; activationCommit = commit
+        firstMovingAt = nil; previousTickTime = nil; waitsForSeekProgress = true
         hasReportedFirstFrame = false; snapshot.timeToFirstFrame = nil
         stallCount10 = 0; stallTime10 = 0; didReportSummary = false
         snapshot.stallCount = 0; snapshot.totalStallDuration = 0
@@ -274,6 +288,12 @@ final class HMPlayerNode: Identifiable {
         wantsPlayback = true
         player.play()
         emit(.play, item: item)
+    }
+
+    /// Adds the settled clock to an activation committed at lift.
+    func recordSettle(_ time: TimeInterval) {
+        guard isActive, activationCommit != nil, activationCommit?.settle == nil else { return }
+        activationCommit?.settle = time
     }
 
     /// Demote to a warmed neighbour: stop playback but keep the buffer.
@@ -331,6 +351,8 @@ final class HMPlayerNode: Identifiable {
         displayRevision += 1
         let revision = displayRevision
         isSeekingFrame = true; snapshot.isFrameReady = false; setLayerVisible(false)
+        waitsForSeekProgress = true; previousTickTime = nil
+        seekWaitTask?.cancel(); seekWaitTask = nil; seekWaitBeganAt = nil
         player.seek(to: time, toleranceBefore: toleranceBefore, toleranceAfter: toleranceAfter) { [weak self, weak currentItem] finished in
             Task { @MainActor [weak self] in
                 guard finished, let self, let currentItem, self.player.currentItem === currentItem,
@@ -338,6 +360,10 @@ final class HMPlayerNode: Identifiable {
                 self.displayRevision += 1; self.isSeekingFrame = false
                 self.snapshot.isFrameReady = self.playerLayer.isReadyForDisplay
                 self.setLayerVisible(self.snapshot.isFrameReady)
+                // The waiting KVO may have arrived during the seek. Recheck once
+                // seeking clears so a persistent wait receives the bounded grace.
+                if self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+                   self.player.reasonForWaitingToPlay == .toMinimizeStalls { self.handleStallBegan() }
                 self.onBufferChanged?()
                 completion?()
             }
@@ -450,6 +476,10 @@ final class HMPlayerNode: Identifiable {
                 guard let self else { return }
                 self.snapshot.isFrameReady = !self.isSeekingFrame && self.playerLayer.isReadyForDisplay
                 self.setLayerVisible(self.snapshot.isFrameReady)
+                // The waiting KVO may have arrived during the seek. Recheck once
+                // seeking clears so a persistent wait receives the bounded grace.
+                if self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+                   self.player.reasonForWaitingToPlay == .toMinimizeStalls { self.handleStallBegan() }
                 self.onBufferChanged?()
             }
         })
@@ -638,6 +668,17 @@ final class HMPlayerNode: Identifiable {
     private func handleTick(_ time: CMTime) {
         guard player.currentItem != nil else { return }
         snapshot.currentTime = time.seconds.isFinite ? time.seconds : 0
+        if isActive, wantsPlayback, !isSeekingFrame, player.timeControlStatus == .playing {
+            if let previousTickTime, snapshot.currentTime > previousTickTime + 0.02 {
+                waitsForSeekProgress = false
+                if firstMovingAt == nil, hasReportedFirstFrame, let activationTime, let item {
+                    let now = ProcessInfo.processInfo.systemUptime; firstMovingAt = now
+                    emit(.playing, item: item, metrics: ["first_moving_playback_ms": max(0, now - activationTime) * 1000,
+                        "first_moving_monotonic_s": now], properties: ["detector": "media-clock-progress"])
+                }
+            }
+            previousTickTime = snapshot.currentTime
+        }
         // `seekableTimeRanges` allocates on every read. VOD only needs it until
         // the duration is known; a sliding live window needs it continuously.
         if !hasConfirmedDuration || snapshot.isLive { syncSeekableRange() }
@@ -689,8 +730,33 @@ final class HMPlayerNode: Identifiable {
             "startup_width": startupWidth > 0 ? startupWidth : Double(size.width), "startup_height": startupHeight > 0 ? startupHeight : Double(size.height)], properties: ["startup_resolution_source": startupResolutionSource])
     }
 
+    static func grantsSeekCatchupGrace(hasPlayableBuffer: Bool, elapsed: TimeInterval) -> Bool {
+        hasPlayableBuffer && elapsed < 0.15
+    }
+
     private func handleStallBegan() {
-        guard isActive, hasReportedFirstFrame, stallStartedAt == nil, let item else { return }
+        guard isActive, wantsPlayback, hasStartedMoving, !isSeekingFrame, stallStartedAt == nil, let item else { return }
+        if waitsForSeekProgress {
+            let current = player.currentTime().seconds
+            let hasPlayableBuffer = player.currentItem?.loadedTimeRanges.contains { value in
+                let range = value.timeRangeValue
+                return range.start.seconds <= current && range.start.seconds + range.duration.seconds > current + 0.05
+            } == true
+            let now = ProcessInfo.processInfo.systemUptime
+            if seekWaitBeganAt == nil { seekWaitBeganAt = now }
+            if Self.grantsSeekCatchupGrace(hasPlayableBuffer: hasPlayableBuffer, elapsed: now - (seekWaitBeganAt ?? now)) {
+                if seekWaitTask == nil {
+                    seekWaitTask = Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .milliseconds(150))
+                        guard !Task.isCancelled, let self else { return }
+                        self.seekWaitTask = nil
+                        if self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+                           self.player.reasonForWaitingToPlay == .toMinimizeStalls { self.handleStallBegan() }
+                    }
+                }
+                return
+            }
+        }
         stallStartedAt = ProcessInfo.processInfo.systemUptime
         snapshot.state = .buffering
         snapshot.stallCount += 1
@@ -699,6 +765,7 @@ final class HMPlayerNode: Identifiable {
     }
 
     private func handleStallEnded() {
+        seekWaitTask?.cancel(); seekWaitTask = nil; seekWaitBeganAt = nil
         guard let started = stallStartedAt, let item else { return }
         let elapsed = ProcessInfo.processInfo.systemUptime - started
         stallStartedAt = nil
@@ -719,9 +786,24 @@ final class HMPlayerNode: Identifiable {
         }
     }
 
+    func retryDirectTransport(for media: HMMediaItem) {
+        guard isActive, item?.hasSameMedia(as: media, ignoring: configuration.volatileSigningQueryParameters) == true,
+              let asset = player.currentItem?.asset as? AVURLAsset, asset.url.host == "127.0.0.1", asset.url != item?.url else { return }
+        handleFailure(URLError(.unsupportedURL) as NSError)
+    }
+
     private func handleFailure(_ error: NSError?) {
         guard let item, snapshot.state != .failed else { return }
         if let mediaURL = item.url, let asset = player.currentItem?.asset as? AVURLAsset, asset.url.host == "127.0.0.1", asset.url != item.url {
+            if !isActive {
+                // A fallback may be unbounded. Defer direct origin reads until
+                // activation rather than bypass the speculative transport cap.
+                directOnActivation = true
+                teardownItemObservers(); player.replaceCurrentItem(with: nil)
+                snapshot.state = .loading; snapshot.isFrameReady = false
+                emit(.transportError, item: item, properties: ["message": "Prepared transport unavailable; direct retry deferred until activation"])
+                return
+            }
             // A dead listener or host ATS policy must not strand playback. The
             // direct retry keeps this activation and its original request clock.
             let position = snapshot.currentTime
@@ -777,6 +859,15 @@ final class HMPlayerNode: Identifiable {
         }
         props["player_key"] = id
         if isActive || kind == .viewEnd { props["activation_id"] = activationID; props["activation_reason"] = activationReason }
+        var metrics = metrics
+        if [.startupSummary, .viewEnd].contains(kind), let firstMovingAt, let activationTime {
+            metrics["first_moving_playback_ms"] = max(0, firstMovingAt - activationTime) * 1000
+            metrics["first_moving_monotonic_s"] = firstMovingAt
+        }
+        if [.viewStart, .firstFrame, .startupSummary, .viewEnd].contains(kind), isActive || kind == .viewEnd, let activationCommit {
+            props.merge(activationCommit.properties) { old, _ in old }
+            metrics.merge(activationCommit.clockMetrics) { old, _ in old }
+        }
         onEvent?(
             HMPlaybackEvent(
                 kind: kind,

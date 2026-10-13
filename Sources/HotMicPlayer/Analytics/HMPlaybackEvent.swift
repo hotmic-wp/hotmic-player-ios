@@ -22,6 +22,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         ///
         /// Use from any task; mutate only an exclusively owned value.
         case viewStart
+        /// Detailed gesture clocks and final-target/settle consistency diagnostics.
+        @_spi(Benchmark) case pageGesture
         /// The viewer left the item. Carries watch time in `metrics`.
         ///
         /// Use from any task; mutate only an exclusively owned value.
@@ -112,6 +114,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
             case .adBreakEnded: return "adBreakEnded"
             case .adPrefetchChanged: return "adPrefetchChanged"
             case .viewStart: return "viewStart"
+            case .pageGesture: return "pageGesture"
             case .viewEnd: return "viewEnd"
             case .loadStart: return "loadStart"
             case .firstFrame: return "firstFrame"
@@ -144,6 +147,7 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
             case "adBreakEnded": self = .adBreakEnded
             case "adPrefetchChanged": self = .adPrefetchChanged
             case "viewStart": self = .viewStart
+            case "pageGesture": self = .pageGesture
             case "viewEnd": self = .viewEnd
             case "loadStart": self = .loadStart
             case "firstFrame": self = .firstFrame

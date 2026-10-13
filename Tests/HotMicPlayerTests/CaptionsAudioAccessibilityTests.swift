@@ -72,7 +72,10 @@ extension CaptionsAudioAccessibilityTests {
         // No rate exists for an unresolved item; lifecycle recovery must keep the user's intent.
         interruption(.began); interruption(.ended)
         #expect(player.wantsPlayback)
-        interruption(.began); interruption(.ended, shouldResume: false)
+        interruption(.began)
+        #expect(!player.mediaProgressAllowed)
+        interruption(.ended, shouldResume: false)
+        #expect(player.mediaProgressAllowed)
         #expect(!player.wantsPlayback)
         player.play(); interruption(.began)
         player.play() // recover without an ended notification
@@ -94,10 +97,12 @@ extension CaptionsAudioAccessibilityTests {
             AVAudioSessionInterruptionWasSuspendedKey: true]))
         #expect(player.lastEvent != .audioSession(.interruptionBegan))
         player.isFeedVisible = false
+        #expect(!player.mediaProgressAllowed)
         player.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
         player.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
-        #expect(player.wantsPlayback)
+        #expect(player.wantsPlayback && !player.mediaProgressAllowed)
         player.isFeedVisible = true
+        #expect(player.mediaProgressAllowed)
         interruption(.ended) // no matching began; preserve intent
         #expect(player.wantsPlayback)
         player.pause(); interruption(.began); interruption(.ended)
@@ -107,11 +112,25 @@ extension CaptionsAudioAccessibilityTests {
         player.handleAudioNotification(Notification(name: AVAudioSession.routeChangeNotification, userInfo: [AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue]))
         #expect(!player.wantsPlayback)
         player.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
+        #expect(!player.mediaProgressAllowed)
         player.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
-        #expect(!player.wantsPlayback)
+        #expect(!player.wantsPlayback && player.mediaProgressAllowed)
+        #expect(player.lastEvent == .audioSession(.enteredForeground(resumed: false)))
+        // The latest host play/navigation intent wins over the background snapshot.
+        for navigate in [false, true] {
+            player.pause()
+            player.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
+            if navigate { await player.requestPlay(at: 0) } else { player.play() }
+            #expect(player.wantsPlayback && !player.mediaProgressAllowed)
+            player.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
+            #expect(player.wantsPlayback && player.mediaProgressAllowed)
+            #expect(player.lastEvent == .audioSession(.enteredForeground(resumed: true)))
+            player.pause()
+        }
         let oldNodes = player.pool.nodes
         player.captionsEnabled = true
         player.handleAudioNotification(Notification(name: AVAudioSession.mediaServicesWereResetNotification))
+        #expect(!player.wantsPlayback && player.mediaProgressAllowed)
         #expect(Set(sink.detached) == Set(oldNodes.map(\.id)))
         #expect(zip(oldNodes, player.pool.nodes).allSatisfy { $0 !== $1 })
         #expect(player.pool.nodes.allSatisfy { $0.onBufferChanged != nil && $0.captions.onLanguagesChanged != nil })
@@ -120,9 +139,64 @@ extension CaptionsAudioAccessibilityTests {
         let adNode = HMPlayerNode(id: "ad-policy", configuration: player.configuration)
         #expect(adNode.player.audiovisualBackgroundPlaybackPolicy == .continuesIfPossible)
         adNode.release()
+        // Reset resumes this visit's position even when ordinary revisits restart.
+        let url = try await PlayerNativeReviewTests().videoFixture(rotated: false, duration: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var recoveryConfiguration = HMPlayerConfiguration(managesAudioSession: false)
+        recoveryConfiguration.prefetch = .off; recoveryConfiguration.restoresPlaybackPosition = false
+        let recovery = HMPlayer(configuration: recoveryConfiguration)
+        defer { recovery.teardown() }
+        recovery.replaceAll([HMMediaItem(id: "reset-position", url: url, format: .mp4), HMMediaItem(id: "other", url: url, format: .mp4)])
+        await recovery.requestPlay(at: 0)
+        let ready = Date().addingTimeInterval(3)
+        while recovery.snapshot.duration < 2, Date() < ready { await Task.yield() }
+        recovery.pause(); recovery.seek(to: 1)
+        while abs((recovery.currentNode?.player.currentTime().seconds ?? 0) - 1) > 0.1, Date() < ready { await Task.yield() }
+        #expect(abs(recovery.snapshot.currentTime - 1) < 0.1)
+        recovery.handleAudioNotification(Notification(name: AVAudioSession.mediaServicesWereResetNotification))
+        let restored = Date().addingTimeInterval(3)
+        while abs((recovery.currentNode?.player.currentTime().seconds ?? 0) - 1) > 0.1, Date() < restored { await Task.yield() }
+        #expect(abs((recovery.currentNode?.player.currentTime().seconds ?? 0) - 1) < 0.1)
+        while recovery.snapshot.currentTime < 0.9, Date() < restored { await Task.yield() }
+        #expect(recovery.snapshot.currentTime >= 0.9)
+        #expect(!recovery.wantsPlayback && recovery.mediaProgressAllowed)
+        // A blocked reset has no current node until eligibility returns. Preparing
+        // that current is independent of autoplay intent on both recovery paths.
+        for background in [false, true] {
+            recovery.handleAudioNotification(Notification(name: background ? UIApplication.didEnterBackgroundNotification : AVAudioSession.interruptionNotification,
+                userInfo: background ? nil : [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue]))
+            recovery.handleAudioNotification(Notification(name: AVAudioSession.mediaServicesWereResetNotification))
+            #expect(recovery.currentNode == nil && !recovery.mediaProgressAllowed)
+            recovery.handleAudioNotification(Notification(name: background ? UIApplication.didBecomeActiveNotification : AVAudioSession.interruptionNotification,
+                userInfo: background ? nil : [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue, AVAudioSessionInterruptionOptionKey: 0]))
+            let rebuilt = Date().addingTimeInterval(3)
+            while recovery.snapshot.currentTime < 0.9, Date() < rebuilt { await Task.yield() }
+            #expect(recovery.currentNode != nil && !recovery.wantsPlayback && recovery.mediaProgressAllowed)
+            #expect(abs((recovery.currentNode?.player.currentTime().seconds ?? 0) - 1) < 0.1)
+        }
+        // A queued hidden reset must not leak to a different visit, even on a swipe back.
+        recovery.isFeedVisible = false
+        recovery.handleAudioNotification(Notification(name: AVAudioSession.mediaServicesWereResetNotification))
+        recovery.next(); recovery.previous(); recovery.pause(); recovery.isFeedVisible = true
+        let restarted = Date().addingTimeInterval(2)
+        while recovery.currentNode?.player.currentItem?.status != .readyToPlay, Date() < restarted { await Task.yield() }
+        #expect((recovery.currentNode?.player.currentTime().seconds ?? 0) < 0.1)
+        #expect(!recovery.configuration.restoresPlaybackPosition)
         player.teardown()
         #expect(HMAudioSession.configurationCount == count)
         #expect(session.category == category && session.mode == mode)
+        var managedConfiguration = configuration; managedConfiguration.managesAudioSession = true
+        let managed = HMPlayer(configuration: managedConfiguration)
+        defer { managed.teardown() }
+        managed.replaceAll([.reference("test", id: "latest-intent")]); managed.pause()
+        managed.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
+        let beforePlay = HMAudioSession.configurationCount
+        managed.play()
+        #expect(HMAudioSession.configurationCount == beforePlay)
+        managed.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
+        #expect(managed.lastEvent == .audioSession(.enteredForeground(resumed: true)))
+        #expect(HMAudioSession.configurationCount == beforePlay + 1)
+
     }
     @MainActor @Test("Native actions invoke core controls, update names and become inert while disabled")
     func nativeActions() {

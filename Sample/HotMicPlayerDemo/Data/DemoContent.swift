@@ -1,31 +1,21 @@
 import Foundation
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 
 /// URL-only public defaults. Local files are opt-in and never tracked in Git.
 enum DemoContent {
     // Big Buck Bunny © 2008 Blender Foundation, CC BY 3.0.
     // Hosts, attribution and the excerpt's changes are documented in Sample/README.md.
     private static let remote: [HMMediaItem] = [
-        HMMediaItem(id: "bunny-mp4",
-                    url: URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!,
-                    format: .mp4, title: "Big Buck Bunny · MP4 excerpt",
-                    author: "© 2008 Blender Foundation · CC BY 3.0", durationHint: 10,
-                    metadata: ["series": "Open movies", "source": "remote"]),
         HMMediaItem(id: "bunny-hls",
                     url: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!,
                     format: .hls, title: "Big Buck Bunny · HLS",
                     author: "© 2008 Blender Foundation · CC BY 3.0",
+                    metadata: ["series": "Open movies", "source": "remote"]),
+        HMMediaItem(id: "bunny-mp4",
+                    url: URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!,
+                    format: .mp4, title: "Big Buck Bunny · MP4 excerpt",
+                    author: "© 2008 Blender Foundation · CC BY 3.0", durationHint: 10,
                     metadata: ["series": "Open movies", "source": "remote"])
-    ]
-
-    // Preserve the internal reel's labels when developers supply those files locally.
-    private static let localLabels: [String: (title: String, author: String)] = [
-        "chiefs-1v1": ("Chiefs rookie 1v1 rep 👀", "@campreport"),
-        "practice-grab": ("One-handed grab, no big deal", "@campreport"),
-        "fiba-srb-fra": ("Serbia–France, tied up in the second", "@courtside"),
-        "rim-cam": ("Rim cam", "@courtside"),
-        "coach-mic": ("Coach took the mic", "@lockerroom"),
-        "qb1-presser": ("Not ready to name QB1", "@pressroom")
     ]
 
     private static var local: [HMMediaItem] {
@@ -38,8 +28,8 @@ enum DemoContent {
             let poster = url.deletingPathExtension().appendingPathExtension("jpg")
             return HMMediaItem(id: id, url: url, format: .mp4,
                                posterURL: FileManager.default.fileExists(atPath: poster.path) ? poster : nil,
-                               title: localLabels[id]?.title ?? id.replacingOccurrences(of: "-", with: " "),
-                               author: localLabels[id]?.author ?? "Local demo media",
+                               title: id.replacingOccurrences(of: "-", with: " "),
+                               author: "Local demo media",
                                metadata: ["source": "local"])
         }
     }
@@ -47,18 +37,6 @@ enum DemoContent {
     static var reel: [HMMediaItem] {
         let items = local
         return items.isEmpty ? remote : items
-    }
-
-    /// Retains the optional benchmark lab HLS insertion.
-    private static func feed(_ reel: [HMMediaItem]) -> [HMMediaItem] {
-        guard let origin = BenchmarkOptions().values["feed-hls-origin"],
-              let url = URL(string: origin + "/lab-hls/index.m3u8"), ["http", "https"].contains(url.scheme) else { return reel }
-        let hls = HMMediaItem(id: "coach-mic-hls", url: url, format: .hls,
-                              title: "Local lab · HLS", author: "Local demo media", durationHint: 12,
-                              metadata: ["source": "hls"])
-        var items = reel
-        items.insert(hls, at: min(1, items.count))
-        return items
     }
 
     private static var manifestOption: String? {
@@ -109,7 +87,7 @@ enum DemoContent {
                                    author: entry.author, durationHint: entry.duration, metadata: ["source": "manifest"])
             }
         } else { items = reel }
-        let feedItems = feed(items)
+        let feedItems = items
         return HMStaticPlaylistSource(items: feedItems, pageSize: feedItems.count, loopsForever: true)
     }
 

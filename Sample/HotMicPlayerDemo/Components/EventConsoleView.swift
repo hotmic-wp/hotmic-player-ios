@@ -1,5 +1,5 @@
 import SwiftUI
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 
 /// Live analytics inspector: the normalised event stream the SDK emits.
 struct PlayerEventsList: View {
@@ -79,7 +79,7 @@ struct PlayerEventsList: View {
 /// instead of being torn down.
 struct MuxBeaconsList: View {
 
-    let bridge: HMLoggingMuxBridge
+    let bridge: DemoMuxBridge
 
     var body: some View {
         List(bridge.beacons) { beacon in

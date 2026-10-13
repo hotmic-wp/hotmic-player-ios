@@ -1,5 +1,5 @@
 import SwiftUI
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 
 /// The "prove it's fast" panel.
 ///
@@ -8,7 +8,6 @@ import SwiftUI
 struct DebugHUDView: View {
 
     let snapshot: HMPlaybackSnapshot
-    let poolBusy: Int
     let poolSize: Int
     let prefetchLabel: String
 
@@ -77,7 +76,7 @@ struct DebugHUDView: View {
             row("stalls", snapshot.stallCount == 0
                 ? "0"
                 : String(format: "%d · %.1fs", snapshot.stallCount, snapshot.totalStallDuration))
-            row("pool", "\(poolBusy)/\(poolSize) busy")
+            row("pool", "\(poolSize) configured")
             row("prefetch", prefetchLabel)
             if let error = snapshot.errorDescription {
                 row("error", error).foregroundStyle(DemoTheme.accentHot)

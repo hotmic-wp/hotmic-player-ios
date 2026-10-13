@@ -17,8 +17,7 @@ payload. Encode H.264 High, or HEVC for devices that support it, with a keyframe
 0 s and a 1–2 s GOP. A 720×1280 frame is a good vertical feed default. Use constant
 frame rate and AAC audio.
 
-This is the 720×1280 command from [bench/encode.sh](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/bench/encode.sh)
-with its defaults expanded: 30 fps, a 2 s GOP, and optional source audio.
+This self-contained 720×1280 example uses 30 fps, a 2 s GOP, and optional source audio.
 
 ```bash
 ffmpeg -hide_banner -loglevel error -y -i input.mp4 -map 0:v:0 -map '0:a:0?' \
@@ -36,7 +35,7 @@ immutable, versioned media URLs and HTTP/2 or HTTP/3 on a CDN.
 
 Use 1–2 s segments with a keyframe at every segment start and
 `#EXT-X-INDEPENDENT-SEGMENTS`. The MP4 command above supplies aligned keyframes
-every 2 s. This matching packaging command from `bench/encode.sh` copies those
+every 2 s. This matching packaging command copies those
 samples into a VOD fMP4 rendition:
 
 ```bash
@@ -69,8 +68,7 @@ a bounded disk media cache. CORS is not needed for native playback.
   one DNS/TLS setup, and enable keep-alive at the CDN/origin.
 - Avoid redirects and signed-URL acquisition round trips at start-up. Supply ready
   media URLs; authenticated-origin renewal is outside the supported contract.
-- Use immutable, versioned URLs. Live, DRM and advanced HLS byte-range/alternate-audio
-  coverage are outside this release's supported contract.
+- Use immutable, versioned URLs. Live, DRM, variable-substitution HLS and automatic authenticated-origin renewal remain outside the supported contract. Bounded prefetch includes default alternate audio and complete init/segment byte ranges; an unattainable target is reported.
 - Optionally supply `HMMediaItem.posterURL` for the first paint while video prepares.
 
 ## What the player does for you

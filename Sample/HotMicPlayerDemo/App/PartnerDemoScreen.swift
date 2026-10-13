@@ -109,7 +109,7 @@ struct PartnerDemoScreen: View {
         .onChange(of: selectedTab) { _, tab in model.player.isFeedVisible = tab == 0 }
         #if DEBUG
         .task(id: "\(reduceMotion)|\(dynamicType)") {
-            guard BenchmarkOptions().values["partner-trace"] == "1" else { return }
+            guard DemoOptions().values["partner-trace"] == "1" else { return }
             await model.record(reduceMotion: reduceMotion, dynamicType: String(describing: dynamicType))
         }
         #endif
@@ -182,9 +182,9 @@ struct PartnerDemoScreen: View {
         do {
             let vertical = try await socialVideoFixture(landscape: false, name: "kit-vertical", seconds: 12)
             let horizontal = try await socialVideoFixture(landscape: true, name: "kit-horizontal", seconds: 12)
-            let captions = Bundle.main.url(forResource: "bench.en", withExtension: "vtt").map { ["en": $0] } ?? [:]
+            let captions = Bundle.main.url(forResource: "demo.en", withExtension: "vtt").map { ["en": $0] } ?? [:]
             guard activePlayer === player else { return }
-            let hlsURL = BenchmarkOptions().values["partner-hls-url"].flatMap(URL.init(string:))
+            let hlsURL = DemoOptions().values["partner-hls-url"].flatMap(URL.init(string:))
                 ?? URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!
             player.adBreakProvider = DemoAdProvider(preRollURL: horizontal)
             player.replaceAll([

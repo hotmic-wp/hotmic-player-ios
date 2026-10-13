@@ -7,7 +7,7 @@ struct AdaptivePrefetchTests {
     struct Row: Sendable {
         let name: String
         var inputs = HMPrefetchInputs(bufferedAheadSeconds: 6)
-        var configuration = HMPlayerConfiguration()
+        var configuration = HMPlayerConfiguration(prefetch: .init(ahead: 5, behind: 1, bytesPerItem: 800_000, secondsPerItem: nil), adaptive: true)
         let ahead: Int
         let behind: Int
         let bytes: Int
@@ -21,8 +21,8 @@ struct AdaptivePrefetchTests {
     static var rows: [Row] {
         var slow = HMPrefetchInputs(throughputBytesPerSecond: 250_000, bufferedAheadSeconds: 6)
         var fast = HMPrefetchInputs(throughputBytesPerSecond: 4_000_000, bufferedAheadSeconds: 6)
-        var fixed = HMPlayerConfiguration(adaptive: false)
-        var cap = HMPlayerConfiguration(poolSize: 1, prefetch: .init(ahead: 1, behind: 0, bytesPerItem: 100_000, secondsPerItem: 2), cacheCapacityBytes: 50_000, startupPeakBitRate: 300_000)
+        var fixed = HMPlayerConfiguration(prefetch: .init(ahead: 5, behind: 1, bytesPerItem: 800_000, secondsPerItem: nil), adaptive: false)
+        var cap = HMPlayerConfiguration(poolSize: 1, prefetch: .init(ahead: 1, behind: 0, bytesPerItem: 100_000, secondsPerItem: 2), cacheCapacityBytes: 50_000, startupPeakBitRate: 300_000, adaptive: true)
         cap.maxPrefetchConcurrency = 0
         var rows = [
             Row(name: "unknown", ahead: 3, behind: 1, bytes: 400_000, bitrate: 1_000_000, reason: "unmeasured-or-medium"),
@@ -82,7 +82,7 @@ struct AdaptivePrefetchTests {
             ahead: 3, behind: 1, bytes: 400_000, bitrate: 1_000_000, paused: true, ready: false, concurrency: 0, reason: "unmeasured-or-medium+stall"))
         rows.append(Row(name: "fully buffered tail", inputs: HMPrefetchInputs(bufferedAheadSeconds: 1, remainingSeconds: 1),
             ahead: 3, behind: 1, bytes: 400_000, bitrate: 1_000_000, reason: "unmeasured-or-medium"))
-        fixed = HMPlayerConfiguration(prefetch: .off)
+        fixed = HMPlayerConfiguration(prefetch: .off, adaptive: true)
         rows.append(Row(name: "off", inputs: fast, configuration: fixed, ahead: 0, behind: 0, bytes: 0, bitrate: 600_000, ready: false, reason: "slow"))
         return rows
     }
@@ -104,7 +104,7 @@ struct AdaptivePrefetchTests {
 
     @Test("Partner plans cannot exceed budgets; EWMAs and configuration roundtrip preserve measured tuning")
     func boundaries() throws {
-        let c = HMPlayerConfiguration(prefetch: .init(ahead: 2, behind: 1, bytesPerItem: 500, secondsPerItem: 2), cacheCapacityBytes: 600)
+        let c = HMPlayerConfiguration(prefetch: .init(ahead: 2, behind: 1, bytesPerItem: 500, secondsPerItem: 2), cacheCapacityBytes: 600, adaptive: true)
         let partner = HMPrefetchPlan(itemsAhead: Int.max, itemsBehind: Int.max, bytesPerItem: Int.max,
             secondsPerItem: 999, startingBitRate: 0, concurrency: Int.max, reason: "partner").clamped(to: c)
         #expect(partner.itemsAhead == 2 && partner.itemsBehind == 1 && partner.bytesPerItem == 200)

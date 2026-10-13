@@ -15,6 +15,8 @@ Each notification is forwarded through ``HMPlayerEvent/audioSession(_:)``:
 
 `isFeedVisible` describes host presentation, independently of application activation. Set it false when dismissing/hiding the feed and true when presenting it. Application background notifications already manage suspension. Do not equate visibility with `scenePhase` when opting into background audio. Explicit `play()` or a new playback request clears the interruption gate and reactivates managed audio, allowing recovery when the system does not deliver an interruption end.
 
+Visible paused seeks retain transport permission when lifecycle and audio policy allow it; returning from background or an interruption does not require resuming playback to fetch a seek frame. Hidden or audio-blocked work stays suspended and cancellable.
+
 ```swift
 Task { @MainActor in
     for await event in player.events {

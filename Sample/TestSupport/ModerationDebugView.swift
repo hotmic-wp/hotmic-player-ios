@@ -1,7 +1,7 @@
 #if DEBUG
 import SwiftUI
 import Observation
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 
 /// Shared probe state holds the original engagement weakly so it cannot prevent eviction.
 @MainActor @Observable final class ModerationDebugSession {
@@ -71,7 +71,7 @@ struct ModerationDebugView: View {
                 }
                 .accessibilityIdentifier("moderation-peak")
             }
-            if BenchmarkOptions().values["moderation-eviction"] == "1" {
+            if DemoOptions().values["moderation-eviction"] == "1" {
                 Button("Late poll upsert") {
                     if let poll = session.removedPoll {
                         engagement.upsertPoll(poll)

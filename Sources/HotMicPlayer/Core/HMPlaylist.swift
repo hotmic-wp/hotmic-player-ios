@@ -36,7 +36,8 @@ struct HMPlaylistState: Equatable {
         let history = Array(items.prefix(index))
         let historyIDs = Set(history.map(\.id))
         if let position = incoming.firstIndex(where: { $0.id == current.id }) {
-            items[index] = incoming[position]
+            // A ranked refresh cannot restart the media of an already finishing visit.
+            if finishingID != current.id { items[index] = incoming[position] }
             try replaceUpcoming(Array(incoming.dropFirst(position + 1)).filter { !historyIDs.contains($0.id) })
             // An already removed current still finishes once, even if a later feed reintroduces it.
         } else {

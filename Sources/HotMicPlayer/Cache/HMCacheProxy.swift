@@ -6,7 +6,12 @@ import Network
 /// opaque routes, bounded upstream ranges, no URLSession implicit disk cache.
 actor HMCacheTransport {
     struct Route { let url: URL; let item: HMMediaItem }
-    struct Transfer { let data: Data; let total: Int; let mime: String; let base: URL; let start: Int }
+    struct Transfer {
+        let data: Data; let total: Int; let mime: String; let base: URL; let start: Int; let cost: Int
+        init(data: Data, total: Int, mime: String, base: URL, start: Int, cost: Int = 0) {
+            self.data = data; self.total = total; self.mime = mime; self.base = base; self.start = start; self.cost = cost
+        }
+    }
     private var startup: Task<Bool, Never>?
     private var playlistOwners: Set<String> = []
     private var listener: NWListener?
@@ -19,15 +24,25 @@ actor HMCacheTransport {
     private let cache: HMDiskCache
     private var port: UInt16 = 0
     private var isFinishing = false
-    private var played: Set<String> = []
+    private var activePlaybackItem: HMMediaItem?
     private var playbackUrgent = true
     private var priorityItem: HMMediaItem?
+    /// The one item whose explicit prefix may run while playback is urgent.
+    private var admittedItem: HMMediaItem?
     private var priorityWaiters: [UUID: (HMMediaItem, CheckedContinuation<Void, Error>)] = [:]
     private var retainedItems: [HMMediaItem] = []
     private var resourceOwners: [String: Set<String>] = [:]
     private var inFlightResources: [String: Int] = [:]
     private var retiredWaste = 0
-    private struct StreamState { var cursor: Int; var buffer = Data(); let total: Int; let mime: String; let base: URL }
+    private enum BudgetError: Error { case exhausted, rangeUnsupported }
+    private enum NativeTransportFallback: Error { case rangeUnsupported }
+    private struct Allocation { let count: Int; let owner: HMMediaItem.MediaIdentity? }
+    private var speculativeReceived: [HMMediaItem.MediaIdentity: Int] = [:]
+    private var reservedSpeculative: [HMMediaItem.MediaIdentity: Int] = [:]
+    private var progressAllowed = true
+    private var activationWaiters: [UUID: (HMMediaItem, CheckedContinuation<Void, Error>)] = [:]
+    private var budgetWaiters: [UUID: (HMMediaItem, CheckedContinuation<Void, Error>)] = [:]
+    private struct StreamState { var cursor: Int; var buffer = Data(); let total: Int; let mime: String; let base: URL; let speculative: Bool }
     private var streams: [UUID: StreamState] = [:]
     private var eventDelivery: Task<Void, Never>?
     private var connections: [UUID: NWConnection] = [:]
@@ -38,19 +53,42 @@ actor HMCacheTransport {
         let item: HMMediaItem
         let task: Task<Void, Never>
     }
-    private var prefixWork: [HMMediaItem.MediaIdentity: PrefixWork] = [:]
-    private var prefixQueue: [HMMediaItem] = []
+    private var prefixWork: [HMMediaItem.MediaIdentity: PrefixWork] = [:] { didSet { publishPrefixes() } }
+    /// A prefix waiting for a slot (often behind a cancelled one still draining) is still the player's.
+    private var prefixQueue: [HMMediaItem] = [] { didSet { publishPrefixes() } }
+    /// Prefixes whose item became current mid-download: the resource in flight lands for playback, then the prefix stops.
+    private var winding: Set<HMMediaItem.MediaIdentity> = []
+    /// Explicit prefix downloads in flight per resource, and the playback reads waiting on them.
+    private var prefetchFetching: [String: Int] = [:]
+    private var downloadingResources: Set<String> = []
+    private var resourceHolders: [String: HMMediaItem] = [:]
+    private var nativeResourceConnections: [String: UUID] = [:]
+    /// Wait tokens belong to a specific native connection, never just an entry/URL.
+    private var parkedNativeWaits: [UUID: UUID] = [:]
+    private var nativeSendProgress: [UUID: NativeSendProgress] = [:]
+    private final class NativeSendProgress: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending = true
+        var isPending: Bool { lock.lock(); defer { lock.unlock() }; return pending }
+        func complete() { lock.lock(); pending = false; lock.unlock() }
+    }
+    private var metadataPrefixResources: Set<String> = []
+    private var resourceWaiters: [UUID: (key: String, item: HMMediaItem, prefetch: Bool, continuation: CheckedContinuation<Void, Error>)] = [:]
+    private var parkedPrefixes: Set<HMMediaItem.MediaIdentity> = []
+    private var prefixWaiters: [HMMediaItem.MediaIdentity: (UUID, CheckedContinuation<Void, Error>)] = [:]
+    private var prefixOrder: [HMMediaItem.MediaIdentity] = []
     private var prefixPlan: HMPrefetchPlan?
     private var prefixBudget = ""
     private var workEpoch = HMPrefetchEpoch()
     private var generation: Int { workEpoch.generation }
     private var prefetched: [String: String] = [:]
+    private var exhaustedPrefixes: [String: String] = [:]
     private var prefetchedNetwork: [String: Int] = [:]
     private var prefetchRanges: [String: [HMByteRange]] = [:]
     private var playedRanges: [String: [HMByteRange]] = [:]
-    private var warmDeliveries: [String: [String: [HMByteRange]]] = [:]
+    private var warmDeliveries: [HMMediaItem.MediaIdentity: [String: [HMByteRange]]] = [:]
     private var retiringPrefetch: [UUID: Task<Void, Never>] = [:]
-    private var memoryPlaylists: [String: (Transfer, TimeInterval)] = [:]
+    private var playlists = HMPlaylistMemory<Transfer>()
     private(set) var cachedBytes: [String: Int] = [:]
     var configuration: HMPlayerConfiguration
     var onEvent: (@MainActor @Sendable (HMPlaybackEvent, HMMediaItem) -> Void)?
@@ -63,7 +101,15 @@ actor HMCacheTransport {
     }
     func setEventHandler(_ handler: @escaping @MainActor @Sendable (HMPlaybackEvent, HMMediaItem) -> Void) { onEvent = handler }
     func updateConfiguration(_ config: HMPlayerConfiguration) async {
-        configuration = config; state.configure(signingParameters: config.volatileSigningQueryParameters); cancelPrefetch()
+        let previous = configuration
+        let signingChanged = previous.volatileSigningQueryParameters != config.volatileSigningQueryParameters
+        if signingChanged { warmDeliveries.removeAll() }
+        let changesWorkBudget = signingChanged || previous.strategy != config.strategy || previous.adaptive != config.adaptive ||
+            previous.prefetch.bytesPerItem != config.prefetch.bytesPerItem || previous.prefetch.secondsPerItem != config.prefetch.secondsPerItem ||
+            previous.startupPeakBitRate != config.startupPeakBitRate || previous.cacheCapacityBytes != config.cacheCapacityBytes ||
+            (previous.maxPrefetchConcurrency == 0) != (config.maxPrefetchConcurrency == 0)
+        configuration = config; state.configure(signingParameters: config.volatileSigningQueryParameters)
+        if changesWorkBudget { cancelPrefetch() }
         if config.strategy.usesDataCache { await cache.configure(capacity: config.cacheCapacityBytes, pinned: Set(retainedItems.compactMap(\.url).map { key($0) })) }
     }
     func start() async -> Bool {
@@ -137,15 +183,18 @@ actor HMCacheTransport {
         item.mediaIdentity(ignoring: configuration.volatileSigningQueryParameters)
     }
     private func key(_ url: URL) -> String { HMCacheKey.canonical(url, ignoring: configuration.volatileSigningQueryParameters) }
-    func retainWindow(_ items: [HMMediaItem]) {
+    func retainWindow(_ items: [HMMediaItem]) async {
+        trimWindow(items)
+        await cache.configure(capacity: configuration.cacheCapacityBytes, pinned: Set(items.compactMap(\.url).map { key($0) }))
+    }
+    private func trimWindow(_ items: [HMMediaItem]) {
         retainedItems = items
         let media = Set(items.map(identity))
+        speculativeReceived = speculativeReceived.filter { media.contains($0.key) || reservedSpeculative[$0.key, default: 0] > 0 }
         prefixQueue.removeAll { !media.contains(identity($0)) }
         for identity in Array(prefixWork.keys) where !media.contains(identity) { cancelPrefix(identity) }
-        let ids = Set(items.map(\.id))
         for (id, item) in responseItems where !items.contains(where: { $0.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) }) { close(id, reason: "outside-window") }
-        played.formIntersection(ids)
-        warmDeliveries = warmDeliveries.filter { ids.contains($0.key) }
+        warmDeliveries = warmDeliveries.filter { media.contains($0.key) }
         let retained = Set(items.compactMap(\.url).map { key($0) })
         // Completed resources can be folded into one waste counter as soon as
         // their route leaves the window. Active/canceling requests retain their
@@ -156,7 +205,10 @@ actor HMCacheTransport {
             prefetchRanges[resource] = nil; playedRanges[resource] = nil; resourceOwners[resource] = nil
         }
         prefetched = prefetched.filter { retained.contains($0.key) }
-        memoryPlaylists = memoryPlaylists.filter { ProcessInfo.processInfo.systemUptime - $0.value.1 < max(0, configuration.playlistTTL) && state.contains(url: $0.value.0.base) }
+        exhaustedPrefixes = exhaustedPrefixes.filter { retained.contains($0.key) }
+        // Playlists follow their item, not its routes: an upcoming item has no child
+        // routes until AVPlayer reads its master, and prefetched playlists must survive until then.
+        playlists.retain(owners: retained, now: ProcessInfo.processInfo.systemUptime, ttl: configuration.playlistTTL)
     }
     func retainPlaylist(_ items: [HMMediaItem]) async {
         let owners = Set(items.compactMap(\.url).map { key($0) })
@@ -171,56 +223,110 @@ actor HMCacheTransport {
     }
     func markPlayed(_ item: HMMediaItem) {
         guard let url = item.url else { return }
-        played.insert(item.id)
-        for (key, ranges) in warmDeliveries.removeValue(forKey: item.id) ?? [:] { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + ranges) }
+        activePlaybackItem = item
+        wakeBudgetWaiters()
+        for (token, (waiting, continuation)) in activationWaiters where waiting.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) {
+            activationWaiters[token] = nil; clearNativePark(token); continuation.resume()
+        }
+        for (key, ranges) in warmDeliveries.removeValue(forKey: identity(item)) ?? [:] { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + ranges) }
         // Repeated playlist IDs share a media path and disk entries.
         let owner = key(url)
         Task { await cache.markPlayed(owner) }
     }
-    /// Native playback and explicit prefixes share the origin's capacity, even
-    /// when URLSession uses separate connection pools. Cancel explicit prefixes
-    /// and hold native neighbours with streaming backpressure, preserving their
+    /// Native playback and explicit prefixes share the origin's capacity.
+    /// Hold surviving prefixes and native neighbours with backpressure, preserving their
     /// proxy connection and cache path until the current item displays/recovers.
-    func prioritizePlayback(_ item: HMMediaItem, urgent: Bool) {
-        priorityItem = item; playbackUrgent = urgent
-        if urgent { cancelPrefetch() }
-        for (id, (owner, waiter)) in priorityWaiters where !urgent || owner.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) {
-            priorityWaiters[id] = nil
+    /// An admitted item keeps or starts its explicit prefix while playback is urgent.
+    /// The new current item's own prefix, if mid-download, finishes that resource and stops.
+    func prioritizePlayback(_ item: HMMediaItem, urgent: Bool, admitting admitted: HMMediaItem? = nil) {
+        if activePlaybackItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true { activePlaybackItem = item }
+        else {
+            // A new inactive preparation visit has its own cap; another entry ID
+            // sharing the URL retains its independent budget and all cached bytes.
+            if let previous = activePlaybackItem { speculativeReceived[identity(previous)] = 0 }
+            activePlaybackItem = nil
+        }
+        priorityItem = item; playbackUrgent = urgent; admittedItem = urgent ? admitted : nil
+        for waiter in resourceWaiters.values where isCurrentRequest(waiter.item) { boostResource(waiter.key) }
+        if prefixWork[identity(item)] != nil { winding.insert(identity(item)) }
+        for key in Array(prefixWaiters.keys) where key == identity(item) {
+            parkedPrefixes.remove(key); prefixWaiters.removeValue(forKey: key)?.1.resume()
+        }
+        for (id, (owner, waiter)) in priorityWaiters where progressAllowed && (!urgent || isAdmitted(owner) || owner.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters)) {
+            priorityWaiters[id] = nil; clearNativePark(id)
             emit(.transfer, item: owner, metrics: ["proxy_priority_resume": 1])
             waiter.resume()
         }
+        preemptParkedPrefixHolders()
+        startQueuedPrefixes()
     }
-    private func waitForPlaybackPriority(_ item: HMMediaItem) async throws {
+    func setProgressAllowed(_ allowed: Bool) {
+        progressAllowed = allowed
+        if let item = priorityItem { prioritizePlayback(item, urgent: playbackUrgent, admitting: admittedItem) }
+    }
+    private func waitUntilPlayed(_ item: HMMediaItem, connectionID: UUID? = nil) async throws {
+        guard !isActivePlayback(item) else { return }
+        let token = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
+                else { activationWaiters[token] = (item, continuation); parkNative(connectionID, token: token) }
+            }
+        } onCancel: { Task { await self.cancelActivationWaiter(token) } }
+        try Task.checkCancellation()
+    }
+    private func cancelActivationWaiter(_ token: UUID) { clearNativePark(token); activationWaiters.removeValue(forKey: token)?.1.resume(throwing: CancellationError()) }
+    private func waitForPlaybackPriority(_ item: HMMediaItem, connectionID: UUID? = nil) async throws {
         try Task.checkCancellation()
         guard !isFinishing else { throw CancellationError() }
-        guard playbackUrgent, let priorityItem, !priorityItem.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) else { return }
+        if progressAllowed, !playbackUrgent || isAdmitted(item) || priorityItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true { return }
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
                 if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
                 else {
                     priorityWaiters[id] = (item, waiter)
+                    parkNative(connectionID, token: id)
                     emit(.transfer, item: item, metrics: ["proxy_priority_hold": 1])
                 }
             }
         } onCancel: { Task { await self.cancelPriorityWaiter(id) } }
     }
     private func cancelPriorityWaiter(_ id: UUID) {
+        clearNativePark(id)
         priorityWaiters.removeValue(forKey: id)?.1.resume(throwing: CancellationError())
     }
     #if DEBUG
     var heldPlaybackRequestCount: Int { priorityWaiters.count }
+    var parkedNativeRequestCount: Int {
+        activationWaiters.count + budgetWaiters.count + parkedNativeWaits.keys.filter { nativeSendProgress[$0]?.isPending == true }.count
+    }
     var activePrefetchTokens: [String: UUID] {
         Dictionary(uniqueKeysWithValues: prefixWork.values.map { ($0.item.id, $0.token) })
     }
+    var joinedPlaybackRequestCount: Int { resourceWaiters.count }
+    var prefetchDownloadCount: Int { prefetchFetching.values.reduce(0) { $0 + $1 } }
     #endif
-    func cancelPrefetch() {
+    /// A spared in-flight prefix keeps its epoch and plan, so its completion still counts.
+    /// A winding prefix is always spared, except when the transport finishes.
+    func cancelPrefetch(sparing spared: [HMMediaItem] = []) {
+        let kept = Set(spared.map { identity($0) }).union(isFinishing ? [] : winding).filter { prefixWork[$0] != nil }
+        if !kept.isEmpty {
+            prefixQueue.removeAll()
+            for identity in Array(prefixWork.keys) where !kept.contains(identity) { cancelPrefix(identity) }
+            return
+        }
         workEpoch.cancel()
         prefixQueue.removeAll(); prefixPlan = nil; prefixBudget = ""
         for identity in Array(prefixWork.keys) { cancelPrefix(identity) }
     }
+    func cancelPrefetch(sparing spared: HMMediaItem?) { cancelPrefetch(sparing: spared.map { [$0] } ?? []) }
+    private func isAdmitted(_ item: HMMediaItem) -> Bool {
+        progressAllowed && (!playbackUrgent || admittedItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true)
+    }
     private func cancelPrefix(_ identity: HMMediaItem.MediaIdentity) {
         guard let work = prefixWork.removeValue(forKey: identity) else { return }
+        winding.remove(identity)
         work.task.cancel(); retiringPrefetch[work.token] = work.task
         emit(.transfer, item: work.item, properties: ["prefetch_work": "cancelled"])
         Task { await work.task.value; removeRetiring(work.token) }
@@ -228,10 +334,12 @@ actor HMCacheTransport {
     private func removeRetiring(_ id: UUID) {
         retiringPrefetch[id] = nil
         startQueuedPrefixes()
-        retainWindow(retainedItems)
+        trimWindow(retainedItems)
     }
-    func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) async {
-        guard port != 0, !disabled, !playbackUrgent, configuration.strategy.usesDataCache,
+    func prefetch(_ requested: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) async {
+        // Urgent playback admits at most the admitted item; otherwise nothing changes.
+        let items = requested
+        guard port != 0, !disabled, configuration.strategy.usesDataCache,
               !plan.paused, plan.concurrency > 0 else { return }
         let budget = "\(plan.bytesPerItem)|\(plan.secondsPerItem ?? -1)|\(plan.startingBitRate)"
         // Budget/config changes may restart work; playlist edits retain every overlapping download.
@@ -239,30 +347,75 @@ actor HMCacheTransport {
         prefixBudget = budget; prefixPlan = plan
         let keep = Set(keeping.map(identity))
         for identity in Array(prefixWork.keys) where !keep.contains(identity) { cancelPrefix(identity) }
+        let requestedKeys = items.map(identity)
+        prefixOrder = requestedKeys + prefixWork.keys.filter { keep.contains($0) && !requestedKeys.contains($0) }
         prefixQueue = items.filter { prefixWork[identity($0)] == nil }
         await cache.configure(capacity: configuration.cacheCapacityBytes, pinned: Set(keeping.compactMap(\.url).map { key($0) }))
         cachedBytes = await cache.sizes(); state.setBytes(cachedBytes)
-        prefetched = prefetched.filter { cachedBytes[$0.key] != nil }
+        prefetched = prefetched.filter { cachedBytes[$0.key] != nil || playlists.contains(owner: $0.key) || exhaustedPrefixes[$0.key] == $0.value }
         startQueuedPrefixes()
     }
     private func startQueuedPrefixes() {
-        guard let plan = prefixPlan, !isFinishing, !playbackUrgent else { return }
-        // Canceled tasks count until they drain, preserving the concurrency bound.
-        while prefixWork.count + retiringPrefetch.count < plan.concurrency, !prefixQueue.isEmpty {
-            let item = prefixQueue.removeFirst(), token = UUID(), epoch = generation
+        guard let plan = prefixPlan, !isFinishing else { return }
+        // A held task retains its token and byte progress but owns no transfer slot.
+        // Finish the bounded chunk already in flight before yielding to a new next item.
+        let limit = min(1, plan.concurrency)
+        while prefixWork.keys.filter({ !winding.contains($0) && !parkedPrefixes.contains($0) }).count + retiringPrefetch.count < limit {
+            let candidate = prefixOrder.first { key in
+                if let work = prefixWork[key] { return parkedPrefixes.contains(key) && isAdmitted(work.item) }
+                return prefixQueue.contains { identity($0) == key && isAdmitted($0) }
+            }
+            guard let candidate else { break }
+            if parkedPrefixes.remove(candidate) != nil {
+                prefixWaiters.removeValue(forKey: candidate)?.1.resume()
+                publishPrefixes(); continue
+            }
+            guard let index = prefixQueue.firstIndex(where: { identity($0) == candidate }) else { break }
+            let item = prefixQueue[index], token = UUID(), epoch = generation
             let task = Task(priority: .utility) { [weak self] in
                 guard let self else { return }
                 await prefetchEntry(item, plan: plan, epoch: epoch)
                 await self.completePrefix(identity(item), token: token)
             }
             prefixWork[identity(item)] = PrefixWork(token: token, item: item, task: task)
+            prefixQueue.remove(at: index)
             emit(.transfer, item: item, properties: ["prefetch_work": "started", "work_token": token.uuidString])
         }
     }
+    private func publishPrefixes() {
+        state.setPrefixing(prefixWork.values.filter { !parkedPrefixes.contains(identity($0.item)) }.map { $0.item },
+            queued: prefixQueue + prefixWork.values.filter { parkedPrefixes.contains(identity($0.item)) }.map { $0.item })
+    }
+    private func waitForPrefetchPriority(_ item: HMMediaItem) async throws {
+        try Task.checkCancellation()
+        let key = identity(item)
+        guard !winding.contains(key) else { return }
+        let first = prefixOrder.first { candidate in
+            if let work = prefixWork[candidate] { return !winding.contains(candidate) && isAdmitted(work.item) }
+            return prefixQueue.contains { identity($0) == candidate && isAdmitted($0) }
+        }
+        if isAdmitted(item), first == nil || first == key { return }
+        let token = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                parkedPrefixes.insert(key); prefixWaiters[key] = (token, continuation)
+                emit(.transfer, item: item, properties: ["prefetch_work": "held", "work_token": prefixWork[key]?.token.uuidString ?? "unknown"])
+                publishPrefixes(); startQueuedPrefixes()
+            }
+        } onCancel: { Task { await self.cancelPrefixWaiter(key, token: token) } }
+        try Task.checkCancellation()
+    }
+    private func cancelPrefixWaiter(_ key: HMMediaItem.MediaIdentity, token: UUID) {
+        guard prefixWaiters[key]?.0 == token else { return }
+        parkedPrefixes.remove(key); prefixWaiters.removeValue(forKey: key)?.1.resume(throwing: CancellationError())
+        publishPrefixes(); startQueuedPrefixes()
+    }
     private func completePrefix(_ identity: HMMediaItem.MediaIdentity, token: UUID) {
-        guard prefixWork[identity]?.token == token else { return }
-        prefixWork[identity] = nil
-        startQueuedPrefixes(); retainWindow(retainedItems)
+        guard let work = prefixWork[identity], work.token == token else { return }
+        prefixWork[identity] = nil; winding.remove(identity); parkedPrefixes.remove(identity)
+        emit(.transfer, item: work.item, properties: ["prefetch_work": "completed", "work_token": token.uuidString])
+        startQueuedPrefixes(); trimWindow(retainedItems)
     }
     private func prefetchEntry(_ item: HMMediaItem, plan: HMPrefetchPlan, epoch: Int) async {
         guard let url = item.url, !url.isFileURL, !Task.isCancelled, epoch == generation else { return }
@@ -274,7 +427,9 @@ actor HMCacheTransport {
                 bitRate: plan.startingBitRate, epoch: epoch)
             if !Task.isCancelled, epoch == generation { prefetched[identity] = budgetID }
         } catch {
-            if !Task.isCancelled, epoch == generation {
+            if !Task.isCancelled, epoch == generation, !(error is CancellationError) {
+                exhaustedPrefixes[identity] = budgetID
+                prefetched[identity] = budgetID // Exhausted work stays exhausted through ranked refreshes.
                 emit(.prefetchError, item: item, properties: ["message": error.localizedDescription, "epoch": String(epoch), "attempt_limit": "3"])
             }
         }
@@ -286,7 +441,7 @@ actor HMCacheTransport {
             guard epoch == generation else { throw CancellationError() }
             do { try await prefetchItem(item, budget: budget, seconds: seconds, bitRate: bitRate); return }
             catch {
-                guard attempt < 2, !(error is CancellationError) else { throw error }
+                guard attempt < 2, !(error is CancellationError), !(error is BudgetError) else { throw error }
                 try await Task.sleep(for: .seconds(attempt == 0 ? 0.5 : 2))
             }
         }
@@ -308,67 +463,85 @@ actor HMCacheTransport {
             }
             return
         }
-        var url = mediaURL
-        var mediaText: String?
-        // Master -> selected rendition -> init and first segment(s). Other
-        // renditions are rewritten on demand, never prefetched in parallel.
-        for _ in 0..<4 {
-            let t = try await fetch(url, item: item, start: 0, count: min(remaining, 64 * 1024), prefetch: true)
-            remaining -= t.data.count
-            guard let text = String(data: t.data, encoding: .utf8), text.hasPrefix("#EXTM3U") else { return }
-            if text.contains("#EXT-X-STREAM-INF") {
-                let lines = text.components(separatedBy: .newlines)
-                var choices: [(Double, URL)] = []
-                for i in lines.indices where lines[i].hasPrefix("#EXT-X-STREAM-INF") && i + 1 < lines.count {
-                    let bandwidth = lines[i].components(separatedBy: "BANDWIDTH=").last?.split(separator: ",").first.flatMap { Double($0) } ?? 0
-                    if let u = URL(string: lines[i + 1], relativeTo: t.base)?.absoluteURL { choices.append((bandwidth, u)) }
-                }
-                let cap = bitRate
-                let sorted = choices.sorted { $0.0 < $1.0 }
-                guard let chosen = (cap > 0 ? sorted.last(where: { $0.0 <= cap }) : sorted.last) ?? sorted.first else { return }
-                url = chosen.1
-            } else { mediaText = text; url = t.base; break }
-            guard remaining > 0 else { return }
+        do {
+        let outcome = try await HMHLSPrefetcher(budget: remaining, seconds: seconds, cap: bitRate).run(mediaURL) { [weak self] url, start, count in
+            guard let self else { throw CancellationError() }
+            let t = try await self.fetch(url, item: item, start: start, count: count, prefetch: true)
+            return HMHLSPrefetcher.Response(data: t.data, total: t.total, base: t.base, cost: t.cost)
         }
-        guard let text = mediaText else { return }
-        var elapsed = 0.0
-        var segmentDuration = 0.0
-        for line in text.components(separatedBy: .newlines) {
-            try Task.checkCancellation()
-            if line.hasPrefix("#EXTINF:") { segmentDuration = Double(line.dropFirst(8).split(separator: ",").first ?? "0") ?? 0 }
-            let refs = HMPlaylist.references(line, base: url)
-            for ref in refs {
-                guard remaining > 0 else { return }
-                if !line.hasPrefix("#"), let seconds, elapsed >= seconds { return }
-                var cursor = 0
-                while remaining > 0 {
-                    let t = try await fetch(ref, item: item, start: cursor, count: min(512 * 1024, remaining), prefetch: true)
-                    remaining -= t.data.count; cursor += t.data.count
-                    if t.data.isEmpty || cursor >= t.total { break }
-                }
-                if !line.hasPrefix("#") { elapsed += segmentDuration }
+        emit(.transfer, item: item, metrics: ["prefetch_duration_s": outcome.seconds,
+            "prefetch_target_met": outcome.targetMet ? 1 : 0, "prefix_payload_bytes": Double(outcome.bytes)],
+            properties: ["prefix_outcome": outcome.reason])
+        } catch let error as BudgetError {
+            emit(.transfer, item: item, metrics: ["prefetch_target_met": 0],
+                properties: ["prefix_outcome": error == .exhausted ? "byte-cap-consumed-by-shared-native-reads" : "origin-range-unsupported"])
+        }
+    }
+    /// HEAD is optional origin metadata. GET probes are bounded, budgeted and cached
+    /// through the ordinary transfer path, after releasing the metadata lock.
+    private func metadata(_ url: URL, item: HMMediaItem, prefetch: Bool) async throws -> Transfer {
+        let key = key(url)
+        if prefetch { try await waitForPrefetchPriority(item) }
+        try await acquireResource(key, item: item, prefetch: prefetch)
+        let known: Transfer?
+        do {
+            defer { unlockResource(key) }
+            if let hit = playlists.value(for: key, now: ProcessInfo.processInfo.systemUptime, ttl: configuration.playlistTTL) {
+                if let root = item.url { playlists.associate(key, owner: self.key(root)) }
+                return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: 0)
+            }
+            if let total = await cache.total(for: key) {
+                return Transfer(data: Data(), total: total, mime: await cache.mime(for: key) ?? HMCacheKey.mime(url), base: url, start: 0)
+            }
+            if prefetch { metadataPrefixResources.insert(key) }
+            defer { if prefetch { metadataPrefixResources.remove(key) } }
+            var request = URLRequest(url: url); request.httpMethod = "HEAD"
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            do {
+                let result = try await HMHTTPFetcher(limit: 0).load(request)
+                let total = Int(result.response.expectedContentLength)
+                known = total > 0 ? Transfer(data: Data(), total: total, mime: result.response.mimeType ?? HMCacheKey.mime(url), base: result.response.url ?? url, start: 0) : nil
+            } catch {
+                let underlying = (error as? HMHTTPFetcher.Failure)?.underlying ?? error
+                guard case HMHTTPFetcher.HTTPError.status(let status) = underlying,
+                      [403, 405, 501].contains(status) else { throw error }
+                known = nil
             }
         }
+        if let known { return known }
+        try Task.checkCancellation()
+        let playlist = url.pathExtension.lowercased() == "m3u8" || (url == item.url && item.format == .hls)
+        // A manifest probe can be the whole bounded manifest. Media probes only
+        // learn total size; no segment round is downloaded before admission.
+        return try await fetch(url, item: item, start: 0, count: playlist ? HMHLSPrefetcher.playlistRead : 1, prefetch: prefetch)
     }
     private func fetch(_ url: URL, item: HMMediaItem, start: Int, count: Int, prefetch: Bool) async throws -> Transfer {
         try Task.checkCancellation()
-        guard count > 0, ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { throw URLError(.unsupportedURL) }
+        guard count >= 0, ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { throw URLError(.unsupportedURL) }
+        if count == 0 { return try await metadata(url, item: item, prefetch: prefetch) }
         let key = key(url)
+        if prefetch { try await waitForPrefetchPriority(item) }
+        try await acquireResource(key, item: item, prefetch: prefetch)
+        var locked = true
+        defer { if locked { unlockResource(key) } }
         inFlightResources[key, default: 0] += 1
         defer { releaseResource(key) }
         let playlist = url.pathExtension.lowercased() == "m3u8" || (url == item.url && item.format == .hls)
-        if playlist, let (hit, time) = memoryPlaylists[url.absoluteString], ProcessInfo.processInfo.systemUptime - time < max(0, configuration.playlistTTL) {
+        if playlist, let hit = playlists.value(for: key, now: ProcessInfo.processInfo.systemUptime, ttl: configuration.playlistTTL) {
+            if let root = item.url { playlists.associate(key, owner: self.key(root)) }
             if !prefetch {
                 recordDelivery(key: key, item: item, start: start, count: hit.data.count)
                 emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
             }
-            return hit
+            return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: hit.start)
         }
         guard let mediaURL = item.url else { throw URLError(.unsupportedURL) }
         let owner = self.key(mediaURL)
         if !playlist, configuration.strategy.usesDataCache, let total = await cache.total(for: key) {
             let end = min(total - 1, start + count - 1)
             if end >= start, let hit = await cache.available(key: key, start: start, count: count) {
+                await cache.associate(key: key, owner: owner, played: isActivePlayback(item))
+                resourceOwners[key, default: []].insert(owner)
                 if !prefetch {
                     recordDelivery(key: key, item: item, start: start, count: hit.data.count)
                     emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
@@ -376,38 +549,120 @@ actor HMCacheTransport {
                 return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: start)
             }
         }
+        if prefetch {
+            // A winding prefix starts no new download: playback reads the rest itself.
+            if winding.contains(identity(item)) { throw CancellationError() }
+            prefetchFetching[key, default: 0] += 1
+        }
+        defer { if prefetch { endPrefetchFetch(key) } }
+        unlockResource(key); locked = false
+        let allocation = try await reserve(item, count: count, prefetch: prefetch)
+        defer { release(allocation) }
+        try await acquireResource(key, item: item, prefetch: prefetch); locked = true
+        // A native owner may have completed while reservation/lock acquisition waited.
+        if !playlist, count > 0, let hit = await cache.available(key: key, start: start, count: count) {
+            await cache.associate(key: key, owner: owner, played: isActivePlayback(item))
+            resourceOwners[key, default: []].insert(owner)
+            if !prefetch {
+                recordDelivery(key: key, item: item, start: start, count: hit.data.count)
+                emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
+            }
+            return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: start)
+        }
+        if playlist, let hit = playlists.value(for: key, now: ProcessInfo.processInfo.systemUptime, ttl: configuration.playlistTTL) {
+            playlists.associate(key, owner: owner)
+            if !prefetch {
+                recordDelivery(key: key, item: item, start: start, count: hit.data.count)
+                emit(.transfer, item: item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
+            }
+            return Transfer(data: hit.data, total: hit.total, mime: hit.mime, base: hit.base, start: hit.start)
+        }
+
+        let count = allocation.count
         var request = URLRequest(url: url)
         request.setValue("bytes=\(start)-\(start + count - 1)", forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let result: HMHTTPFetcher.Result
-        do { result = try await HMHTTPFetcher(limit: count, priority: prefetch ? URLSessionTask.lowPriority : URLSessionTask.highPriority,
-            measurement: measurementHandler(item, speculative: prefetch)).load(request) }
+        do { result = try await HMHTTPFetcher(limit: max(1, count), priority: prefetch ? URLSessionTask.lowPriority : URLSessionTask.highPriority,
+            measurement: measurementHandler(item, speculative: prefetch), headers: { response in
+                if prefetch, count > 0 {
+                    let range = response.value(forHTTPHeaderField: "Content-Range")
+                    let end = range?.dropFirst(6).split(separator: "/").first?.split(separator: "-").last.flatMap { Int($0) }
+                    let total = range?.split(separator: "/").last.flatMap { Int($0) }
+                    let ranged = response.statusCode == 206 && range?.hasPrefix("bytes \(start)-") == true &&
+                        end.map { end in total.map { end >= start && end - start < count && end < $0 } == true &&
+                            (response.expectedContentLength < 0 || response.expectedContentLength == end - start + 1) } == true
+                    let complete = response.statusCode == 200 && start == 0 && response.expectedContentLength >= 0 && response.expectedContentLength <= count
+                    guard ranged || complete else { throw BudgetError.rangeUnsupported }
+                }
+            }).load(request) }
         catch {
-            if let failure = error as? HMHTTPFetcher.Failure { account(failure.received, url: url, item: item, prefetch: prefetch) }
+            if let failure = error as? HMHTTPFetcher.Failure {
+                account(failure.received, url: url, item: item, prefetch: prefetch, speculative: prefetch || allocation.owner != nil)
+                if let budgetError = failure.underlying as? BudgetError { throw budgetError }
+            }
             throw error
         }
+        account(result.received, url: url, item: item, prefetch: prefetch, speculative: prefetch || allocation.owner != nil)
         let http = result.response
         let contentRange = http.value(forHTTPHeaderField: "Content-Range")
         let total = contentRange?.split(separator: "/").last.flatMap { Int($0) } ?? Int(http.expectedContentLength)
-        guard total > 0, start < total, http.statusCode != 200 || start == 0 else { throw URLError(.badServerResponse) }
+        guard total > 0, start < total, http.statusCode != 200 || start == 0 || count == 0 else { throw URLError(.badServerResponse) }
         if http.statusCode == 206 {
             guard contentRange?.hasPrefix("bytes \(start)-") == true else { throw URLError(.badServerResponse) }
         }
         let mime = http.mimeType ?? HMCacheKey.mime(url)
         let data = result.data
-        account(result.received, url: url, item: item, prefetch: prefetch)
-        if prefetch, !data.isEmpty { prefetchRanges[key] = HMRangeCoverage.union((prefetchRanges[key] ?? []) + [HMByteRange(start: start, end: start + data.count - 1)]) }
-        else if !data.isEmpty { recordDelivery(key: key, item: item, start: start, count: data.count) }
+        if prefetch || allocation.owner != nil, !data.isEmpty { prefetchRanges[key] = HMRangeCoverage.union((prefetchRanges[key] ?? []) + [HMByteRange(start: start, end: start + data.count - 1)]) }
+        if !prefetch, !data.isEmpty { recordDelivery(key: key, item: item, start: start, count: data.count) }
         try Task.checkCancellation()
         if !playlist, configuration.strategy.usesDataCache {
             await cache.put(key: key, start: start, data: data, total: total, mime: mime, base: http.url ?? url, owner: owner,
-                            prefetched: prefetch, played: played.contains(item.id))
+                            prefetched: prefetch, played: isActivePlayback(item))
             cachedBytes[owner] = await cache.bytes(for: owner); state.setBytes(cachedBytes)
         }
-        let transfer = Transfer(data: data, total: total, mime: mime, base: http.url ?? url, start: start)
-        if playlist, data.count == total { memoryPlaylists[url.absoluteString] = (transfer, ProcessInfo.processInfo.systemUptime) }
+        let transfer = Transfer(data: data, total: total, mime: mime, base: http.url ?? url, start: start, cost: result.received)
+        if playlist, data.count == total {
+            playlists.store(transfer, for: key, owner: owner, immutable: HMHLS.text(data).map(HMHLS.isImmutable) ?? false,
+                            now: ProcessInfo.processInfo.systemUptime)
+        }
         return transfer
     }
+    private func reserve(_ item: HMMediaItem, count: Int, prefetch: Bool, connectionID: UUID? = nil) async throws -> Allocation {
+        guard count > 0, !isActivePlayback(item), item.url != nil else { return Allocation(count: count, owner: nil) }
+        let owner = identity(item), cap = min(HMPrefetchPolicy.maximumBytesPerItem, max(0, configuration.prefetch.bytesPerItem))
+        while !isActivePlayback(item) {
+            try Task.checkCancellation()
+            let available = max(0, cap - speculativeReceived[owner, default: 0] - reservedSpeculative[owner, default: 0])
+            if available > 0 {
+                let granted = min(count, available); reservedSpeculative[owner, default: 0] += granted
+                return Allocation(count: granted, owner: owner)
+            }
+            if prefetch, speculativeReceived[owner, default: 0] >= cap { throw BudgetError.exhausted }
+            let token = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
+                    else { budgetWaiters[token] = (item, continuation); parkNative(connectionID, token: token) }
+                }
+            } onCancel: { Task { await self.cancelBudgetWaiter(token) } }
+        }
+        return Allocation(count: count, owner: nil)
+    }
+    private func release(_ allocation: Allocation) {
+        if let owner = allocation.owner { reservedSpeculative[owner] = max(0, reservedSpeculative[owner, default: 0] - allocation.count) }
+        wakeBudgetWaiters()
+    }
+    private func wakeBudgetWaiters() {
+        for (token, (item, continuation)) in budgetWaiters {
+            guard item.url != nil else { continue }
+            let owner = identity(item), cap = min(HMPrefetchPolicy.maximumBytesPerItem, max(0, configuration.prefetch.bytesPerItem))
+            if isActivePlayback(item) || speculativeReceived[owner, default: 0] + reservedSpeculative[owner, default: 0] < cap {
+                budgetWaiters[token] = nil; clearNativePark(token); continuation.resume()
+            }
+        }
+    }
+    private func cancelBudgetWaiter(_ token: UUID) { clearNativePark(token); budgetWaiters.removeValue(forKey: token)?.1.resume(throwing: CancellationError()) }
     private func measurementHandler(_ item: HMMediaItem, speculative: Bool) -> @Sendable (Int, Double, Double?) -> Void {
         { [weak self] bytes, seconds, ttfb in
             Task { await self?.recordMeasurement(item, bytes: bytes, seconds: seconds, ttfb: ttfb, speculative: speculative) }
@@ -418,6 +673,78 @@ actor HMCacheTransport {
         if let ttfb { metrics["ttfb_s"] = ttfb }
         emit(.transferSample, item: item, metrics: metrics, properties: ["source": speculative ? "prefetch" : "playback"])
     }
+    /// Both directions join one resource download and then re-read the disk/memory
+    /// cache. Cancellation releases the waiter, never another caller's transfer.
+    private func isActivePlayback(_ item: HMMediaItem) -> Bool { activePlaybackItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true }
+    private func isCurrentRequest(_ item: HMMediaItem) -> Bool { priorityItem?.hasSameMedia(as: item, ignoring: configuration.volatileSigningQueryParameters) == true }
+    private func clearNativePark(_ token: UUID) { parkedNativeWaits[token] = nil }
+    private func parkNative(_ connectionID: UUID?, token: UUID) {
+        guard let connectionID, connections[connectionID] != nil,
+              nativeResourceConnections.values.contains(connectionID) else { return }
+        parkedNativeWaits[token] = connectionID
+        preemptParkedPrefixHolders()
+    }
+    private func prefixMayProgress(_ item: HMMediaItem) -> Bool {
+        progressAllowed && !isFinishing && (!playbackUrgent || isAdmitted(item)) && !winding.contains(identity(item))
+    }
+    /// A holder can park after a prefix joins. Recheck at that transition, rather
+    /// than leaving the serial prefix slot behind a now-suspended native owner.
+    private func preemptParkedPrefixHolders() {
+        for waiter in resourceWaiters.values where waiter.prefetch && prefixMayProgress(waiter.item) {
+            boostResource(waiter.key, forPrefix: true)
+        }
+    }
+    /// Current promotion keeps immediate exact-resource priority. Prefixes,
+    /// including metadata discovery, coalesce with healthy native downloads and
+    /// only retire genuinely parked connections. Cancellation drains callbacks
+    /// and flushes partial bytes before the original task releases ownership.
+    private func boostResource(_ key: String, forPrefix: Bool = false) {
+        guard let holder = resourceHolders[key] else { return }
+        // Native activation does not need an unresponsive speculative HEAD.
+        // Prefix waiters never cancel another explicit prefix owner.
+        if !forPrefix, metadataPrefixResources.contains(key) {
+            cancelPrefix(identity(holder)); return
+        }
+        guard !isCurrentRequest(holder), let connection = nativeResourceConnections[key], connections[connection] != nil else { return }
+        if forPrefix, !parkedNativeWaits.contains(where: { $0.value == connection && nativeSendProgress[$0.key]?.isPending != false }) { return }
+        emit(.transfer, item: holder, metrics: ["proxy_priority_preemption": 1])
+        close(connection, reason: forPrefix ? "prefix-shared-resource-preemption" : "current-shared-resource-preemption")
+    }
+    private func acquireResource(_ key: String, item: HMMediaItem, connectionID: UUID? = nil, prefetch: Bool = false) async throws {
+        while downloadingResources.contains(key) {
+            if isCurrentRequest(item) || (prefetch && prefixMayProgress(item)) { boostResource(key, forPrefix: prefetch && !isCurrentRequest(item)) }
+            let token = UUID()
+            emit(.transfer, item: item, metrics: ["prefetch_join": 1], properties: ["resource": HMCacheKey.hash(key)])
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
+                    else { resourceWaiters[token] = (key, item, prefetch, continuation) }
+                }
+            } onCancel: { Task { await self.cancelResourceWaiter(token) } }
+            try Task.checkCancellation()
+        }
+        try Task.checkCancellation()
+        downloadingResources.insert(key); resourceHolders[key] = item; nativeResourceConnections[key] = connectionID
+    }
+    private func cancelResourceWaiter(_ token: UUID) {
+        guard let waiter = resourceWaiters.removeValue(forKey: token) else { return }
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+    private func unlockResource(_ key: String) {
+        downloadingResources.remove(key)
+        resourceHolders[key] = nil
+        if let connection = nativeResourceConnections.removeValue(forKey: key) {
+            parkedNativeWaits = parkedNativeWaits.filter { $0.value != connection }
+        }
+        let waiters = resourceWaiters.filter { $0.value.key == key }
+        for (token, waiter) in waiters {
+            resourceWaiters[token] = nil; waiter.continuation.resume()
+        }
+    }
+    private func endPrefetchFetch(_ key: String) {
+        if let count = prefetchFetching[key], count > 1 { prefetchFetching[key] = count - 1 }
+        else { prefetchFetching[key] = nil }
+    }
     private func releaseResource(_ key: String) {
         if let count = inFlightResources[key], count > 1 { inFlightResources[key] = count - 1 }
         else { inFlightResources[key] = nil }
@@ -425,13 +752,17 @@ actor HMCacheTransport {
     private func recordDelivery(key: String, item: HMMediaItem, start: Int, count: Int) {
         let range = HMByteRange(start: start, end: start + count - 1)
         if let url = item.url { resourceOwners[key, default: []].insert(self.key(url)) }
-        if played.contains(item.id) { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + [range]) }
-        else { warmDeliveries[item.id, default: [:]][key] = HMRangeCoverage.union((warmDeliveries[item.id]?[key] ?? []) + [range]) }
+        if isActivePlayback(item) { playedRanges[key] = HMRangeCoverage.union((playedRanges[key] ?? []) + [range]) }
+        else { warmDeliveries[identity(item), default: [:]][key] = HMRangeCoverage.union((warmDeliveries[identity(item)]?[key] ?? []) + [range]) }
     }
-    private func account(_ bytes: Int, url: URL, item: HMMediaItem, prefetch: Bool) {
+    private func account(_ bytes: Int, url: URL, item: HMMediaItem, prefetch: Bool, speculative: Bool? = nil) {
         if let mediaURL = item.url { resourceOwners[key(url), default: []].insert(key(mediaURL)) }
-        if prefetch { prefetchedNetwork[key(url), default: 0] += bytes }
-        emit(.transfer, item: item, metrics: ["network_bytes": Double(bytes), "cache_bytes": 0, "prefetch_bytes": prefetch ? Double(bytes) : 0], properties: ["resource": HMCacheKey.hash(key(url))])
+        let speculative = speculative ?? (prefetch || !isActivePlayback(item))
+        if speculative {
+            prefetchedNetwork[key(url), default: 0] += bytes
+            speculativeReceived[identity(item), default: 0] += bytes
+        }
+        emit(.transfer, item: item, metrics: ["network_bytes": Double(bytes), "cache_bytes": 0, "prefetch_bytes": speculative ? Double(bytes) : 0], properties: ["resource": HMCacheKey.hash(key(url))])
     }
     private func accept(_ connection: NWConnection) {
         guard !isFinishing else { connection.cancel(); return }
@@ -482,7 +813,13 @@ actor HMCacheTransport {
             // Preserve the player's request on uncached resources, including
             // no-Range requests. There is no preliminary size probe.
             if total == nil {
-                try await stream(route, range: rangeHeader, headOnly: request[0] == "HEAD", connection: connection)
+                try await acquireResource(key, item: route.item, connectionID: id)
+                do {
+                    // Another reader may have filled the head while we waited.
+                    if await cache.total(for: key) != nil { unlockResource(key); await serve(header, connection: connection, id: id); return }
+                    try await stream(route, range: rangeHeader, headOnly: request[0] == "HEAD", connection: connection, connectionID: id, limit: 512 * 1024)
+                    unlockResource(key)
+                } catch { unlockResource(key); throw error }
                 close(id); return
             }
             guard let total, let range = HMByteRange.parse(rangeHeader, total: total, limit: Int.max) else {
@@ -499,6 +836,7 @@ actor HMCacheTransport {
                 while cursor <= range.end {
                     try await waitForPlaybackPriority(route.item)
                     if let hit = await cache.available(key: key, start: cursor, count: range.end - cursor + 1) {
+                        if let root = route.item.url { await cache.associate(key: key, owner: self.key(root), played: isActivePlayback(route.item)) }
                         recordDelivery(key: key, item: route.item, start: cursor, count: hit.data.count)
                         emit(.transfer, item: route.item, metrics: ["cache_bytes": Double(hit.data.count), "network_bytes": 0])
                         try await sendBlock(connection, data: hit.data)
@@ -508,8 +846,16 @@ actor HMCacheTransport {
                         // must not turn a miss into a fully buffered 512 KiB fetch.
                         // Stream the missing suffix immediately, independently of
                         // any cancelled/overlapping speculative range.
-                        let delivered = try await stream(route, range: "bytes=\(cursor)-\(range.end)", headOnly: false,
-                                         connection: connection, sendHeaders: false, limit: range.end - cursor + 1)
+                        try await acquireResource(key, item: route.item, connectionID: id)
+                        if await cache.available(key: key, start: cursor, count: range.end - cursor + 1) != nil {
+                            unlockResource(key); continue
+                        }
+                        let delivered: Int
+                        do {
+                            delivered = try await stream(route, range: "bytes=\(cursor)-\(range.end)", headOnly: false,
+                                connection: connection, connectionID: id, sendHeaders: false, limit: min(512 * 1024, range.end - cursor + 1))
+                            unlockResource(key)
+                        } catch { unlockResource(key); throw error }
                         guard delivered > 0 else { throw URLError(.badServerResponse) }
                         cursor += delivered
                     }
@@ -520,26 +866,59 @@ actor HMCacheTransport {
             if !Task.isCancelled {
                 // A client closing a completed AVFoundation probe is normal.
                 let underlying = (error as? HMHTTPFetcher.Failure)?.underlying ?? error
-                if !(underlying is NWError), (underlying as NSError).code != NSURLErrorCancelled { emit(.transportError, item: route.item, properties: ["message": error.localizedDescription]) }
+                if !(underlying is NativeTransportFallback), !(underlying is NWError), (underlying as NSError).code != NSURLErrorCancelled { emit(.transportError, item: route.item, properties: ["message": error.localizedDescription]) }
                 close(id, reason: "response-error")
             }
         }
     }
     @discardableResult
-    private func stream(_ route: Route, range: String?, headOnly: Bool, connection: NWConnection, sendHeaders: Bool = true, limit: Int = Int.max) async throws -> Int {
+    private func stream(_ route: Route, range: String?, headOnly: Bool, connection: NWConnection, connectionID: UUID, sendHeaders: Bool = true, limit: Int = Int.max) async throws -> Int {
         let streamID = UUID()
         let resource = key(route.url); inFlightResources[resource, default: 0] += 1
         defer { releaseResource(resource) }
+        try await waitForPlaybackPriority(route.item, connectionID: connectionID)
+        let allocation = try await reserve(route.item, count: headOnly ? 0 : limit, prefetch: false, connectionID: connectionID)
+        defer { release(allocation) }
+        let limit = allocation.count
         var request = URLRequest(url: route.url)
         request.httpMethod = headOnly ? "HEAD" : "GET"
-        request.setValue(range, forHTTPHeaderField: "Range")
+        var upstreamRange = range
+        if !headOnly {
+            let pair = range?.dropFirst(6).split(separator: "-", omittingEmptySubsequences: false)
+            if let pair, pair.count == 2, pair[0].isEmpty, let suffix = Int(pair[1]) {
+                upstreamRange = "bytes=-\(min(suffix, limit))"
+            } else {
+                let start = pair?.first.flatMap { Int($0) } ?? 0
+                let end = pair?.last.flatMap { Int($0) } ?? Int.max
+                upstreamRange = "bytes=\(start)-\(min(end, start + min(limit, Int.max - start) - 1))"
+            }
+        }
+        request.setValue(upstreamRange, forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        try await waitForPlaybackPriority(route.item)
-        let fetcher = HMHTTPFetcher(limit: limit, priority: played.contains(route.item.id) ? URLSessionTask.highPriority : URLSessionTask.defaultPriority,
-            measurement: measurementHandler(route.item, speculative: !played.contains(route.item.id)), headers: { [weak self] response in
+        try await waitForPlaybackPriority(route.item, connectionID: connectionID)
+        let fetcher = HMHTTPFetcher(limit: limit, priority: isActivePlayback(route.item) ? URLSessionTask.highPriority : URLSessionTask.defaultPriority,
+            measurement: measurementHandler(route.item, speculative: !isActivePlayback(route.item)), headers: { [weak self] response in
             guard let self else { throw CancellationError() }
-            try await self.waitForPlaybackPriority(route.item)
-            await self.beginStream(streamID, response: response)
+            try await self.waitForPlaybackPriority(route.item, connectionID: connectionID)
+            if allocation.owner != nil, response.statusCode == 200, response.expectedContentLength > limit {
+                // A range-less origin can still play. Hold its unbounded body until
+                // activation, with the fetcher's header watchdog suspended.
+                try await self.waitUntilPlayed(route.item, connectionID: connectionID)
+            }
+            let requestedStart = range?.dropFirst(6).split(separator: "-", omittingEmptySubsequences: false).first.flatMap { Int($0) } ?? 0
+            if !headOnly, response.statusCode == 200,
+               requestedStart > 0 || (sendHeaders && response.expectedContentLength > limit) {
+                // A range-less origin cannot satisfy the proxy's bounded suffix contract.
+                // Keep its body suspended while inactive, then use AVPlayer's direct
+                // origin transport on the same node/activation instead of retrying
+                // truncated 200 responses indefinitely.
+                try await self.waitUntilPlayed(route.item, connectionID: connectionID)
+                await self.emit(.transportError, item: route.item, properties: [
+                    "native_direct_fallback": "origin-range-unsupported",
+                    "message": "Origin ignored bounded Range; activated playback uses direct transport"])
+                throw NativeTransportFallback.rangeUnsupported
+            }
+            await self.beginStream(streamID, response: response, speculative: allocation.owner != nil, item: route.item)
             if !sendHeaders {
                 let start = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
                 guard (response.statusCode == 206 && response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix("bytes \(start)-") == true) ||
@@ -553,40 +932,65 @@ actor HMCacheTransport {
             headers["Content-Type"] = headers["Content-Type"] ?? HMCacheKey.mime(route.url)
             headers["Connection"] = "close"; headers["Cache-Control"] = "no-store"
             let head = "HTTP/1.1 \(response.statusCode) OK\r\n" + headers.map { "\($0.key): \($0.value)\r\n" }.joined() + "\r\n"
-            try await self.sendBlock(connection, data: Data(head.utf8))
+            try await self.sendBlock(connection, data: Data(head.utf8), connectionID: connectionID)
         }, bytes: { [weak self] bytes in
             guard let self else { throw CancellationError() }
-            try await self.waitForPlaybackPriority(route.item)
-            try await self.sendBlock(connection, data: bytes)
-            await self.cacheStream(streamID, bytes: bytes, route: route)
+            // Retain accepted payload before a priority/backpressure wait can
+            // cancel its send. Delivery/played accounting requires send success.
+            let start = await self.cacheStream(streamID, bytes: bytes, route: route)
+            try await self.waitForPlaybackPriority(route.item, connectionID: connectionID)
+            try await self.sendBlock(connection, data: bytes, connectionID: connectionID)
+            if let start {
+                await self.recordStreamDelivery(key: resource, item: route.item, start: start, count: bytes.count)
+            }
         })
         do {
             let result = try await fetcher.load(request)
-            account(result.received, url: route.url, item: route.item, prefetch: false)
+            let wasSpeculative = streams[streamID]?.speculative ?? (allocation.owner != nil)
+            account(result.received, url: route.url, item: route.item, prefetch: false, speculative: wasSpeculative)
             await cacheStream(streamID, bytes: Data(), route: route, finishing: true)
             return result.delivered
         } catch {
-            if let failure = error as? HMHTTPFetcher.Failure { account(failure.received, url: route.url, item: route.item, prefetch: false) }
+            if let failure = error as? HMHTTPFetcher.Failure { account(failure.received, url: route.url, item: route.item, prefetch: false, speculative: streams[streamID]?.speculative ?? (allocation.owner != nil)) }
             await cacheStream(streamID, bytes: Data(), route: route, finishing: true); throw error
         }
     }
-    private func beginStream(_ id: UUID, response: HTTPURLResponse) {
+    private func recordStreamDelivery(key: String, item: HMMediaItem, start: Int, count: Int) async {
+        recordDelivery(key: key, item: item, start: start, count: count)
+        if configuration.strategy.usesDataCache, let root = item.url {
+            await cache.associate(key: key, owner: self.key(root), played: isActivePlayback(item))
+        }
+    }
+    private func beginStream(_ id: UUID, response: HTTPURLResponse, speculative: Bool, item: HMMediaItem) {
         guard response.statusCode == 200 || response.statusCode == 206 else { return }
         let range = response.value(forHTTPHeaderField: "Content-Range")
         let total = range?.split(separator: "/").last.flatMap { Int($0) } ?? Int(response.expectedContentLength)
         let cursor = range?.dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
-        streams[id] = StreamState(cursor: cursor, total: total, mime: response.mimeType ?? HMCacheKey.mime(response.url!), base: response.url!)
+        streams[id] = StreamState(cursor: cursor, total: total, mime: response.mimeType ?? HMCacheKey.mime(response.url!), base: response.url!, speculative: speculative && !isActivePlayback(item))
     }
-    private func cacheStream(_ id: UUID, bytes: Data, route: Route, finishing: Bool = false) async {
-        guard var stream = streams[id], let mediaURL = route.item.url else { return }
-        if !bytes.isEmpty { recordDelivery(key: key(route.url), item: route.item, start: stream.cursor + stream.buffer.count, count: bytes.count) }
+    @discardableResult
+    private func cacheStream(_ id: UUID, bytes: Data, route: Route, finishing: Bool = false) async -> Int? {
+        guard var stream = streams[id], let mediaURL = route.item.url else { return nil }
+        let start = stream.cursor + stream.buffer.count
+        if stream.speculative, !bytes.isEmpty {
+            let resource = key(route.url), start = stream.cursor + stream.buffer.count
+            prefetchRanges[resource] = HMRangeCoverage.union((prefetchRanges[resource] ?? []) + [HMByteRange(start: start, end: start + bytes.count - 1)])
+        }
         stream.buffer.append(bytes)
         while stream.buffer.count >= 512 * 1024 || (finishing && !stream.buffer.isEmpty) {
             let size = min(512 * 1024, stream.buffer.count)
             let chunk = Data(stream.buffer.prefix(size)); stream.buffer.removeFirst(size)
             if configuration.strategy.usesDataCache, stream.total > 0 {
+                let waitingCurrent = resourceWaiters.values.first { waiter in waiter.key == key(route.url) && priorityItem.map { priority in waiter.item.hasSameMedia(as: priority, ignoring: configuration.volatileSigningQueryParameters) } == true }?.item
+                let survives = retainedItems.contains { $0.hasSameMedia(as: route.item, ignoring: configuration.volatileSigningQueryParameters) }
+                let owner = waitingCurrent?.url.map { key($0) } ?? key(mediaURL)
                 await cache.put(key: key(route.url), start: stream.cursor, data: chunk, total: stream.total, mime: stream.mime, base: stream.base,
-                                owner: key(mediaURL), prefetched: false, played: played.contains(route.item.id))
+                                owner: owner, prefetched: false,
+                                played: isActivePlayback(route.item) && HMRangeCoverage.overlap(playedRanges[key(route.url)] ?? [], [HMByteRange(start: stream.cursor, end: stream.cursor + size - 1)]) == size,
+                                // Cancellation can race a full-chunk write as well
+                                // as the final partial flush. Ownership stays held
+                                // until this stream's callbacks and writes drain.
+                                allowCancelled: survives || waitingCurrent != nil)
             }
             stream.cursor += size
         }
@@ -594,10 +998,24 @@ actor HMCacheTransport {
         if finishing, configuration.strategy.usesDataCache {
             let owner = key(mediaURL); cachedBytes[owner] = await cache.bytes(for: owner); state.setBytes(cachedBytes)
         }
+        return start
     }
-    private func sendBlock(_ connection: NWConnection, data: Data) async throws {
+    private func sendBlock(_ connection: NWConnection, data: Data, connectionID: UUID? = nil) async throws {
+        let token = UUID(), progress = NativeSendProgress()
+        // An ordinary asynchronous send is healthy. Only sustained client
+        // backpressure makes the holder eligible, with a token-fenced timer.
+        let timer: Task<Void, Never>? = connectionID.map { id in
+            nativeSendProgress[token] = progress
+            return Task {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                guard progress.isPending else { return }
+                parkNative(id, token: token)
+            }
+        }
+        defer { progress.complete(); timer?.cancel(); nativeSendProgress[token] = nil; clearNativePark(token) }
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
+                progress.complete()
                 if let error { c.resume(throwing: error) } else { c.resume() }
             })
         }
@@ -610,6 +1028,7 @@ actor HMCacheTransport {
         connection.send(content: packet, completion: .contentProcessed { [weak self] _ in Task { await self?.close(id) } })
     }
     private func close(_ id: UUID, reason: String = "completed") {
+        parkedNativeWaits = parkedNativeWaits.filter { $0.value != id }
         if let item = responseItems.removeValue(forKey: id) {
             emit(.transfer, item: item, metrics: ["proxy_close": 1], properties: ["reason": reason])
         }
@@ -619,6 +1038,9 @@ actor HMCacheTransport {
     func finish() async -> Int {
         isFinishing = true
         for id in Array(priorityWaiters.keys) { cancelPriorityWaiter(id) }
+        for token in Array(resourceWaiters.keys) { cancelResourceWaiter(token) }
+        for token in Array(budgetWaiters.keys) { cancelBudgetWaiter(token) }
+        for token in Array(activationWaiters.keys) { cancelActivationWaiter(token) }
         listener?.cancel(); port = 0; state.setPort(0)
         cancelPrefetch()
         let tasks = Array(responseTasks.values) + Array(retiringPrefetch.values)
@@ -651,6 +1073,8 @@ actor HMCacheTransport {
     private var retainedPlaylist: [HMMediaItem]?
     private var playbackPriority: HMMediaItem?
     private var playbackUrgent = true
+    private var admittedItem: HMMediaItem?
+    private var progressAllowed = true
     private func enqueue(_ action: @escaping @Sendable (HMCacheTransport) async -> Void) {
         let previous = commands, transport = transport
         commands = Task { await previous?.value; await action(transport) }
@@ -670,6 +1094,11 @@ actor HMCacheTransport {
     func cachedByteCount(for item: HMMediaItem) -> Int {
         item.url.map { configuration.strategy.usesDataCache && transport.state.port != 0 ? transport.state.bytes(for: HMCacheKey.canonical($0, ignoring: configuration.volatileSigningQueryParameters)) : 0 } ?? 0
     }
+    /// Whether an explicit prefix for the item is issued, queued or in flight. The transport takes
+    /// commands some milliseconds after they are issued; a decision in between still sees the prefix.
+    func isPrefetching(_ item: HMMediaItem) -> Bool { transport.state.isPrefixing(item) }
+    /// Whether the transport has started the item's prefix, so a playback read would join its download.
+    func isPrefetchRunning(_ item: HMMediaItem) -> Bool { transport.state.isPrefixRunning(item) }
     func retainWindow(_ items: [HMMediaItem]) {
         guard retainedWindow != items else { return }
         retainedWindow = items
@@ -677,14 +1106,23 @@ actor HMCacheTransport {
         enqueue { await $0.retainWindow(items) }
     }
     func retainPlaylist(_ items: [HMMediaItem]) { guard retainedPlaylist != items else { return }; retainedPlaylist = items; enqueue { await $0.retainPlaylist(items) } }
-    func markPlayed(_ item: HMMediaItem) { enqueue { await $0.markPlayed(item) } }
-    func prioritizePlayback(_ item: HMMediaItem, urgent: Bool) {
-        guard playbackPriority != item || playbackUrgent != urgent else { return }
-        playbackPriority = item; playbackUrgent = urgent
-        enqueue { await $0.prioritizePlayback(item, urgent: urgent) }
+    func setProgressAllowed(_ allowed: Bool) {
+        guard progressAllowed != allowed else { return }; progressAllowed = allowed
+        enqueue { await $0.setProgressAllowed(allowed) }
     }
-    func cancelPrefetch() { enqueue { await $0.cancelPrefetch() } }
-    func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) { enqueue { await $0.prefetch(items, keeping: keeping, plan: plan) } }
+    func markPlayed(_ item: HMMediaItem) { enqueue { await $0.markPlayed(item) } }
+    func prioritizePlayback(_ item: HMMediaItem, urgent: Bool, admitting: HMMediaItem? = nil) {
+        let admitted = urgent ? admitting : nil
+        guard playbackPriority != item || playbackUrgent != urgent || admittedItem != admitted else { return }
+        playbackPriority = item; playbackUrgent = urgent; admittedItem = admitted
+        enqueue { await $0.prioritizePlayback(item, urgent: urgent, admitting: admitted) }
+    }
+    func cancelPrefetch(sparing: HMMediaItem? = nil) { enqueue { await $0.cancelPrefetch(sparing: sparing) } }
+    func cancelPrefetch(sparing: [HMMediaItem]) { enqueue { await $0.cancelPrefetch(sparing: sparing) } }
+    func prefetch(_ items: [HMMediaItem], keeping: [HMMediaItem], plan: HMPrefetchPlan) {
+        transport.state.issue(items)
+        enqueue { await $0.prefetch(items, keeping: keeping, plan: plan); $0.state.settle(items) }
+    }
     func finish() async -> Int { await commands?.value; return await transport.finish() }
 }
 
@@ -698,7 +1136,8 @@ final class HMProxyState: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard self.signingParameters != signingParameters else { return }
         self.signingParameters = signingParameters
-        routes.removeAll(); tokens.removeAll(); allowedItems = nil
+        // Identities change with the parameters; the transport cancels its prefixes on this change too.
+        routes.removeAll(); tokens.removeAll(); allowedItems = nil; issued.removeAll()
     }
     private func identity(_ item: HMMediaItem) -> HMMediaItem.MediaIdentity {
         item.mediaIdentity(ignoring: signingParameters)
@@ -707,14 +1146,44 @@ final class HMProxyState: @unchecked Sendable {
     private var routes: [String: HMCacheTransport.Route] = [:]
     private var tokens: [String: String] = [:]
     private var cachedBytes: [String: Int] = [:]
+    private var prefixing: Set<HMMediaItem.MediaIdentity> = []
+    private var runningPrefixes: Set<HMMediaItem.MediaIdentity> = []
+    /// Prefetch commands the facade has enqueued and the transport has not taken yet, per item.
+    private var issued: [HMMediaItem.MediaIdentity: Int] = [:]
     private var allowedItems: Set<HMMediaItem.MediaIdentity>?
     var port: UInt16 { lock.lock(); defer { lock.unlock() }; return listeningPort }
     func setPort(_ value: UInt16) { lock.lock(); listeningPort = value; lock.unlock() }
     func setBytes(_ value: [String: Int]) { lock.lock(); cachedBytes = value; lock.unlock() }
     func bytes(for key: String) -> Int { lock.lock(); defer { lock.unlock() }; return cachedBytes[key] ?? 0 }
+    func setPrefixing(_ running: [HMMediaItem], queued: [HMMediaItem] = []) {
+        lock.lock(); defer { lock.unlock() }
+        runningPrefixes = Set(running.map { identity($0) })
+        prefixing = runningPrefixes.union(queued.map { identity($0) })
+    }
+    /// Started by the transport, so a playback read can join it; issued or queued work cannot be joined yet.
+    func isPrefixRunning(_ item: HMMediaItem) -> Bool { lock.lock(); defer { lock.unlock() }; return runningPrefixes.contains(identity(item)) }
+    /// A decision made after the player issues a prefetch, but before the transport takes the
+    /// command, must still see it: the player would otherwise cancel the head it just issued.
+    func issue(_ items: [HMMediaItem]) {
+        lock.lock(); defer { lock.unlock() }
+        for item in items { issued[identity(item), default: 0] += 1 }
+    }
+    /// The transport took the command, whether or not it started work; its own state answers from here.
+    func settle(_ items: [HMMediaItem]) {
+        lock.lock(); defer { lock.unlock() }
+        for item in items {
+            let key = identity(item)
+            if let count = issued[key], count > 1 { issued[key] = count - 1 } else { issued[key] = nil }
+        }
+    }
+    /// Issued, queued or running.
+    func isPrefixing(_ item: HMMediaItem) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let key = identity(item)
+        return prefixing.contains(key) || issued[key] != nil
+    }
     func route(_ token: String) -> HMCacheTransport.Route? { lock.lock(); defer { lock.unlock() }; return routes[token] }
     func allURLs() -> [URL] { lock.lock(); defer { lock.unlock() }; return routes.values.map(\.url) }
-    func contains(url: URL) -> Bool { lock.lock(); defer { lock.unlock() }; return routes.values.contains { $0.url == url } }
     func url(_ url: URL, item: HMMediaItem) -> URL {
         lock.lock(); defer { lock.unlock() }
         guard listeningPort != 0, allowedItems?.contains(identity(item)) != false else { return url }

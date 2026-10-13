@@ -8,6 +8,7 @@ import UIKit
     weak var scroll: UIScrollView?
     var isRestoringFullscreen = false
     var lastMotionAt: TimeInterval = 0
+    var liftedItemID: String?
 }
 
 struct HMPageCommitProbe: UIViewRepresentable {
@@ -17,8 +18,9 @@ struct HMPageCommitProbe: UIViewRepresentable {
     var isSuspended = false
     var requestID: UUID
     var reference: HMScrollViewReference? = nil
+    var trigger: HMActivationTrigger = .lift
     var interaction: (Bool) -> Void = { _ in }
-    var commit: (String, TimeInterval) -> Void
+    var commit: (String, HMPageCommit) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(commit: commit, reference: reference, interaction: interaction) }
     func makeUIView(context: Context) -> Probe {
         let view = Probe(); view.coordinator = context.coordinator
@@ -29,6 +31,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
         coordinator.isSuspended = isSuspended
         coordinator.commit = commit
         coordinator.interaction = interaction
+        coordinator.trigger = trigger
         coordinator.reconcile(items: itemIDs, current: currentID)
         coordinator.reference = reference
         coordinator.targetIndex = targetIndex; coordinator.requestID = requestID
@@ -37,6 +40,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
     static func dismantleUIView(_ view: Probe, coordinator: Coordinator) {
         coordinator.interaction(false)
         coordinator.fallback?.cancel(); coordinator.fallback = nil; coordinator.offsetObservation = nil
+        coordinator.cancelRequest()
         if let scroll = coordinator.scroll, scroll.delegate === coordinator { scroll.delegate = coordinator.original }
     }
     final class Probe: UIView {
@@ -63,11 +67,19 @@ struct HMPageCommitProbe: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var interaction: (Bool) -> Void
-        var commit: (String, TimeInterval) -> Void
+        var commit: (String, HMPageCommit) -> Void
         var reference: HMScrollViewReference?
         var offsetObservation: NSKeyValueObservation?
         var fallback: DispatchWorkItem?
+        var trigger: HMActivationTrigger = .lift
+        var animationHook: ((CGPoint) -> Void)?
+        private var touchAt: TimeInterval?
+        private var liftAt: TimeInterval?
+        private var gestureOrigin: String?
+        private var liftActivated: String?
+        private var finalLiftTarget: String?
         private var lastMotionAt: TimeInterval = 0
+        private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
         func observe(_ view: UIScrollView) {
             reference?.scroll = view
             guard scroll !== view || offsetObservation == nil else { return }
@@ -98,7 +110,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
             let quiet = ProcessInfo.processInfo.systemUptime - lastMotionAt
             guard quiet >= 0.2 else { scheduleFallback(after: 0.2 - quiet); return }
             // TTFF begins when the page is committed, including for the quiet fallback.
-            settled(scroll, time: ProcessInfo.processInfo.systemUptime)
+            settled(scroll, time: ProcessInfo.processInfo.systemUptime, source: .quietFallback)
         }
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             motionChanged()
@@ -117,13 +129,13 @@ struct HMPageCommitProbe: UIViewRepresentable {
             guard let pageSize, pageSize != scroll.bounds.size else { return }
             // A host rotation/resize changes the offset-to-page mapping without a swipe.
             // Keep the active-ID anchor through that geometry change as on fullscreen exit.
-            restoringFullscreen = true; reference?.isRestoringFullscreen = true
+            clearGesture(); restoringFullscreen = true; reference?.isRestoringFullscreen = true
             lastMotionAt = ProcessInfo.processInfo.systemUptime
             fallback?.cancel(); fallback = nil
         }
         var isSuspended = false {
             didSet {
-                if isSuspended { restoringFullscreen = true; reference?.isRestoringFullscreen = true; fallback?.cancel(); fallback = nil; interaction(false) }
+                if isSuspended { cancelRequest(); clearGesture(); restoringFullscreen = true; reference?.isRestoringFullscreen = true; fallback?.cancel(); fallback = nil; interaction(false) }
                 else if oldValue { lastMotionAt = ProcessInfo.processInfo.systemUptime }
             }
         }
@@ -149,6 +161,11 @@ struct HMPageCommitProbe: UIViewRepresentable {
         var targetIndex: Int?
         var requestID: UUID?
         private var handledRequest: UUID?
+        private struct PendingMove { let request: UUID; let index: Int; var attempts: Int }
+        private var pending: PendingMove?
+        private var watchdog: DispatchWorkItem?
+        private var retryScheduled = false
+        static let maximumAttempts = 3
         func pageIfRequested() {
             guard !isSuspended else { return }
             if let scroll { observePageSize(scroll) }
@@ -163,6 +180,7 @@ struct HMPageCommitProbe: UIViewRepresentable {
             }
             if needsReconcile, let scroll, scroll.bounds.height > 0 {
                 needsReconcile = false; suppressCommit = true
+                cancelRequest(); clearGesture()
                 fallback?.cancel(); fallback = nil
                 // Cancels a drag/deceleration and anchors by the settled item's new index.
                 scroll.panGestureRecognizer.isEnabled = false
@@ -170,23 +188,88 @@ struct HMPageCommitProbe: UIViewRepresentable {
                 scroll.panGestureRecognizer.isEnabled = true
                 suppressCommit = false
             }
-            guard let index = targetIndex, let requestID, requestID != handledRequest,
-                  let scroll, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
+            guard let index = targetIndex, let requestID, requestID != handledRequest, let scroll else { return }
+            // A request arriving mid-gesture or before layout used to be dropped:
+            // nothing called this again. Retry until the scroll view can move.
+            guard !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { retrySoon(); return }
             handledRequest = requestID
-            let y = Double(index) * scroll.bounds.height - scroll.adjustedContentInset.top
-            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: true)
+            pending = PendingMove(request: requestID, index: index, attempts: 0)
+            move(scroll)
         }
+        func cancelRequest() {
+            pending = nil; watchdog?.cancel(); watchdog = nil
+        }
+        private func retrySoon() {
+            guard !retryScheduled, scroll?.window != nil else { return }
+            retryScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.retryScheduled = false; self?.pageIfRequested()
+            }
+        }
+        private func move(_ scroll: UIScrollView) {
+            guard var request = pending else { return }
+            request.attempts += 1; pending = request
+            let target = CGPoint(x: scroll.contentOffset.x, y: Double(request.index) * scroll.bounds.height - scroll.adjustedContentInset.top)
+            if abs(scroll.contentOffset.y - target.y) < 0.5 || request.attempts >= Self.maximumAttempts {
+                // UIKit sends no end callback for a zero-length move, and a third
+                // interruption means another offset writer keeps winning: jump.
+                scroll.setContentOffset(target, animated: false)
+                settled(scroll, time: now, source: .programmatic)
+                return
+            }
+            if let animationHook { animationHook(target) } else { scroll.setContentOffset(target, animated: true) }
+            armWatchdog()
+        }
+        /// An interrupted animation sends no end callback. Check that the move landed.
+        private func armWatchdog() {
+            watchdog?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.checkPendingMove() }
+            watchdog = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+        }
+        private func checkPendingMove() {
+            watchdog = nil
+            guard pending != nil, let scroll else { return }
+            guard !scroll.isDragging, !scroll.isDecelerating, now - lastMotionAt >= 0.2 else { armWatchdog(); return }
+            settled(scroll, time: now, source: .quietFallback)
+        }
+
         weak var scroll: UIScrollView?
         weak var original: UIScrollViewDelegate?
-        init(commit: @escaping (String, TimeInterval) -> Void, reference: HMScrollViewReference?, interaction: @escaping (Bool) -> Void) {
+        init(commit: @escaping (String, HMPageCommit) -> Void, reference: HMScrollViewReference?, interaction: @escaping (Bool) -> Void) {
             self.commit = commit; self.reference = reference; self.interaction = interaction
         }
+        private func clearGesture() {
+            touchAt = nil; liftAt = nil; gestureOrigin = nil; liftActivated = nil; finalLiftTarget = nil
+            reference?.liftedItemID = nil
+        }
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            cancelRequest(); clearGesture()
+            gestureOrigin = currentID; touchAt = now
             restoringFullscreen = false; reference?.isRestoringFullscreen = false
             pageSize = scrollView.bounds.size
             fallback?.cancel(); fallback = nil
             interaction(true)
             original?.scrollViewWillBeginDragging?(scrollView)
+        }
+        func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                       targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+            observePageSize(scrollView)
+            let ids = itemIDs, size = scrollView.bounds.size
+            original?.scrollViewWillEndDragging?(scrollView, withVelocity: velocity, targetContentOffset: targetContentOffset)
+            liftAt = now
+            // Read the target after SwiftUI has applied paging. A velocity estimate
+            // or a transient scrollPosition is insufficient to activate another video.
+            let position = (targetContentOffset.pointee.y + scrollView.adjustedContentInset.top) / scrollView.bounds.height
+            guard !isSuspended, !restoringFullscreen, !suppressCommit, !needsReconcile,
+                  size == scrollView.bounds.size, ids == itemIDs, position.isFinite,
+                  abs(position - position.rounded()) <= 0.001,
+                  position >= 0, position < Double(itemIDs.count) else { return }
+            let id = itemIDs[Int(position.rounded())]
+            finalLiftTarget = id
+            guard trigger == .lift, id != (gestureOrigin ?? currentID) else { return }
+            liftActivated = id; reference?.liftedItemID = id
+            commit(id, HMPageCommit(source: .lift, time: liftAt!, touch: touchAt, lift: liftAt, liftTarget: id))
         }
         override func responds(to selector: Selector!) -> Bool { super.responds(to: selector) || (original?.responds(to: selector) ?? false) }
         override func forwardingTarget(for selector: Selector!) -> Any? { original }
@@ -197,13 +280,14 @@ struct HMPageCommitProbe: UIViewRepresentable {
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             let time = ProcessInfo.processInfo.systemUptime
             original?.scrollViewDidEndDragging?(scrollView, willDecelerate: decelerate)
+            if touchAt != nil, liftAt == nil { liftAt = time }
             if !decelerate { settled(scrollView, time: time) }
         }
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
             let time = ProcessInfo.processInfo.systemUptime
-            original?.scrollViewDidEndScrollingAnimation?(scrollView); settled(scrollView, time: time)
+            original?.scrollViewDidEndScrollingAnimation?(scrollView); settled(scrollView, time: time, source: .programmatic)
         }
-        private func settled(_ scroll: UIScrollView, time: TimeInterval) {
+        private func settled(_ scroll: UIScrollView, time: TimeInterval, source: HMPageCommit.Source = .settle) {
             fallback?.cancel(); fallback = nil
             observePageSize(scroll)
             guard !isSuspended, !suppressCommit, !needsReconcile, !scroll.isDragging, !scroll.isDecelerating, scroll.bounds.height > 0 else { return }
@@ -218,10 +302,18 @@ struct HMPageCommitProbe: UIViewRepresentable {
                 restoringFullscreen = false; reference?.isRestoringFullscreen = false; interaction(false)
                 return
             }
-            defer { interaction(false) }
+            defer { interaction(false); clearGesture() }
             let index = max(0, Int(((scroll.contentOffset.y + scroll.adjustedContentInset.top) / scroll.bounds.height).rounded()))
             guard itemIDs.indices.contains(index) else { return }
-            commit(itemIDs[index], time)
+            var attempts: Int?
+            if let request = pending {
+                if index != request.index, targetIndex == request.index { move(scroll); return }
+                attempts = request.attempts; cancelRequest()
+            }
+            let id = itemIDs[index]
+            let mismatch = liftActivated.map { $0 != id } == true
+            commit(id, HMPageCommit(source: source, time: time, touch: touchAt, lift: liftAt, settle: time,
+                correction: mismatch ? "target-settle-mismatch" : nil, liftTarget: finalLiftTarget, attempts: attempts))
         }
     }
 }

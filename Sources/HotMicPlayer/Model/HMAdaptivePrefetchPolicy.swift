@@ -286,6 +286,7 @@ func json<T: Encodable>(_ value: T) -> String {
 
 /// Only actual transfers and page arrivals update these EWMAs; cache reads never inflate throughput.
 struct HMPrefetchMeasurements {
+    private(set) var throughputSamples = 0
     private var sawFirstLatency = false
     private(set) var throughput: Double?
     private(set) var latency: Double?
@@ -296,7 +297,7 @@ struct HMPrefetchMeasurements {
         return previous.map { $0 + a * (sample - $0) } ?? sample
     }
     mutating func transfer(bytes: Double, seconds: Double, ttfb: Double?, alpha: Double) {
-        if bytes > 0, seconds > 0, (bytes / seconds).isFinite { throughput = smoothed(throughput, bytes / seconds, alpha: alpha) }
+        if bytes > 0, seconds > 0, (bytes / seconds).isFinite { throughputSamples += 1; throughput = smoothed(throughput, bytes / seconds, alpha: alpha) }
         if let ttfb, ttfb >= 0, ttfb.isFinite {
             // Cold DNS/TLS must not determine the first speed tier.
             if sawFirstLatency { latency = smoothed(latency, ttfb, alpha: alpha) }

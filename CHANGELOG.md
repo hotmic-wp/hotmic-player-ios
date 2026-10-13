@@ -2,7 +2,19 @@
 
 ## 1.1.0 (draft — unreleased)
 
+### Measured defaults and queue correctness
+
+- Align default configuration, public initializer and no-argument player: two content players, fixed 3 ahead / 1 behind, target 4 seconds and 8 MiB per-entry speculative payload cap, adaptive off, desired startup bandwidth 1,600,000 bits/s for the existing 4-second window. HLS-first public examples retain MP4 support.
+- Add public activationTrigger with known-final-target lift activation and settled fallback; preserve fullscreen/resize guards, avoid velocity guesses and duplicate scroll animations, and retain detailed gesture clocks/mismatch telemetry.
+- Prepare next independently of current first frame; park/reprioritize surviving bounded work, coalesce native/prefix reads in both directions, preempt parked warm shared-resource owners and reuse flushed bytes, and preserve shared disk ownership on hits.
+- Select complete HLS audio/video/init/key/byte-range resources within aggregate budgets, retain immutable playlists, report unattainable targets, accept valid empty HEAD responses, bound manifests to 512 KiB and fall back to budgeted GET metadata probes when HEAD is unsupported or has no length. Explicit signing normalization is now public and remains opt-in by exact query name.
+- Restore visible paused-seek transport permission after foreground/interruption recovery without resuming playback, and restore the rebuilt current playhead after media-services reset independently of revisit policy; honor latest host play intent on foreground, and let eligible prefixes free parked native holders while healthy reads and metadata probes coalesce.
+- Fix metadata/format resolver coalescing and per-waiter cancellation; token-protect controller slots and signing-configuration resets. Prevent ranked refreshes from replacing a finishing visit's media, and avoid looping static-source generated-ID collisions.
+- Document actual historical comparisons and reverted experiments separately from simulator behavior and pending matched physical-device gates; retain public API/examples and detailed analytics dispatch.
+
 ### Partner delivery
+
+- Extract benchmark tooling from the public SDK, retain a separate `HotMicPlayerRegression` scheme and Swift-only DEBUG support, and provide public synthetic fixtures plus a reproducible held-scrub cancellation driver.
 
 - Add a Partner integration guide, capability matrix, integration checklist and ad SDK adapter recipe. Give ready-made and custom overlays equal starting paths with two small buildable example apps.
 - Consolidate the Partner demo with persistent tabs, mixed MP4/HLS and orientations, source/overlay selection, captions, URL and host-played ads, ranked refresh and a sidecar.

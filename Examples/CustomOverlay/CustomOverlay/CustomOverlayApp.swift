@@ -10,8 +10,8 @@ import HotMicPlayer
     let player = HMPlayer(interactions: FakeComments())
     init() {
         player.replaceAll([
-            .init(id: "mp4", url: URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!, title: "Your next highlight", aspectRatio: 16.0 / 9),
-            .init(id: "hls", url: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!, format: .hls, title: "Full match", aspectRatio: 16.0 / 9)
+            .init(id: "hls", url: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!, format: .hls, title: "Full match", aspectRatio: 16.0 / 9),
+            .init(id: "mp4", url: URL(string: "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4")!, format: .mp4, title: "Your next highlight", aspectRatio: 16.0 / 9)
         ])
     }
     deinit { MainActor.assumeIsolated { player.teardown() } }
@@ -51,7 +51,7 @@ import HotMicPlayer
         }
         .ignoresSafeArea(.keyboard).foregroundStyle(.white).preferredColorScheme(.dark)
         .onAppear { player.isFeedVisible = true }
-        .onDisappear { player.isFeedVisible = false }
+        .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 

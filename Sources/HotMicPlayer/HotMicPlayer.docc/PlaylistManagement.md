@@ -27,7 +27,7 @@ Identical `replaceAll` (including the selected index), empty appends/inserts and
 
 Media identity is the item ID plus source (including format), excluding display metadata. URL identity uses the same canonical key as the cache: only explicitly configured `volatileSigningQueryParameters` are stripped; other query parameters remain significant. Re-signing those configured parameters preserves active/warm players and downloads. The current native asset continues using its original URL; new assignments use the latest URL.
 
-Edits preserve overlapping prefetch work. Reordering or editing outside the media window does not cancel downloads; a window change cancels only entries that left it. Buffer safety, visibility and changed prefetch budgets may still suspend/restart speculative work. During a swipe, an edit preserves the move unless the current or destination ID changes position. Appending does not interrupt a swipe. Item identity also scopes moderation: removing an item ends its retained records; re-inserting the same ID begins a new lifetime.
+Edits preserve overlapping prefetch work. Reordering or editing outside the media window does not cancel downloads; a window change cancels only entries that left it. Fixed-mode buffer pressure and temporary visibility changes park surviving speculative work; changed budgets may restart it. During a swipe, an edit preserves the move unless the current or destination ID changes position. Appending does not interrupt a swipe. Item identity also scopes moderation: removing an item ends its retained records; re-inserting the same ID begins a new lifetime.
 
 ## Ranked feed refresh
 
@@ -89,4 +89,55 @@ Paging failures get four total attempts with 1/2/4-second backoff, then wait for
 
 ## Failed media
 
-Default `.skip` tries the next nonfailed entry, then previous, then idle. `.stay` keeps the failed entry selected. Failed items remain in the playlist and are excluded from automatic traversal. Failure memory follows media identity: identical, metadata-only and configured signing-only refreshes do not reset terminal, network or resolution failures. Call `jump(toID:)` to explicitly retry a failed entry, even if it is already selected. A real source change starts a new failure/resume lifetime. Transient network failures retry current/next with bounded, jittered backoff. Skips wait for page motion and interactions to settle. Wrap custom scrubbers or menus with `beginInteraction()` / `endInteraction()`; a missing end expires after 30 seconds.
+Default `.skip` tries the next nonfailed entry, then previous, then idle. `.stay` keeps the failed entry selected. Failed items remain in the playlist and are excluded from automatic traversal. Failure memory follows media identity: identical, metadata-only and configured signing-only refreshes do not reset terminal, network or resolution failures. Call `jump(toID:)` to explicitly retry a failed entry, even if it is already selected. A real source change starts a new failure/resume lifetime. Transient network failures retry only current/next with jittered waits capped at 30 seconds; attempts continue while eligible and do not spend the terminal failure budget. A native retry keeps the selected entry ID and original action clock but creates a fresh analytics activation/viewStart; distinguish activation attempts from unique viewed entries when measuring coverage. Terminal resolver/prefix attempts and page attempts are separately capped. Skips wait for page motion and interactions to settle. Wrap custom scrubbers or menus with `beginInteraction()` / `endInteraction()`; a missing end expires after 30 seconds.
+
+## Public-import operation recipe
+
+Call these operations in response to host actions; this compiled recipe shows the API and lifetime ownership together. `reconcile` preserves history around current, so entries before it are not a full-history replacement. `reconcile([])` is a no-op, while `replaceAll([])` clears. A finishing visit keeps its existing media when a ranked refresh reintroduces its ID, so repeated refreshes cannot restart/prolong it. Explicit replaceAll remains a replacement action.
+
+```swift
+import HotMicPlayer
+@MainActor func partnerQueueRecipe(source: any HMPlaylistSource,
+                                  resolver: any HMItemResolver,
+                                  ranked: [HMMediaItem], nextPage: [HMMediaItem]) async {
+    var config = HMPlayerConfiguration()
+    config.volatileSigningQueryParameters = ["signature", "expires"] // Only names your origin declares volatile.
+    let player = HMPlayer(configuration: config, resolver: resolver)
+    let events = player.events // Subscribe before edits when their first event matters.
+    let observation = Task { @MainActor in
+        for await event in events {
+            switch event {
+            case .currentItemChanged(let item): print(item?.id ?? "idle")
+            case .itemReady(let item): print(player.snapshot(for: item).readinessTier)
+            case .error(_, let kind): print(kind.localizedDescription)
+            default: break
+            }
+        }
+    }
+    defer { observation.cancel(); player.teardown() } // Terminal: use a new player afterwards.
+    player.playlistSource = source
+    await player.start()
+    guard player.replaceAll(ranked, startAt: 0) else { return } // Empty accepts only startAt zero.
+    guard player.reconcile(ranked) else { return } // Ranked refresh; preserves current/history.
+    guard player.replaceUpcoming(nextPage) else { return }
+    let hls = URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!
+    guard player.insertNext([.init(id: "inserted", url: hls, format: .hls)]) else { return }
+    guard player.append([.init(id: "appended", url: hls, format: .hls)]) else { return }
+    await player.loadNextPage() // Nonthrowing: read loadError and error/duplicate events.
+    player.jump(toID: "inserted") // Also explicitly retries remembered failures.
+    player.play(); player.pause(); player.seek(to: 0); player.isMuted = true
+    player.configuration.removedCurrentPolicy = .finishThenAdvance
+    player.remove(ids: ["inserted"]) // Keep this visit until one natural end; swipe removes it.
+    player.configuration.removedCurrentPolicy = .advanceNow // Default: next, previous, then idle.
+    player.remove(ids: ["appended"])
+    let current = player.currentItem
+    let readiness = player.snapshot.readinessTier
+    let change = player.lastPlaylistChange
+    print(current?.id ?? "idle", readiness, change?.releasedPlayerCount ?? 0, player.loadError ?? "")
+    player.isFeedVisible = false // Temporary hide; preserve owner and useful state.
+    player.isFeedVisible = true
+    player.replaceAll([]) // Explicit clear.
+}
+```
+
+The player and analytics/source pushes run on MainActor. Sources and resolvers are Sendable and should cooperate with cancellation. Each event consumer owns its task cancellation. Coalesced resolver waiters cancel independently; completion is token-owned, and format promotion cannot be discarded by a metadata-only waiter. Explicit volatile-query configuration is safe-by-default (empty); other query parameters remain media identity. This normalizes identity and does not regenerate expired signed child URLs. Keep URLs valid for an active visit or implement renewal in the adapter/backend; Connect still uses vodURL/.auto.

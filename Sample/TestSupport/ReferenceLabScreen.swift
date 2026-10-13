@@ -1,3 +1,4 @@
+#if DEBUG
 import SwiftUI
 @_spi(Benchmark) import HotMicPlayer
 
@@ -49,7 +50,7 @@ struct ReferenceLabScreen: View {
                     Button("Network media") {
                         serial += 1; player.playlistSource = nil
                         ReferenceLabEvidence.write(["phase": "action", "operation": "Network media"])
-                        player.replaceAll([HMMediaItem(id: "network-media-\(serial)", url: URL(string: "http://127.0.0.1:18089/coach-mic.mp4")!), seed("after-network-\(serial)")])
+                        player.replaceAll([HMMediaItem(id: "network-media-\(serial)", url: URL(string: "http://127.0.0.1:18490/001-portrait/clip.mp4")!), seed("after-network-\(serial)")])
                     }
                 }
                 HStack {
@@ -102,7 +103,7 @@ struct ReferenceLabScreen: View {
                 try? await sink?.flush()
             }
         }
-        .onDisappear { player.teardown() }
+        .onDisappear { if !player.isFullscreen { player.teardown() } }
     }
     private func seed(_ id: String) -> HMMediaItem {
         HMMediaItem(id: id, source: DemoContent.reel[0].source)
@@ -160,7 +161,7 @@ private actor ReferenceLabResolver: HMItemResolver {
         }
         if ref.id.hasPrefix("fail") { throw HMPlayerError.resolution("Fixture failure") }
         let hls = ref.id.contains("hls")
-        let url = hls ? URL(string: "http://127.0.0.1:18088/lab-hls/index.m3u8")! : Bundle.main.url(forResource: "coach-mic", withExtension: "mp4")!
+        let url = URL(string: "http://127.0.0.1:18490/" + (hls ? "003-portrait/index.m3u8" : "001-portrait/clip.mp4"))!
         ReferenceLabEvidence.write(["phase": "resolve-end", "id": ref.id])
         return HMResolvedItem(url: url)
     }
@@ -187,3 +188,5 @@ private enum ReferenceLabEvidence {
         if let handle = try? FileHandle(forWritingTo: url) { defer { try? handle.close() }; _ = try? handle.seekToEnd(); try? handle.write(contentsOf: data) }
     }
 }
+
+#endif

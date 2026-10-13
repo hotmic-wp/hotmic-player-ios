@@ -62,7 +62,9 @@ struct PlayerPlaylistTests {
         if policy == .finishThenAdvance {
             #expect(list.items.map(\.id) == ["a", "b", "x", "d"])
             #expect(list.current?.id == "b" && list.finishingID == "b")
-            try list.reconcile([clip("b"), clip("x")], policy: policy)
+            let replacement = HMMediaItem(id: "b", url: URL(string: "https://example.com/restarted.mp4")!)
+            try list.reconcile([replacement, clip("x")], policy: policy)
+            #expect(list.current?.source == clip("b").source)
             #expect(list.finishingID == "b")
             list.remove(ids: ["b"])
         }
@@ -116,6 +118,7 @@ struct PlayerResolverTests {
         var calls = 0
         func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
             calls += 1
+            try await Task.sleep(for: .milliseconds(20))
             return HMResolvedItem(url: URL(string: "https://unit-format.test/media")!, poster: URL(string: "https://metadata-only.invalid/poster.jpg"))
         }
     }
@@ -133,6 +136,21 @@ struct PlayerResolverTests {
         let promoted = try await store.resolve(entry, using: resolver)
         #expect(promoted.format == .hls && promoted.posterURL == result.posterURL)
         #expect(await resolver.calls == 1)
+        let concurrent = HMResolutionStore(session: session), shared = MetadataResolver()
+        let metadata = Task { try await concurrent.resolve(entry, using: shared, metadataOnly: true) }
+        await Task.yield()
+        let media = Task { try await concurrent.resolve(entry, using: shared) }
+        #expect(try await metadata.value.format == .auto)
+        #expect(try await media.value.format == .hls)
+        #expect(await shared.calls == 1)
+        let cancellationStore = HMResolutionStore(), delayed = Resolver()
+        let cancelled = Task { try await cancellationStore.resolve(entry, using: delayed) }
+        let survivor = Task { try await cancellationStore.resolve(entry, using: delayed) }
+        await Task.yield(); cancelled.cancel()
+        #expect(try await survivor.value.url != nil)
+        do { _ = try await cancelled.value; Issue.record("Cancelled waiter returned") } catch { #expect(error is CancellationError) }
+        #expect(await delayed.calls == 1)
+
     }
     @Test("Leaving the window cancels pending work and a missing resolver is a recoverable error")
     func cancellation() async throws {
@@ -258,6 +276,7 @@ private final class FormatProtocol: URLProtocol {
 #if canImport(AVFoundation) && !os(macOS)
 import AVFoundation
 import Network
+import Darwin
 #if canImport(UIKit)
 import UIKit
 import SwiftUI
@@ -385,6 +404,33 @@ struct PlayerNativeReviewTests {
         coordinator.scrollViewDidEndDragging(scroll, willDecelerate: false)
         #expect(committed == "b")
         coordinator.fallback?.cancel()
+        var reports: [(String, HMPageCommit)] = []
+        let known = HMPageCommitProbe.Coordinator(commit: { reports.append(($0, $1)) }, reference: HMScrollViewReference(), interaction: { _ in })
+        let inset = UIScrollView(frame: CGRect(x: 0, y: 0, width: 390, height: 800))
+        inset.contentInset.top = 20; inset.contentSize = CGSize(width: 390, height: 2400)
+        inset.contentOffset.y = -20
+        known.observe(inset); known.reconcile(items: ["a", "b", "c"], current: "a")
+        known.scrollViewWillBeginDragging(inset)
+        var target = CGPoint(x: 0, y: -20)
+        known.scrollViewWillEndDragging(inset, withVelocity: .zero, targetContentOffset: &target)
+        #expect(reports.isEmpty) // A cancelled return-to-origin never activates a neighbour at lift.
+        known.scrollViewDidEndDragging(inset, willDecelerate: false)
+        #expect(reports.last?.0 == "a" && reports.last?.1.source == .settle)
+        reports.removeAll(); known.scrollViewWillBeginDragging(inset)
+        target.y = 1580 // Multi-page target with adjusted top inset.
+        known.scrollViewWillEndDragging(inset, withVelocity: CGPoint(x: 0, y: 9), targetContentOffset: &target)
+        #expect(reports.count == 1 && reports[0].0 == "c" && reports[0].1.source == .lift)
+        known.reconcile(items: ["a", "b", "c"], current: "c"); inset.contentOffset.y = 1580
+        known.scrollViewDidEndDecelerating(inset)
+        #expect(reports.last?.0 == "c" && reports.last?.1.correction == nil)
+        reports.removeAll(); known.scrollViewWillBeginDragging(inset)
+        target.y = 900 // Fractional/unknown target: never use the supplied velocity to guess.
+        known.scrollViewWillEndDragging(inset, withVelocity: CGPoint(x: 0, y: -99), targetContentOffset: &target)
+        #expect(reports.isEmpty)
+        inset.bounds.size.height = 700; target.y = 680
+        known.scrollViewWillEndDragging(inset, withVelocity: .zero, targetContentOffset: &target)
+        #expect(reports.isEmpty) // Resize keeps the current-ID restoration guard.
+        known.fallback?.cancel(); known.cancelRequest()
     }
     #endif
 
@@ -478,7 +524,7 @@ struct PlayerNativeReviewTests {
     #endif
 
     /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
-    func videoFixture(rotated: Bool) async throws -> URL {
+    func videoFixture(rotated: Bool, duration: TimeInterval = 1) async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-aspect-\(UUID()).mp4")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 90])
@@ -496,7 +542,13 @@ struct PlayerNativeReviewTests {
         let deadline = Date().addingTimeInterval(2)
         while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         try #require(adaptor.append(pixels, withPresentationTime: .zero))
-        writer.endSession(atSourceTime: CMTime(seconds: 1, preferredTimescale: 600))
+        if duration > 1 {
+            for frame in 1..<Int(duration * 10) {
+                while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(1)) }
+                try #require(adaptor.append(pixels, withPresentationTime: CMTime(seconds: Double(frame) / 10, preferredTimescale: 600)))
+            }
+        }
+        writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
         input.markAsFinished()
         await writer.finishWriting()
         try #require(writer.status == .completed)
@@ -678,7 +730,11 @@ struct PlayerNativeReviewTests {
             keepReadyPlayer: true, startingBitRate: 600000, concurrency: 2, startAfterSeconds: 0, reason: "test")
         await transport.prefetch([a, b], keeping: [a, b], plan: plan)
         let tokens = await transport.activePrefetchTokens
-        #expect(tokens.count == 2)
+        #expect(tokens.count == 1)
+        #expect(transport.state.isPrefixing(b) && !transport.state.isPrefixRunning(b))
+        var presentationOnly = configuration; presentationOnly.presentation = .fit; presentationOnly.removedCurrentPolicy = .finishThenAdvance
+        await transport.updateConfiguration(presentationOnly)
+        #expect(await transport.activePrefetchTokens == tokens)
         let metadata = HMMediaItem(id: a.id, source: a.source, title: "New")
         await transport.retainWindow([b, metadata])
         await transport.prefetch([b, metadata], keeping: [b, metadata], plan: plan)
@@ -689,6 +745,7 @@ struct PlayerNativeReviewTests {
         #expect(await transport.activePrefetchTokens == tokens)
         await transport.retainWindow([signed])
         #expect(await transport.activePrefetchTokens == ["a": tokens["a"]!])
+        #expect(!transport.state.isPrefixing(b))
         _ = await transport.finish()
     }
     actor Source: HMPlaylistSource {
@@ -819,7 +876,42 @@ struct PlayerNativeReviewTests {
         #expect(await transport.heldPlaybackRequestCount == 1)
         // Promoting a held neighbour releases its original proxy request.
         await transport.prioritizePlayback(entry, urgent: true)
+        await transport.markPlayed(entry)
         #expect(try await reader.value == Data(repeating: 7, count: 16))
+        let sharedMedia = URL(string: "http://127.0.0.1:\(port.rawValue)/shared-large.mp4")!
+        await cache.put(key: sharedMedia.absoluteString, start: 0, data: Data([7, 7]), total: 262144,
+            mime: "video/mp4", base: sharedMedia, owner: sharedMedia.absoluteString, prefetched: false, played: false)
+        let warmOwner = HMMediaItem(id: "warm-shared", url: sharedMedia), promoted = HMMediaItem(id: "current-shared", url: sharedMedia)
+        var receivedWarmPrefix = false, preemptions = 0
+        await transport.setEventHandler { event, _ in
+            if event.properties["reason"] == "current-shared-resource-preemption" { preemptions += 1 }
+        }
+        await transport.retainWindow([warmOwner, promoted])
+        transport.state.prune(keeping: [warmOwner, promoted])
+        await transport.prioritizePlayback(old, urgent: false)
+        let nativeOwner = Task {
+            var request = URLRequest(url: transport.url(for: warmOwner)!)
+            request.setValue("bytes=0-262143", forHTTPHeaderField: "Range")
+            let (bytes, _) = try await URLSession.shared.bytes(for: request)
+            var received = 0
+            for try await _ in bytes {
+                received += 1
+                if received == 16 { receivedWarmPrefix = true; try await Task.sleep(for: .seconds(60)) }
+            }
+        }
+        let parked = Date().addingTimeInterval(2)
+        while !receivedWarmPrefix, Date() < parked { await Task.yield() }
+        #expect(receivedWarmPrefix)
+        await transport.prioritizePlayback(promoted, urgent: true)
+        await transport.markPlayed(promoted)
+        var sharedRequest = URLRequest(url: transport.url(for: promoted)!)
+        sharedRequest.setValue("bytes=0-15", forHTTPHeaderField: "Range"); sharedRequest.timeoutInterval = 2
+        let (sharedBytes, _) = try await URLSession.shared.data(for: sharedRequest)
+        #expect(sharedBytes == Data(repeating: 7, count: 16))
+        #expect(preemptions == 1)
+        #expect(origin.requestCount(path: "/shared-large.mp4") == 1) // Current consumes the cancelled owner's received bytes.
+        nativeOwner.cancel()
+        _ = try? await nativeOwner.value
         for mode in [PrefixOrigin.Mode.shortRange, .ignoresRange] {
             let fixture = try PrefixOrigin(mode: mode)
             defer { fixture.listener.cancel() }
@@ -828,11 +920,16 @@ struct PlayerNativeReviewTests {
             let fixturePort = try #require(fixture.listener.port)
             try #require(fixturePort.rawValue != 0)
             let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/bounded.mp4")!
+            var headRequest = URLRequest(url: url); headRequest.httpMethod = "HEAD"
+            let headResult = try await HMHTTPFetcher(limit: 1).load(headRequest)
+            #expect(headResult.data.isEmpty && headResult.response.expectedContentLength == 32)
+
             let bounded = HMMediaItem(id: "bounded-\(fixturePort)", url: url)
             await cache.put(key: url.absoluteString, start: 31, data: Data([7]), total: 32,
                             mime: "video/mp4", base: url, owner: url.absoluteString, prefetched: false, played: true)
             transport.state.prune(keeping: [bounded])
             await transport.prioritizePlayback(bounded, urgent: true)
+            await transport.markPlayed(bounded)
             var request = URLRequest(url: transport.url(for: bounded)!)
             let count = mode == .shortRange ? 32 : 8
             request.setValue("bytes=0-\(count - 1)", forHTTPHeaderField: "Range")
@@ -840,27 +937,389 @@ struct PlayerNativeReviewTests {
             let (data, response) = try await URLSession.shared.data(for: request)
             #expect((response as? HTTPURLResponse)?.expectedContentLength == Int64(count))
             #expect(data == Data(repeating: 7, count: count))
+            if mode == .ignoresRange {
+                var directFallbacks = 0
+                await transport.setEventHandler { event, item in
+                    if item.id == bounded.id, event.properties["native_direct_fallback"] == "origin-range-unsupported" { directFallbacks += 1 }
+                }
+                // A missing suffix must request native direct fallback rather than
+                // repeat truncated 200 responses. The zero-start bounded read above
+                // remains reusable and is not treated as a terminal media failure.
+                var tail = URLRequest(url: transport.url(for: bounded)!)
+                tail.setValue("bytes=8-15", forHTTPHeaderField: "Range"); tail.timeoutInterval = 3
+                _ = try? await URLSession.shared.data(for: tail)
+                let deliveredDeadline = Date().addingTimeInterval(1)
+                while directFallbacks == 0, Date() < deliveredDeadline { await Task.yield() }
+                #expect(directFallbacks == 1)
+            }
+        }
+        // The origin withholds its tail until contention is observed. This is
+        // a real streaming native owner, not a parked task or a timing assumption.
+        let healthy = try PrefixOrigin(mode: .gatedRange)
+        defer { healthy.listener.cancel() }
+        let healthyReady = Date().addingTimeInterval(2)
+        while (healthy.listener.port?.rawValue ?? 0) == 0, Date() < healthyReady { await Task.yield() }
+        let healthyPort = try #require(healthy.listener.port)
+        let healthyURL = URL(string: "http://127.0.0.1:\(healthyPort.rawValue)/healthy.mp4")!
+        let same = HMMediaItem(id: "healthy-next", url: healthyURL, format: .mp4)
+        await transport.updateConfiguration(.default)
+        await transport.retainWindow([old, same]); transport.state.prune(keeping: [old, same])
+        await transport.prioritizePlayback(old, urgent: true, admitting: same)
+        var firstBytes = false, healthyPreemptions = 0, healthyCompleted = false, joins = 0
+        await transport.setEventHandler { event, item in
+            guard item.id == same.id else { return }
+            if event.properties["reason"] == "prefix-shared-resource-preemption" { healthyPreemptions += 1 }
+            if event.properties["prefetch_work"] == "completed" { healthyCompleted = true }
+            joins += Int(event.metrics["prefetch_join"] ?? 0)
+        }
+        let healthyReader = Task {
+            let (bytes, _) = try await URLSession.shared.bytes(from: transport.url(for: same)!)
+            var data = Data()
+            for try await byte in bytes { data.append(byte); if data.count == 4 { firstBytes = true } }
+            return data
+        }
+        let streaming = Date().addingTimeInterval(2)
+        while !firstBytes, Date() < streaming { await Task.yield() }
+        try #require(firstBytes)
+        let healthyPlan = HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "healthy coalescing acceptance")
+        for cancel in [true, false] {
+            healthyCompleted = false
+            await transport.prefetch([same], keeping: [old, same], plan: healthyPlan)
+            let joined = Date().addingTimeInterval(2)
+            while await transport.joinedPlaybackRequestCount == 0, Date() < joined { await Task.yield() }
+            #expect(await transport.joinedPlaybackRequestCount == 1)
+            if cancel {
+                await transport.cancelPrefetch()
+                let drained = Date().addingTimeInterval(2)
+                while await transport.joinedPlaybackRequestCount > 0, Date() < drained { await Task.yield() }
+                #expect(await transport.joinedPlaybackRequestCount == 0)
+            }
+        }
+        healthy.releaseResponses()
+        #expect(try await healthyReader.value == Data(repeating: 7, count: 32))
+        let coalesced = Date().addingTimeInterval(3)
+        while !healthyCompleted, Date() < coalesced { await Task.yield() }
+        #expect(healthyCompleted && joins >= 2 && healthyPreemptions == 0)
+        #expect(healthy.requestCount(path: "/healthy.mp4") == 1)
+        print("Transport healthy: joins=\(joins) prefix_preemptions=\(healthyPreemptions) origin_GETs=\(healthy.requestCount(path: "/healthy.mp4")) retained_bytes=32")
+        #expect(await cache.available(key: healthyURL.absoluteString, start: 0, count: 32)?.data == Data(repeating: 7, count: 32))
+        // A real TCP client advertises a tiny receive window and stops reading.
+        // Its sustained send wait must retire safely, retaining the pending chunk
+        // without attributing that chunk as successfully delivered to playback.
+        let backpressured = try PrefixOrigin(mode: .bulk)
+        defer { backpressured.listener.cancel() }
+        let bulkReady = Date().addingTimeInterval(2)
+        while (backpressured.listener.port?.rawValue ?? 0) == 0, Date() < bulkReady { await Task.yield() }
+        let bulkPort = try #require(backpressured.listener.port)
+        let bulkURL = URL(string: "http://127.0.0.1:\(bulkPort.rawValue)/bulk.mp4")!
+        let bulkTotal = 8 * 1024 * 1024
+        let bulkWarm = HMMediaItem(id: "blocked-client", url: bulkURL, format: .mp4)
+        let bulkPrefix = HMMediaItem(id: "blocked-client-prefix", url: bulkURL, format: .mp4)
+        await transport.retainWindow([old, bulkWarm, bulkPrefix]); transport.state.prune(keeping: [old, bulkWarm, bulkPrefix])
+        await transport.prioritizePlayback(old, urgent: false)
+        await cache.put(key: bulkURL.absoluteString, start: bulkTotal - 1, data: Data([7]), total: bulkTotal,
+                        mime: "video/mp4", base: bulkURL, owner: bulkURL.absoluteString, prefetched: false, played: false)
+        let bulkProxy = try #require(transport.url(for: bulkWarm))
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        try #require(socket >= 0)
+        defer { Darwin.close(socket) }
+        var receiveBuffer: Int32 = 1024
+        #expect(setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &receiveBuffer, socklen_t(MemoryLayout.size(ofValue: receiveBuffer))) == 0)
+        var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET); address.sin_port = UInt16(bulkProxy.port!).bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        try #require(connected == 0)
+        var blockedPreemptions = 0, bulkComplete = false, nativeReceived = 0
+        await transport.setEventHandler { event, item in
+            if item.id == bulkWarm.id {
+                if event.properties["reason"] == "prefix-shared-resource-preemption" {
+                    blockedPreemptions += 1; backpressured.holdBulkResponses()
+                }
+                nativeReceived += Int(event.metrics["network_bytes"] ?? 0)
+            }
+            if item.id == bulkPrefix.id, event.properties["prefetch_work"] == "completed" { bulkComplete = true }
+        }
+        let nativeRequest = Data("GET \(bulkProxy.path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".utf8)
+        #expect(nativeRequest.withUnsafeBytes { Darwin.send(socket, $0.baseAddress, $0.count, 0) } == nativeRequest.count)
+        let clientBlocked = Date().addingTimeInterval(4)
+        while await transport.parkedNativeRequestCount == 0, Date() < clientBlocked { await Task.yield() }
+        try #require(await transport.parkedNativeRequestCount > 0)
+        await transport.prefetch([bulkPrefix], keeping: [old, bulkWarm, bulkPrefix], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: bulkTotal, secondsPerItem: 4, reason: "client backpressure acceptance"))
+        let blocked = Date().addingTimeInterval(4)
+        while !backpressured.hasHeldResponse, Date() < blocked { await Task.yield() }
+        #expect(blockedPreemptions == 1 && nativeReceived > 0 && backpressured.hasHeldResponse)
+        var retained = Data()
+        while let hit = await cache.available(key: bulkURL.absoluteString, start: retained.count, count: bulkTotal - retained.count) {
+            retained.append(hit.data)
+            if retained.count >= bulkTotal { break }
+        }
+        #expect(retained == Data(repeating: 7, count: nativeReceived))
+        #expect(backpressured.lastRangeStart(path: "/bulk.mp4") == retained.count)
+        backpressured.releaseResponses()
+        let bulkFinished = Date().addingTimeInterval(3)
+        while !bulkComplete, Date() < bulkFinished { await Task.yield() }
+        #expect(bulkComplete && blockedPreemptions == 1)
+        var allRetained = Data()
+        while allRetained.count < bulkTotal,
+              let hit = await cache.available(key: bulkURL.absoluteString, start: allRetained.count, count: bulkTotal - allRetained.count) {
+            allRetained.append(hit.data)
+        }
+        #expect(allRetained == Data(repeating: 7, count: bulkTotal))
+        print("Transport backpressure: prefix_preemptions=\(blockedPreemptions) native_received=\(nativeReceived) retained_before_suffix=\(retained.count) final_retained=\(allRetained.count) origin_GETs=\(backpressured.requestCount(path: "/bulk.mp4"))")
+        // A warm native reader parked for budget or activation must not monopolize
+        // the serial prefix slot for a distinct entry sharing its exact URL.
+        for (mode, knownTotal, cap, sameID) in [(PrefixOrigin.Mode.shortRange, true, 8, false), (.shortRange, true, 8, true), (.oversized200, false, 1024, false), (.oversized200, true, 1024, false), (.gatedOversized200, false, 1024, false), (.gatedOversized200, false, 1024, true)] {
+            let fixture = try PrefixOrigin(mode: mode)
+            defer { fixture.listener.cancel() }
+            let ready = Date().addingTimeInterval(2)
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { await Task.yield() }
+            let fixturePort = try #require(fixture.listener.port)
+            let lateParking = mode == .gatedOversized200
+            let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/\(lateParking ? "part.ts" : "parked.mp4")")!
+            let root = lateParking ? url.deletingLastPathComponent().appendingPathComponent("master.m3u8") : url
+            let warm = HMMediaItem(id: "parked-native", url: root, format: lateParking ? .hls : .mp4)
+            let alias = sameID ? warm : HMMediaItem(id: "distinct-prefix", url: root, format: lateParking ? .hls : .mp4)
+            let farther = HMMediaItem(id: "eligible-farther", url: url.deletingLastPathComponent().appendingPathComponent("farther.mp4"), format: .mp4)
+            var config = HMPlayerConfiguration.default; config.prefetch.bytesPerItem = cap
+            await transport.updateConfiguration(config)
+            if knownTotal {
+                let total = mode == .shortRange ? 32 : 2048
+                await cache.put(key: url.absoluteString, start: total - 1, data: Data([7]), total: total, mime: "video/mp4", base: url, owner: url.absoluteString, prefetched: false, played: false)
+            }
+            await transport.retainWindow([old, warm, alias, farther])
+            transport.state.prune(keeping: [old, warm, alias, farther])
+            await transport.prioritizePlayback(old, urgent: false)
+            if lateParking {
+                // Real native HLS children follow a cached manifest. Prime it so
+                // same-entry discovery does not need an unrelated reservation.
+                _ = try await URLSession.shared.data(from: transport.url(for: warm)!)
+            }
+            // One explicit TCP request, with receipts. URLSession may retry a GET
+            // disconnected before headers; those are new native owners, not repeat
+            // retirements of the same connection. Keep exactly-one retirement strict.
+            var prefixPreemptions = 0, completed: Set<String> = [], acceptedBytes: [String: Int] = [:]
+            await transport.setEventHandler { event, item in
+                if event.properties["reason"] == "prefix-shared-resource-preemption" { prefixPreemptions += 1 }
+                if event.properties["prefetch_work"] == "completed" { completed.insert(item.id) }
+                acceptedBytes[item.id, default: 0] += Int(event.metrics["prefetch_bytes"] ?? 0)
+            }
+            let native = NativeRequestReceipt(url: transport.state.url(url, item: warm))
+            let plan = HMPrefetchPlan(itemsAhead: 2, bytesPerItem: cap, secondsPerItem: 4, reason: "parked owner acceptance")
+            if lateParking {
+                let started = Date().addingTimeInterval(2)
+                while fixture.requestCount(path: "/part.ts") == 0, Date() < started { await Task.yield() }
+                #expect(fixture.requestCount(path: "/part.ts") == 1)
+                await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
+                let joined = Date().addingTimeInterval(2)
+                while await transport.joinedPlaybackRequestCount == 0, Date() < joined { await Task.yield() }
+                #expect(await transport.joinedPlaybackRequestCount > 0)
+                // A cancelled metadata waiter must not leave a preemption trigger.
+                await transport.cancelPrefetch()
+                let drained = Date().addingTimeInterval(2)
+                while await transport.joinedPlaybackRequestCount > 0, Date() < drained { await Task.yield() }
+                #expect(await transport.joinedPlaybackRequestCount == 0 && prefixPreemptions == 0)
+                completed.removeAll()
+                await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
+                let rejoined = Date().addingTimeInterval(2)
+                while await transport.joinedPlaybackRequestCount == 0, Date() < rejoined { await Task.yield() }
+                #expect(await transport.joinedPlaybackRequestCount > 0 && prefixPreemptions == 0)
+                fixture.releaseResponses() // Now the native header callback parks.
+            } else {
+                let parked = Date().addingTimeInterval(2)
+                while await transport.parkedNativeRequestCount == 0, Date() < parked { await Task.yield() }
+                #expect(await transport.parkedNativeRequestCount > 0)
+                await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
+            }
+            let finished = Date().addingTimeInterval(4)
+            while !completed.contains(farther.id), Date() < finished { await Task.yield() }
+            #expect(prefixPreemptions == 1 && completed.contains(alias.id) && completed.contains(farther.id))
+            #expect(fixture.requestCount(path: "/farther.mp4") > 0)
+            print("Transport parked: mode=\(mode) known_total=\(knownTotal) same_ID=\(sameID) prefix_preemptions=\(prefixPreemptions) farther_GETs=\(fixture.requestCount(path: "/farther.mp4"))")
+            let retired = Date().addingTimeInterval(2)
+            while !native.finished, Date() < retired { await Task.yield() }
+            #expect(native.sentRequests == 1 && native.finished)
+            #expect(acceptedBytes[warm.id, default: 0] <= cap && acceptedBytes[alias.id, default: 0] <= cap)
+            print("Transport native receipts: \(native.receipts) accepted_bytes=\(acceptedBytes)")
+            native.connection.cancel()
+        }
+        // GET-only origins must produce an explicit complete prefix, not just native fallback.
+        for mode in [PrefixOrigin.Mode.head403, .head405, .unknownLength, .oversized200] {
+            let fixture = try PrefixOrigin(mode: mode)
+            defer { fixture.listener.cancel() }
+            let ready = Date().addingTimeInterval(2)
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { await Task.yield() }
+            let fixturePort = try #require(fixture.listener.port)
+            let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/master.m3u8")!
+            let next = HMMediaItem(id: "get-only-\(fixturePort)", url: url, format: .hls)
+            var config = HMPlayerConfiguration.default; config.prefetch.bytesPerItem = 1024
+            await transport.updateConfiguration(config)
+            await transport.prioritizePlayback(old, urgent: true, admitting: next)
+            var met: Bool?, payload = 0.0
+            await transport.setEventHandler { event, item in
+                guard item.id == next.id else { return }
+                payload += event.metrics["prefetch_bytes"] ?? 0
+                if let value = event.metrics["prefetch_target_met"] { met = value == 1 }
+            }
+            await transport.prefetch([next], keeping: [old, next], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "GET-only acceptance"))
+            let done = Date().addingTimeInterval(4)
+            while met == nil, Date() < done { await Task.yield() }
+            #expect(met == (mode != .oversized200))
+            #expect(payload <= 1024)
+            if mode != .oversized200 {
+                // One cached metadata byte plus the missing suffix, never two full downloads.
+                #expect(fixture.requestCount(path: "/part.ts") == 2)
+                #expect(payload == Double(PrefixOrigin.manifest.utf8.count + 32))
+            } else { #expect(payload == Double(PrefixOrigin.manifest.utf8.count)) }
         }
         _ = await transport.finish()
+        #expect(await transport.heldPlaybackRequestCount == 0)
+        #expect(await transport.joinedPlaybackRequestCount == 0)
+        #expect(await transport.parkedNativeRequestCount == 0)
+    }
+
+    /// No automatic retry, one send and explicit per-connection receive/EOF receipts.
+    final class NativeRequestReceipt: @unchecked Sendable {
+        let connection: NWConnection
+        private let lock = NSLock()
+        private var events: [String] = []
+        private var sends = 0
+        private var ended = false
+        var sentRequests: Int { lock.lock(); defer { lock.unlock() }; return sends }
+        var finished: Bool { lock.lock(); defer { lock.unlock() }; return ended }
+        var receipts: [String] { lock.lock(); defer { lock.unlock() }; return events }
+        private func record(_ event: String, sent: Bool = false, end: Bool = false) {
+            lock.lock(); events.append(event); if sent { sends += 1 }; if end { ended = true }; lock.unlock()
+        }
+        init(url: URL) {
+            connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(url.port!))!, using: .tcp)
+            let request = Data("GET \(url.path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".utf8)
+            let attempt = UUID().uuidString
+            connection.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    self.record("\(attempt):send", sent: true)
+                    self.connection.send(content: request, completion: .contentProcessed { [weak self] error in
+                        if let error { self?.record("\(attempt):send-error \(error)", end: true) }
+                    })
+                    self.receive(attempt)
+                case .failed(let error): self.record("\(attempt):failed \(error)", end: true)
+                default: break
+                }
+            }
+            connection.start(queue: .global())
+        }
+        private func receive(_ attempt: String) {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] bytes, _, complete, error in
+                guard let self else { return }
+                self.record("\(attempt):received=\(bytes?.count ?? 0) eof=\(complete) error=\(String(describing: error))", end: complete || error != nil)
+                if !complete && error == nil { self.receive(attempt) }
+            }
+        }
     }
 
     /// Deliberately never completes its range. A full-buffer proxy cannot pass.
     final class PrefixOrigin: @unchecked Sendable {
-        enum Mode: Sendable { case hanging, shortRange, ignoresRange }
+        enum Mode: Sendable { case hanging, shortRange, ignoresRange, head403, head405, unknownLength, oversized200, gatedRange, gatedOversized200, bulk }
+        static let manifest = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\npart.ts\n#EXT-X-ENDLIST\n"
         let listener: NWListener
+        private let requestLock = NSLock()
+        private var requests: [String: Int] = [:]
+        private var rangeStarts: [String: Int] = [:]
+        func lastRangeStart(path: String) -> Int? { requestLock.lock(); defer { requestLock.unlock() }; return rangeStarts[path] }
+        private var heldResponses: [@Sendable () -> Void] = []
+        private var released = false
+        private var holdBulk = false
+        var hasHeldResponse: Bool { requestLock.lock(); defer { requestLock.unlock() }; return !heldResponses.isEmpty }
+        func holdBulkResponses() { requestLock.lock(); holdBulk = true; requestLock.unlock() }
+        private var shouldHoldBulk: Bool { requestLock.lock(); defer { requestLock.unlock() }; return holdBulk }
+        func releaseResponses() {
+            requestLock.lock(); released = true; let responses = heldResponses; heldResponses.removeAll(); requestLock.unlock()
+            for response in responses { response() }
+        }
+        private func hold(_ response: @escaping @Sendable () -> Void) {
+            requestLock.lock()
+            if released { requestLock.unlock(); response() }
+            else { heldResponses.append(response); requestLock.unlock() }
+        }
+        func requestCount(path: String) -> Int { requestLock.lock(); defer { requestLock.unlock() }; return requests[path, default: 0] }
+        private func record(_ request: String) {
+            guard request.hasPrefix("GET "), let path = request.split(separator: " ").dropFirst().first else { return }
+            let range = request.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
+            let start = range?.dropFirst(6).trimmingCharacters(in: .whitespaces).dropFirst(6).split(separator: "-").first.flatMap { Int($0) } ?? 0
+            requestLock.lock(); requests[String(path), default: 0] += 1; rangeStarts[String(path)] = start; requestLock.unlock()
+        }
         init(mode: Mode = .hanging) throws {
             listener = try NWListener(using: .tcp, on: .any)
-            listener.newConnectionHandler = { connection in
+            listener.newConnectionHandler = { [weak self] connection in
+                let attempt = UUID().uuidString
+                print("Origin receipt: mode=\(mode) attempt=\(attempt) accepted")
+                connection.stateUpdateHandler = { state in
+                    if case .cancelled = state { print("Origin receipt: mode=\(mode) attempt=\(attempt) closed") }
+                    if case .failed(let error) = state { print("Origin receipt: mode=\(mode) attempt=\(attempt) failed=\(error)") }
+                }
                 connection.start(queue: .global())
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { request, _, _, _ in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] request, _, _, _ in
+                    let received = String(decoding: request ?? Data(), as: UTF8.self)
+                    print("Origin receipt: mode=\(mode) attempt=\(attempt) request=\(received.replacingOccurrences(of: "\r\n", with: " | "))")
+                    self?.record(received)
                     if mode != .hanging {
                         let text = String(decoding: request ?? Data(), as: UTF8.self)
+                        if [.head403, .head405, .unknownLength, .oversized200, .gatedOversized200].contains(mode) {
+                            let path = String(text.split(separator: " ").dropFirst().first ?? "")
+                            let body = path.hasSuffix(".m3u8") ? Data(Self.manifest.utf8) : Data(repeating: 7, count: [.oversized200, .gatedOversized200].contains(mode) && !path.contains("farther") ? 2048 : 32)
+                            let isHead = text.hasPrefix("HEAD ")
+                            if isHead {
+                                let status = mode == .head403 ? 403 : mode == .unknownLength ? 200 : 405
+                                let head = "HTTP/1.1 \(status) Metadata\r\nConnection: close\r\n\r\n"
+                                connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() }); return
+                            }
+                            let header = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
+                            let range = HMByteRange.parse(header.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }, total: body.count)!
+                            let ignored = [.oversized200, .gatedOversized200].contains(mode) && !path.hasSuffix(".m3u8") && !path.contains("farther")
+                            let data = ignored ? body : body.subdata(in: range.start..<(range.end + 1))
+                            let contentRange = ignored ? "" : "Content-Range: bytes \(range.start)-\(range.end)/\(body.count)\r\n"
+                            let length = mode == .unknownLength ? "Transfer-Encoding: chunked\r\n" : "Content-Length: \(data.count)\r\n"
+                            let head = "HTTP/1.1 \(ignored ? 200 : 206) OK\r\n\(length)\(contentRange)Connection: close\r\n\r\n"
+                            var packet = Data(head.utf8)
+                            if mode == .unknownLength {
+                                packet.append(Data("\(String(data.count, radix: 16))\r\n".utf8)); packet.append(data); packet.append(Data("\r\n0\r\n\r\n".utf8))
+                            } else { packet.append(data) }
+                            let response = packet
+                            let send: @Sendable () -> Void = { connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() }) }
+                            if mode == .gatedOversized200 && path.hasSuffix("part.ts") { self?.hold(send) } else { send() }
+                            return
+                        }
+                        if mode == .bulk {
+                            let header = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
+                            let range = HMByteRange.parse(header.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }, total: 8388608)!
+                            let head = "HTTP/1.1 206 OK\r\nContent-Type: video/mp4\r\nContent-Range: bytes \(range.start)-\(range.end)/8388608\r\nContent-Length: \(range.count)\r\nConnection: close\r\n\r\n"
+                            var packet = Data(head.utf8); packet.append(Data(repeating: 7, count: range.count))
+                            let response = packet
+                            let send: @Sendable () -> Void = { connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() }) }
+                            if self?.shouldHoldBulk == true { self?.hold(send) } else { send() }
+                            return
+                        }
+                        if text.hasPrefix("HEAD ") {
+                            let head = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 32\r\nConnection: close\r\n\r\n"
+                            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() }); return
+                        }
                         let header = text.components(separatedBy: "\r\n").first { $0.lowercased().hasPrefix("range:") }
                         let range = HMByteRange.parse(header.map { String($0.dropFirst(6)).trimmingCharacters(in: .whitespaces) }, total: 32)!
-                        let count = mode == .shortRange ? min(4, range.count) : 32
-                        let status = mode == .shortRange ? "206 Partial Content" : "200 OK"
-                        let contentRange = mode == .shortRange ? "Content-Range: bytes \(range.start)-\(range.start + count - 1)/32\r\n" : ""
+                        let count = mode == .shortRange ? min(4, range.count) : mode == .gatedRange ? range.count : 32
+                        let status = mode == .ignoresRange ? "200 OK" : "206 Partial Content"
+                        let contentRange = mode != .ignoresRange ? "Content-Range: bytes \(range.start)-\(range.start + count - 1)/32\r\n" : ""
                         let head = "HTTP/1.1 \(status)\r\nContent-Type: video/mp4\r\n\(contentRange)Content-Length: \(count)\r\nConnection: close\r\n\r\n"
+                        if mode == .gatedRange {
+                            var prefix = Data(head.utf8); prefix.append(Data(repeating: 7, count: 4))
+                            connection.send(content: prefix, completion: .contentProcessed { [weak self] _ in
+                                self?.hold { connection.send(content: Data(repeating: 7, count: count - 4), completion: .contentProcessed { _ in connection.cancel() }) }
+                            })
+                            return
+                        }
                         var packet = Data(head.utf8); packet.append(Data(repeating: 7, count: count))
                         connection.send(content: packet, completion: .contentProcessed { _ in connection.cancel() })
                         return

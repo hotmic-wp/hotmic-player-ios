@@ -36,6 +36,13 @@ struct Player031Tests {
     }
     @Test("Resolution invalidates the initially node-less cell and activates once with the action clock", arguments: [HMMediaItem.Format.hls, .mp4])
     func activationAfterResolution(format: HMMediaItem.Format) async throws {
+        #expect(HMPlayerNode.grantsSeekCatchupGrace(hasPlayableBuffer: true, elapsed: 0.0068))
+        #expect(!HMPlayerNode.grantsSeekCatchupGrace(hasPlayableBuffer: true, elapsed: 0.151))
+        #expect(!HMPlayerNode.grantsSeekCatchupGrace(hasPlayableBuffer: false, elapsed: 0))
+        let defaults = HMPlayer()
+        #expect(defaults.configuration.prefetch == HMPlayerConfiguration.default.prefetch && !defaults.configuration.adaptive)
+        #expect(defaults.pool.nodes.count == 2)
+        defaults.teardown()
         for mode in ["selection", "swipe", "programmatic"] {
             let resolver = GatedResolver(), sink = Sink(), hub = HMAnalyticsHub(); hub.add(sink)
             var c = HMPlayerConfiguration(poolSize: 1, prefetch: .off, managesAudioSession: false, failedItemPolicy: .stay)

@@ -26,7 +26,7 @@ import HotMicPlayerUI
             .hmTheme(.default)
             .task { guard player.items.isEmpty else { return }; player.replaceAll(items) }
             .onAppear { player.isFeedVisible = true }
-            .onDisappear { player.isFeedVisible = false }
+            .onDisappear { if !player.isFullscreen { player.isFeedVisible = false } }
     }
 }
 ```
@@ -53,4 +53,4 @@ Share is hidden until a handler exists. Use `contentInsets` for extra host chrom
 
 Use the overlay closure to combine your controls with individual components, or implement `HMEngagementLayout.init(context:)` to create a reusable arrangement. `HMEngagementContext` includes the player, item, snapshot, engagement, and current-cell status. Only seek or start animations while the cell is current. Custom gestures that should defer failure skips must call the player's `beginInteraction()` and `endInteraction()`.
 
-For URL installation, playlist edits, event subscriptions and configuration, use the [player guides](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sources/HotMicPlayer/HotMicPlayer.docc). The [full Sample](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sample) adds labs and benchmark controls; its mock source requires Benchmark SPI and is not needed in partner apps.
+For URL installation, playlist edits, event subscriptions and configuration, use the [player guides](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sources/HotMicPlayer/HotMicPlayer.docc). The [full Sample](https://github.com/hotmic-wp/hotmic-player-ios/tree/main/Sample) adds public-only partner, horizontal and playlist examples. Native UI regression diagnostics are isolated in DEBUG test support.

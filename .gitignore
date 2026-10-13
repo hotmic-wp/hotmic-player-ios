@@ -7,8 +7,8 @@ xcuserdata/
 Package.resolved
 .context/
 .bench/
-bench/generated/
-bench/results/
 __pycache__/
 *.pyc
 Sample/LocalMedia/
+# Retain ignored historical local lab output after tooling extraction.
+bench/

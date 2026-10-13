@@ -18,7 +18,11 @@ build_app() {
     -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" \
     ARCHS=arm64 ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}"
 }
+run_step sample-public-imports 10 python3 .github/scripts/check-public-imports.py
 run_step Sample-simulator "$budget_sample" build_app Sample/HotMicPlayerDemo.xcodeproj HotMicPlayerDemo
+run_step Regression-build 180 xcodebuild build-for-testing -project Sample/HotMicPlayerDemo.xcodeproj -scheme HotMicPlayerRegression \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" -only-testing:HotMicPlayerDemoUITests \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}"
 run_step PlayerOnly-simulator "$budget_example" build_app Examples/PlayerOnly/PlayerOnly.xcodeproj PlayerOnly
 run_step PlayerWithUI-simulator "$budget_example" build_app Examples/PlayerWithUI/PlayerWithUI.xcodeproj PlayerWithUI
 run_step ReadyMadeOverlay-simulator "$budget_example" build_app Examples/ReadyMadeOverlay/ReadyMadeOverlay.xcodeproj ReadyMadeOverlay

@@ -1,15 +1,14 @@
 # Measured adaptive prefetch
 
-`HMPlayerConfiguration.adaptive` defaults to `true`. `prefetch.ahead`, `behind`,
+`HMPlayerConfiguration.adaptive` defaults to `false`; this article describes explicit opt-in adaptation. `prefetch.ahead`, `behind`,
 `bytesPerItem`, optional `secondsPerItem`, `cacheCapacityBytes`, `poolSize`,
 `maxPrefetchConcurrency` and startup/steady bitrate ceilings are app limits.
-The policy only reduces them. Set `adaptive: false` to use fixed budgets and the
-existing buffer threshold/hysteresis; custom providers are bypassed in fixed mode.
+The policy only reduces them. Fixed mode uses independent immediate-next bootstrap and fixed budgets; custom providers are bypassed.
 Zero bitrate means uncapped; zero cache capacity prevents explicit disk prefetch.
 
 ```swift
 var configuration = HMPlayerConfiguration(adaptive: true)
-configuration.prefetch = HMPrefetchPolicy(ahead: 5, behind: 1, bytesPerItem: 800_000)
+configuration.prefetch = HMPrefetchPolicy(ahead: 3, behind: 1, bytesPerItem: 8 * 1024 * 1024, secondsPerItem: 4)
 let player = HMPlayer(configuration: configuration)
 // Optional: player.prefetchPolicy = PartnerPrefetchPolicy()
 ```
@@ -69,7 +68,7 @@ include adaptive mode, every threshold, resolution horizon and concurrency cap.
 
 ## Default thresholds and benchmark knobs
 
-All thresholds are mutable on `configuration.adaptiveThresholds` under `@_spi(Benchmark) import HotMicPlayer`. They are experimental tuning, excluded from partner API. Grid knobs use
+All thresholds are mutable on `configuration.adaptiveThresholds` under `@_spi(Benchmark) import HotMicPlayer`. They are experimental tuning, excluded from partner API. External lab parameters may use
 numeric values, including `adaptive: 0`/`1`, `prefetch-concurrency` (0–4), and
 `resolve-ahead` (0–32), and `cached-start-bytes` (tier-2 readiness floor). Direct arguments/environment use the same names:
 `--hm-adaptive 0`, `HM_ADAPTIVE=0`. Existing knobs still override strategy presets.
@@ -126,38 +125,15 @@ The cache remains immutable VOD; existing advanced-HLS/auth/DRM/live limitations
 apply. Simulator shaping is shared origin payload pacing, not radio/TLS/netem.
 Validate threshold changes against a physical-device benchmark grid.
 
-See [benchmark setup](BENCHMARKING.md) for reproducible simulator checks and
+See [performance interpretation](BENCHMARKING.md) and the [public regression harness](../Sample/TestSupportTools/README.md) for reproducible simulator checks and
 physical-device measurement workflows.
 
-## Device performance round 1: playback priority
+## Playback priority and independent fixed bootstrap
 
-Until the active item displays its first frame, and during a stall, explicit
-prefix transfers are cancelled and other native requests are held before origin
-work and at streaming boundaries. This also gates requests arriving after the
-urgency transition, without closing their proxy connections or forcing a direct
-fallback. Holds, resumptions, connection closes (with reason) and node fallbacks
-are logged for device verification. The active request
-never waits for a speculative prefix. A known resource size (including a two-byte
-AVPlayer probe) no longer changes a missing range into a fully buffered 512 KiB
-response: cached bytes are sent first, then the missing suffix streams as it
-arrives. Short 206 replies continue with the remaining range; the stream's byte
-limit prevents a range-ignoring origin from overrunning the downstream response.
-This applies to MP4, HLS init resources and HLS segments alike.
+The fixed default admits a bounded immediate-next head during initial/unknown-dwell startup, before current's first frame. Current reads lead; next is admitted, then farther work progresses serially. A true rebuffer after moving playback parks speculation until recovery. A changed next entry takes the next bounded chunk slot. Surviving tasks retain their tokens and cached progress while parked; outside-window work is cancelled. Shared native/prefix resource reads coalesce in both directions. A current read preempts a warm native owner of that same resource URL and reuses received bytes, preventing a parked-owner deadlock.
 
-Slow-link speculation is limited to +1 and a 128 KiB head, including binge misses.
-The starting bitrate is applied before the native item is attached, so the first
-HLS selection uses the same cap as the warm path; the master remains intact for
-later ABR. A ceiling is advisory to AVPlayer, not a bandwidth guarantee.
+Adaptive opt-in keeps its measured-dwell next-head admission and buffer safety, which differ deliberately from fixed bootstrap. On a slower measured tier, the native next player waits for its explicit head; at a fast tier it may join a head only once it is actually running. Issued/queued/running state is distinct, including the interval before actor commands execute. Prefetch rendition selection is a heuristic under AVPlayer's desired bandwidth preference, not an exact lock.
 
-The nearest warm decoder can start as soon as the current frame has displayed
-and one second is buffered on an unmeasured/healthy link, before bulk-prefix
-recovery. Its native buffer target is one second, bounded by the app warm-buffer
-limit. A prepared next decoder is retained down to 0.25 s of active buffer rather
-than oscillating at the one-second start threshold; stalls and slow links disable
-this early warming. S2 is exempt from startup urgency. Explicit prefetch excludes
-warm-player items and waits only for N+1's frame, for at most two seconds; failed
-items do not hold the gate. A fresh previous decoder also waits behind N+1, so it
-cannot compete with next-item preroll. A prerolled
-activation keeps that target until the startup window ends, avoiding an immediate
-1-to-10-second target jump. viewStart records warm-start time and preroll completion.
-With three S3 players the window is next/current/previous; four also prepares +2.
+The two content players alternate current/next; previous retains bytes without a decoder. Warm-native and explicit speculative payload share the per-entry cap in loopback. Activated playback is separate and can buffer beyond its requested duration. A range-less warm response can wait until activation; unsupported explicit HEAD/ranges yield no prefix and report failure/outcome rather than blocking native activation. Whole HLS audio/video/init resources, manifest payload and duration-target outcomes are covered by the planner. The root README inventories historical device/simulator evidence and pending matched device comparisons.
+
+Gesture activation defaults to known final target at lift, with settled fallback for missing/stale/fractional targets. No velocity prediction is used. `activationTrigger = .settle` deliberately waits for settling. Gesture clocks and mismatch diagnostics are Benchmark SPI telemetry; simulator coverage does not establish physical-device lift savings.

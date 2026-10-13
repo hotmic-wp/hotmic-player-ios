@@ -1,5 +1,5 @@
 import SwiftUI
-@_spi(Benchmark) import HotMicPlayer
+import HotMicPlayer
 
 /// The single panel behind the one toolbar button.
 ///
@@ -17,7 +17,7 @@ struct DemoPanelView: View {
 
     @Bindable var settings: DemoSettings
     let console: HMConsoleSink
-    let muxBridge: HMLoggingMuxBridge
+    let muxBridge: DemoMuxBridge
     let onDismiss: () -> Void
 
     @State private var tab: Tab = .player
@@ -63,7 +63,7 @@ extension View {
         isPresented: Binding<Bool>,
         settings: DemoSettings,
         console: HMConsoleSink,
-        muxBridge: HMLoggingMuxBridge
+        muxBridge: DemoMuxBridge
     ) -> some View {
         sheet(isPresented: isPresented) {
             DemoPanelView(settings: settings, console: console, muxBridge: muxBridge) {

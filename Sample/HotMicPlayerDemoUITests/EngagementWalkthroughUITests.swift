@@ -6,8 +6,7 @@ import XCTest
 /// regression test: it skips unless a directory is supplied.
 ///
 /// `HM_WALK_MODE`: `main` (default) walks every flow; `light` and `xl` capture
-/// the poll in light mode and at Dynamic Type XL. `HM_FEED_HLS_ORIGIN` mixes the
-/// HLS rendition into the feed as item two.
+/// the poll in light mode and at Dynamic Type XL. `scrub` uses generated offline media.
 final class EngagementWalkthroughUITests: XCTestCase {
 
     private var directory: URL!
@@ -28,7 +27,6 @@ final class EngagementWalkthroughUITests: XCTestCase {
         guard mode != "scrub" else { throw XCTSkip("scrub mode runs testScrubCancellation") }
         app = XCUIApplication()
         app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0"]
-        if let origin = env["HM_FEED_HLS_ORIGIN"] { app.launchArguments += ["--hm-feed-hls-origin", origin] }
         if mode.hasPrefix("moderation") { app.launchArguments += ["--hm-moderation", "1"] }
         if mode == "moderation-eviction" { app.launchArguments += ["--hm-moderation-eviction", "1"] }
         if mode == "light" { app.launchArguments += ["--hm-appearance", "light"] }
@@ -181,13 +179,15 @@ final class EngagementWalkthroughUITests: XCTestCase {
     }
 
     /// Scrub cancellation: a drag on the scrubber that turns into a page swipe, a drag that returns
-    /// and completes, and a press interrupted by backgrounding (the host opens Settings when
+    /// and completes, and a press interrupted by backgrounding (the public driver opens Settings when
     /// `scrub-hold.signal` appears). After each, the player must not be left interacting and the
     /// rail must be back at rest. Runs with `HM_WALK_MODE=scrub`.
     func testScrubCancellation() throws {
         guard ProcessInfo.processInfo.environment["HM_WALK_MODE"] == "scrub" else { throw XCTSkip("HM_WALK_MODE=scrub") }
         app = XCUIApplication()
-        app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0", "--hm-probe", "1"]
+        app.launchArguments = ["--hm-open-feed", "0", "--hm-hud", "0", "--hm-probe", "1",
+                               "--hm-public-fixtures", "1", "--hm-probe-receipts", "1"]
+        XCTAssertTrue(waitForReceipt("scrub-driver-ready"), "Start TestSupportTools/drive-scrub.py with this shot directory")
         app.launch()
         let state = app.staticTexts["interaction-state"]
         let scrubber = app.otherElements["Playback position"].firstMatch
@@ -197,6 +197,8 @@ final class EngagementWalkthroughUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1)
         let restingMarkerY = moment.frame.midY
         XCTAssertEqual(state.label, "idle")
+        let identity = app.staticTexts["regression-status"]
+        XCTAssertTrue(identity.label.hasPrefix("0|public-fixture-0|displayed|"), identity.label)
 
         // 1. A vertical drag that starts on the scrubber stays a scrub (the feed doesn't take the
         //    pan) and ends cleanly.
@@ -214,12 +216,12 @@ final class EngagementWalkthroughUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1.5)
         shot("scrub-swiped-away")
         XCTAssertTrue(waitFor(state, "idle"), "interaction stuck after the cell scrolled away mid-scrub: \(state.label)")
-        let onScreen = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'One-handed grab'"))
-            .allElementsBoundByIndex.contains { $0.frame.minY > 0 && $0.frame.maxY < app.frame.maxY }
-        XCTAssertTrue(onScreen, "feed did not page while scrubbing")
+        XCTAssertTrue(identity.label.hasPrefix("1|public-fixture-1|displayed|"), "feed did not page while scrubbing: \(identity.label)")
+        XCTAssertTrue(waitForReceipt("scrub-next"), "driver did not confirm a page command received during the held press")
         app.swipeDown(velocity: .fast)
         Thread.sleep(forTimeInterval: 2.5)
         XCTAssertTrue(waitFor(state, "idle"))
+        XCTAssertTrue(identity.label.hasPrefix("0|public-fixture-0|displayed|"), identity.label)
         let back = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Moment at'")).firstMatch
         XCTAssertEqual(back.frame.midY, restingMarkerY, accuracy: 2, "rail left expanded on the cell that scrolled away")
         shot("scrub-swiped-back")
@@ -235,12 +237,25 @@ final class EngagementWalkthroughUITests: XCTestCase {
         // 3. Backgrounded mid-press: the host opens Settings while the press is held.
         try Data().write(to: directory.appendingPathComponent("scrub-hold.signal"))
         scrubber.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 6)
+        XCTAssertTrue(waitForReceipt("scrub-hold"), "driver did not confirm actual background entry during the held press")
         app.activate()
         Thread.sleep(forTimeInterval: 2)
         XCTAssertTrue(waitFor(state, "idle"), "interaction stuck after backgrounding mid-scrub: \(state.label)")
         let afterBackground = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Moment at'")).firstMatch
         XCTAssertEqual(afterBackground.frame.midY, restingMarkerY, accuracy: 2, "rail left expanded after backgrounding")
         shot("scrub-after-background")
+    }
+
+    private func waitForReceipt(_ name: String) -> Bool {
+        let url = directory.appendingPathComponent("\(name).json")
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               receipt["success"] as? Bool == true { return true }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return false
     }
 
     private func waitFor(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 3) -> Bool {

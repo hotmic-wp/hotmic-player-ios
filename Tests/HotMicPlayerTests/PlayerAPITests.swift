@@ -235,7 +235,12 @@ struct PlayerReviewTests {
         let store = HMResolutionStore(), resolver = RecoveringResolver(), entry = HMMediaItem.reference("partner", id: "retry")
         do { _ = try await store.resolve(entry, using: resolver); Issue.record("Expected transient failure") } catch { }
         let waiter = Task(priority: .utility) { try await store.resolve(entry, using: resolver) }
-        while await resolver.calls < 2 { await Task.yield() }
+        defer { waiter.cancel() }
+        let clock = ContinuousClock(), deadline = clock.now.advanced(by: .seconds(5))
+        while await resolver.calls < 2, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try #require(await resolver.calls == 2, "Utility resolution did not start within five seconds")
         store.promote(entry)
         _ = try await waiter.value
         #expect(await resolver.calls == 2)

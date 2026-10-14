@@ -320,6 +320,11 @@ private final class FormatProtocol: URLProtocol {
 import AVFoundation
 import Network
 import Darwin
+
+/// Flush receipts immediately so a stuck native call leaves its last completed phase in CI logs.
+func nativeTestPhase(_ phase: String) {
+    FileHandle.standardError.write(Data("[native-test] \(ProcessInfo.processInfo.systemUptime) \(phase)\n".utf8))
+}
 #if canImport(UIKit)
 import UIKit
 import SwiftUI
@@ -329,6 +334,7 @@ import SwiftUI
 struct PlayerNativeReviewTests {
     @Test("Warm track detection respects camera transforms before activation", arguments: [false, true])
     func warmDisplayAspect(rotated: Bool) async throws {
+        if !rotated { try await verifyFixtureTermination() }
         let url = try await videoFixture(rotated: rotated)
         defer { try? FileManager.default.removeItem(at: url) }
         let node = HMPlayerNode(id: "aspect", configuration: HMPlayerConfiguration(managesAudioSession: false))
@@ -608,36 +614,123 @@ struct PlayerNativeReviewTests {
     }
     #endif
 
+    enum VideoFixtureError: Error { case timedOut, unexpectedCompletion }
+
     /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
-    func videoFixture(rotated: Bool, duration: TimeInterval = 1) async throws -> URL {
+    /// The finish seam lets the existing native regression hold a real writer in `.writing`.
+    func videoFixture(rotated: Bool, duration: TimeInterval = 1, finishTimeout: TimeInterval = 3,
+                      finish: (AVAssetWriter) -> Void = { $0.finishWriting {} }) async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-aspect-\(UUID()).mp4")
+        let receiptID = UUID().uuidString.prefix(8)
+        func phase(_ value: String) { nativeTestPhase("fixture=\(receiptID) rotated=\(rotated) duration=\(duration) \(value)") }
+        phase("create before")
+        var completed = false
+        defer { if !completed { try? FileManager.default.removeItem(at: url) } }
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        // Every throw, including Task.sleep cancellation, cancels native work before releasing ownership.
+        defer {
+            if !completed {
+                phase("cancel before status=\(writer.status.rawValue)")
+                writer.cancelWriting()
+                phase("cancel after status=\(writer.status.rawValue)")
+            }
+        }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 90])
         if rotated { input.transform = CGAffineTransform(rotationAngle: .pi / 2) }
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 160, kCVPixelBufferHeightKey as String: 90])
         writer.add(input)
+        try Task.checkCancellation()
+        phase("start before")
         try #require(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
+        phase("start after")
         var buffer: CVPixelBuffer?
         try #require(CVPixelBufferCreate(kCFAllocatorDefault, 160, 90, kCVPixelFormatType_32BGRA, nil, &buffer) == kCVReturnSuccess)
         let pixels = try #require(buffer)
         CVPixelBufferLockBaseAddress(pixels, [])
         memset(try #require(CVPixelBufferGetBaseAddress(pixels)), 64, CVPixelBufferGetDataSize(pixels))
         CVPixelBufferUnlockBaseAddress(pixels, [])
-        let deadline = Date().addingTimeInterval(2)
-        while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        func ready() async throws {
+            while !input.isReadyForMoreMediaData {
+                try Task.checkCancellation()
+                try #require(writer.status == .writing)
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw VideoFixtureError.timedOut }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            try Task.checkCancellation()
+        }
+        phase("append before")
+        try await ready()
         try #require(adaptor.append(pixels, withPresentationTime: .zero))
         if duration > 1 {
             for frame in 1..<Int(duration * 10) {
-                while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(1)) }
+                try await ready()
                 try #require(adaptor.append(pixels, withPresentationTime: CMTime(seconds: Double(frame) / 10, preferredTimescale: 600)))
             }
         }
+        phase("append after")
+        phase("end-session before")
         writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
         input.markAsFinished()
-        await writer.finishWriting()
+        phase("end-session after")
+        try Task.checkCancellation()
+        phase("finish before")
+        finish(writer)
+        // Do not await the non-cooperative native completion or a task-group child.
+        // Poll terminal status; timeout/cancellation synchronously cancels the owned writer above.
+        let finishDeadline = ProcessInfo.processInfo.systemUptime + finishTimeout
+        while writer.status == .writing {
+            try Task.checkCancellation()
+            guard ProcessInfo.processInfo.systemUptime < finishDeadline else { throw VideoFixtureError.timedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try Task.checkCancellation()
+        phase("finish after status=\(writer.status.rawValue)")
         try #require(writer.status == .completed)
+        completed = true
         return url
+    }
+
+    /// A held finish must fail promptly and release real native work and its partial file.
+    func verifyFixtureTermination() async throws {
+        var held: AVAssetWriter?
+        var heldAt: TimeInterval?
+        do {
+            let url = try await videoFixture(rotated: false, finishTimeout: 0.05, finish: {
+                held = $0; heldAt = ProcessInfo.processInfo.systemUptime
+            })
+            try? FileManager.default.removeItem(at: url)
+            throw VideoFixtureError.unexpectedCompletion
+        } catch VideoFixtureError.timedOut { }
+        let timedOut = try #require(held)
+        let began = try #require(heldAt)
+        #expect(timedOut.status == .cancelled)
+        #expect(!FileManager.default.fileExists(atPath: timedOut.outputURL.path))
+        #expect(ProcessInfo.processInfo.systemUptime - began < 2)
+
+        var cancelling: AVAssetWriter?
+        let task = Task { try await videoFixture(rotated: false, finish: { cancelling = $0 }) }
+        do {
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while cancelling == nil, ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            let cancelled = try #require(cancelling)
+            task.cancel()
+            do {
+                let url = try await task.value
+                try? FileManager.default.removeItem(at: url)
+                throw VideoFixtureError.unexpectedCompletion
+            } catch is CancellationError { }
+            #expect(cancelled.status == .cancelled)
+            #expect(!FileManager.default.fileExists(atPath: cancelled.outputURL.path))
+        } catch {
+            task.cancel()
+            // Drain the cooperative fixture on readiness/assertion/parent-cancellation errors too.
+            if let url = try? await task.value { try? FileManager.default.removeItem(at: url) }
+            throw error
+        }
     }
 
     private func item(_ id: String, path: String? = nil) -> HMMediaItem {

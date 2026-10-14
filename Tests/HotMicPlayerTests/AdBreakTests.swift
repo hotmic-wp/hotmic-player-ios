@@ -30,54 +30,72 @@ struct AdBreakTests {
     }
     @Test("Host completion is one-shot; edits and visibility preserve visits; swipe cancellation invalidates callbacks and protects content heads")
     func hostLifecycle() async throws {
+        func phase(_ value: String) { nativeTestPhase("hostLifecycle \(value)") }
+        phase("fixture before")
         let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
+        phase("fixture after")
         defer { try? FileManager.default.removeItem(at: url) }
         let sink = Sink()
         var contexts: [HMHostAdContext] = [], stops: [HMAdOutcome] = []
         let provider = Provider { _ in .hostPlayed(HMHostAdBreak(start: { contexts.append($0) }, stop: { stops.append($0) })) }
         var configuration = HMPlayerConfiguration(managesAudioSession: false); configuration.restoresPlaybackPosition = true
+        phase("setup before")
         let player = HMPlayer(configuration: configuration, analytics: HMAnalyticsHub(sinks: [sink]))
-        defer { player.teardown() }
+        phase("setup after")
+        defer { phase("deferred teardown before"); player.teardown(); phase("deferred teardown after") }
         player.adBreakProvider = provider
         let items = ["one", "two", "three"].map { HMMediaItem(id: $0, url: url) }
-        player.replaceAll(items)
+        phase("replaceAll before"); player.replaceAll(items); phase("replaceAll after")
+        phase("context one before")
         try await wait { contexts.count == 1 && player.node(for: items[1]) != nil }
+        phase("context one after")
         let content = try #require(player.currentNode)
         let assignment = content.assignmentGeneration
         #expect(!content.isActive && content.snapshot.currentTime == 0)
         #expect(player.preparedItemCount == 2)
-        player.seek(to: 0.5); #expect(content.snapshot.currentTime == 0)
+        phase("seek before"); player.seek(to: 0.5); phase("seek after"); #expect(content.snapshot.currentTime == 0)
         var permissions: [Bool] = []
         contexts[0].onPlaybackAllowedChange = { permissions.append($0) }
         #expect(contexts[0].isPlaybackAllowed)
+        phase("permissions and visibility before")
         player.pause(); #expect(!contexts[0].isPlaybackAllowed)
         player.play(); player.isFeedVisible = false; player.isFeedVisible = true
+        phase("permissions and visibility after")
         #expect(permissions == [false, true, false, true])
         var metadata = items; metadata[0] = HMMediaItem(id: "one", url: url, title: "new title")
-        player.replaceAll(metadata)
+        phase("metadata replaceAll before"); player.replaceAll(metadata); phase("metadata replaceAll after")
+        phase("reconcile before"); player.reconcile(metadata); phase("reconcile after")
         #expect(provider.calls == 1 && content.assignmentGeneration == assignment)
+        phase("progress callbacks before")
         contexts[0].updateProgress(HMAdProgress(elapsed: 1, duration: 6))
         #expect(player.adState == .playing(kind: .host) && player.adProgress == HMAdProgress(elapsed: 1, duration: 6))
         for tick in 2...30 { contexts[0].updateProgress(HMAdProgress(elapsed: Double(tick), duration: 60)) }
+        phase("progress callbacks after")
         #expect(sink.events.filter { $0.kind == .adStateChanged }.map { $0.properties["state"] } == ["loading", "playing"])
         #expect(sink.events.allSatisfy { ![.seeking, .seeked, .pause].contains($0.kind) })
-        player.skipAd(); contexts[0].complete(); contexts[0].fail()
+        phase("skip and stale completion before"); player.skipAd(); contexts[0].complete(); contexts[0].fail(); phase("skip and stale completion after")
         #expect(stops == [.skipped] && sink.outcomes == ["skipped"])
         #expect(!player.adState.isActive && content.isActive && content.assignmentGeneration == assignment)
         let start = try #require(sink.events.last { $0.kind == .viewStart })
         #expect(start.properties["after_ad"] == "true" && start.properties["ad_outcome"] == "skipped")
-        player.next()
+        phase("next before"); player.next(); phase("next after")
+        phase("context two before")
         try await wait { contexts.count == 2 }
+        phase("context two after")
+        phase("swipe before")
         player.configuration.allowsSwipeDuringAds = false
         player.requestPage(at: 2); #expect(player.requestedPageID == nil)
         player.commitPage(toID: "three", requestedAt: 0); #expect(player.currentItem?.id == "two")
         player.configuration.allowsSwipeDuringAds = true
         player.commitPage(toID: "three", requestedAt: ProcessInfo.processInfo.systemUptime)
+        phase("swipe after")
+        phase("context three before")
         try await wait { contexts.count == 3 }
+        phase("context three after")
         #expect(stops == [.skipped, .cancelled])
         contexts[1].complete(); contexts[1].updateProgress(HMAdProgress(elapsed: 100))
         #expect(player.adState.isActive && player.currentItem?.id == "three")
-        player.teardown(); contexts[2].complete()
+        phase("teardown and stale completion before"); player.teardown(); contexts[2].complete(); phase("teardown and stale completion after")
         #expect(stops == [.skipped, .cancelled, .cancelled])
         #expect(sink.prefetch == ["true", "false", "true", "false", "true", "false"])
     }

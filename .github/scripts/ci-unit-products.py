@@ -102,7 +102,7 @@ def main():
     args = parser.parse_args()
     evidence = args.evidence.resolve()
     products = args.derived.resolve() / "Build/Products"
-    binding_path = evidence / "build-inputs.json"
+    binding_path = evidence / "source-inputs.json"
     if args.phase == "prepare":
         # Cached binaries remain compatible (v3). Regenerate only specifications
         # so an older SDK/architecture or interrupted build cannot supply a run.

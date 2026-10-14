@@ -2,6 +2,7 @@
 import AVFoundation
 import Foundation
 import Testing
+import UIKit
 @_spi(Benchmark) @testable import HotMicPlayer
 
 @Suite("Ad break lifecycle") @MainActor
@@ -77,6 +78,11 @@ struct AdBreakTests {
         var permissions: [Bool] = []
         contexts[0].onPlaybackAllowedChange = { permissions.append($0) }
         #expect(contexts[0].isPlaybackAllowed)
+        // The SDK's own surface mounts the visit container; edits must not replace it.
+        let container = contexts[0].container, surface = HMAdSurfaceView()
+        #expect(player.hostAdContext === contexts[0] && container.superview == nil)
+        surface.setHostContainer(player.hostAdContext?.container)
+        #expect(container.superview === surface)
         phase("permissions and visibility before")
         player.pause(); #expect(!contexts[0].isPlaybackAllowed)
         player.play(); player.isFeedVisible = false; player.isFeedVisible = true
@@ -86,6 +92,7 @@ struct AdBreakTests {
         phase("metadata replaceAll before"); player.replaceAll(metadata); phase("metadata replaceAll after")
         phase("reconcile before"); player.reconcile(metadata); phase("reconcile after")
         #expect(provider.calls == 1 && content.assignmentGeneration == assignment)
+        #expect(player.hostAdContext?.container === container && container.superview === surface)
         phase("progress callbacks before")
         contexts[0].updateProgress(HMAdProgress(elapsed: 1, duration: 6))
         #expect(player.adState == .playing(kind: .host) && player.adProgress == HMAdProgress(elapsed: 1, duration: 6))
@@ -95,6 +102,7 @@ struct AdBreakTests {
         #expect(sink.events.allSatisfy { ![.seeking, .seeked, .pause].contains($0.kind) })
         phase("skip and stale completion before"); player.skipAd(); contexts[0].complete(); contexts[0].fail(); phase("skip and stale completion after")
         #expect(stops == [.skipped] && sink.outcomes == ["skipped"])
+        #expect(player.hostAdContext == nil && container.superview == nil && !contexts[0].isPlaybackAllowed)
         #expect(!player.adState.isActive && content.isActive && content.assignmentGeneration == assignment)
         let start = try #require(sink.events.last { $0.kind == .viewStart })
         #expect(start.properties["after_ad"] == "true" && start.properties["ad_outcome"] == "skipped")
@@ -115,8 +123,11 @@ struct AdBreakTests {
         #expect(stops == [.skipped, .cancelled])
         contexts[1].complete(); contexts[1].updateProgress(HMAdProgress(elapsed: 100))
         #expect(player.adState.isActive && player.currentItem?.id == "three")
+        surface.setHostContainer(player.hostAdContext?.container)
+        #expect(contexts[2].container !== container && contexts[2].container.superview === surface && container.superview == nil)
         phase("teardown and stale completion before"); player.teardown(); contexts[2].complete(); phase("teardown and stale completion after")
         #expect(stops == [.skipped, .cancelled, .cancelled])
+        #expect(contexts[2].container.superview == nil && surface.subviews == [surface.video])
         #expect(sink.prefetch == ["true", "false", "true", "false", "true", "false"])
     }
     @Test("Decision deadline fails open even when cancellation is ignored; a late host result cannot start")

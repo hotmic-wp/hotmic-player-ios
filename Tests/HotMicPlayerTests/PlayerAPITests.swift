@@ -665,16 +665,18 @@ struct PlayerNativeReviewTests {
     /// same test-command budget. No ad provider, injected frame, or SDK timing seam.
     func prepareNativePlayback(url: URL) async throws {
         #if canImport(UIKit)
-        // Hostless xctest has no UIApplicationMain to set up UIKit's application/screen
-        // context before test code. Hosted #234 samples showed the SDK's UIView init waiting
-        // in that context's one-time load after native media preparation. Request it on
-        // main before media work, through the trait fallback UIView init consults; it is
-        // synchronous, so only the outer native watchdog bounds it.
-        nativeTestPhase("UIKit context begin main=\(pthread_main_np())")
+        // Hostless xctest has no UIApplicationMain, so test order decides when UIKit first
+        // initializes. Hosted #234 samples showed the SDK's UIView init waiting in UIKit's
+        // one-time application/screen setup after native media preparation. Construct one
+        // UIView on main before any media work. Test-host setup only: not a product fix or
+        // deadlock proof; synchronous, so only the outer native watchdog bounds it.
+        try #require(pthread_main_np() == 1)
+        nativeTestPhase("UIKit view prerequisite begin")
         let uikitBegan = ProcessInfo.processInfo.systemUptime
-        let traits = UITraitCollection.current
-        nativeTestPhase("UIKit context ready elapsed=\(ProcessInfo.processInfo.systemUptime - uikitBegan) displayScale=\(traits.displayScale)")
-        #expect(pthread_main_np() == 1)
+        do {
+            let view = UIView(frame: .zero)
+            nativeTestPhase("UIKit view prerequisite ready elapsed=\(ProcessInfo.processInfo.systemUptime - uikitBegan) displayScale=\(view.traitCollection.displayScale)")
+        }
         #endif
         nativeTestPhase("native prerequisite first-use begin")
         let deadline = ProcessInfo.processInfo.systemUptime + 10

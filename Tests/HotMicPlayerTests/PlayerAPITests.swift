@@ -800,7 +800,9 @@ struct PlayerNativeReviewTests {
     func overlappingPrefetch() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HotMic-prefix-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = try PrefixOrigin(); defer { origin.listener.cancel() }
+        // A valid range whose tail is withheld: `a` stays on the wire, holding the serial prefix slot.
+        let origin = try PrefixOrigin(mode: .gatedRange)
+        defer { origin.stop(); #expect(!origin.gateExpired) }
         let deadline = Date().addingTimeInterval(3)
         while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { await Task.yield() }
         let port = try #require(origin.listener.port?.rawValue)
@@ -809,6 +811,14 @@ struct PlayerNativeReviewTests {
         var configuration = HMPlayerConfiguration()
         configuration.volatileSigningQueryParameters = ["token"]
         let transport = try HMCacheTransport(configuration: configuration, directory: directory)
+        var work: [String] = []
+        await transport.setEventHandler { event, item in
+            if let phase = event.properties["prefetch_work"] {
+                work.append("\(item.id):\(phase):\(event.properties["work_token"] ?? "")")
+            }
+            origin.recordProgress("event \(item.id)", event: event)
+        }
+        do {
         #expect(await transport.start())
         await transport.prioritizePlayback(a, urgent: false)
         let plan = HMPrefetchPlan(itemsAhead: 2, itemsBehind: 0, bytesPerItem: 262144, secondsPerItem: nil,
@@ -816,7 +826,15 @@ struct PlayerNativeReviewTests {
         await transport.prefetch([a, b], keeping: [a, b], plan: plan)
         let tokens = await transport.activePrefetchTokens
         #expect(tokens.count == 1)
+        let tokenA = try #require(tokens["a"])
         #expect(transport.state.isPrefixing(b) && !transport.state.isPrefixRunning(b))
+        // A started token is not yet a transfer: until its task reaches the scheduler,
+        // a reorder legitimately parks it before any byte and admits the new head.
+        // Edits below must preserve a prefix that is actually in flight.
+        try await waitForNativeProgress(origin, phase: "a in flight") {
+            origin.requestCount(path: "/a.mp4") == 1 && origin.hasHeldResponse
+        }
+        #expect(await transport.activePrefetchTokens == tokens)
         var presentationOnly = configuration; presentationOnly.presentation = .fit; presentationOnly.removedCurrentPolicy = .finishThenAdvance
         await transport.updateConfiguration(presentationOnly)
         #expect(await transport.activePrefetchTokens == tokens)
@@ -828,10 +846,23 @@ struct PlayerNativeReviewTests {
         await transport.retainWindow([signed, b])
         await transport.prefetch([signed, b], keeping: [signed, b], plan: plan)
         #expect(await transport.activePrefetchTokens == tokens)
+        #expect(transport.state.isPrefixing(b) && !transport.state.isPrefixRunning(b))
         await transport.retainWindow([signed])
-        #expect(await transport.activePrefetchTokens == ["a": tokens["a"]!])
+        #expect(await transport.activePrefetchTokens == ["a": tokenA])
         #expect(!transport.state.isPrefixing(b))
+        // The original connection then delivers the whole range once, under the signed item's cache key.
+        origin.releaseResponses()
+        let token = tokenA.uuidString
+        try await waitForNativeProgress(origin, phase: "a completes") { work.contains("a:completed:\(token)") }
+        #expect(work == ["a:started:\(token)", "a:completed:\(token)"])
+        #expect(await transport.activePrefetchTokens.isEmpty)
+        #expect(await transport.cachedBytes[HMCacheKey.canonical(signed.url!, ignoring: ["token"])] == 32)
+        #expect(origin.requestCount(path: "/a.mp4") == 1 && origin.requestCount(path: "/b.mp4") == 0)
         _ = await transport.finish()
+        } catch {
+            _ = await transport.finish()
+            throw error
+        }
     }
     actor Source: HMPlaylistSource {
         var requests: [String] = []

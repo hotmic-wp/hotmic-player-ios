@@ -1,0 +1,124 @@
+import Foundation
+
+/// Pure atomic playlist semantics, shared by the controller and focused tests.
+struct HMPlaylistState: Equatable {
+    var items: [HMMediaItem] = []
+    var index = 0
+    var finishingID: String?
+    private var finishingAdvancesOnly = false
+    var current: HMMediaItem? { items.indices.contains(index) ? items[index] : nil }
+    mutating func replaceAll(_ incoming: [HMMediaItem], startAt: Int) throws {
+        try Self.validate(incoming)
+        guard incoming.isEmpty ? startAt == 0 : incoming.indices.contains(startAt) else { throw HMPlayerError.invalidIndex(startAt) }
+        guard items != incoming || index != startAt else { return }
+        items = incoming; index = startAt; finishingID = nil; finishingAdvancesOnly = false
+    }
+    mutating func replaceUpcoming(_ incoming: [HMMediaItem]) throws {
+        let next = Array(items.prefix(items.isEmpty ? 0 : index + 1)) + incoming
+        try Self.validate(next); items = next
+    }
+    mutating func insertNext(_ incoming: [HMMediaItem]) throws {
+        let insertion = min(items.count, index + 1)
+        var next = items; next.insert(contentsOf: incoming, at: insertion)
+        try Self.validate(next); items = next
+    }
+    mutating func append(_ incoming: [HMMediaItem]) throws {
+        let next = items + incoming; try Self.validate(next); items = next
+    }
+    mutating func reconcile(_ incoming: [HMMediaItem], policy: HMRemovedCurrentPolicy) throws {
+        guard !incoming.isEmpty else { return }
+        try Self.validate(incoming)
+        guard let current else {
+            let historyIDs = Set(items.map(\.id))
+            try replaceUpcoming(incoming.filter { !historyIDs.contains($0.id) })
+            return
+        }
+        let history = Array(items.prefix(index))
+        let historyIDs = Set(history.map(\.id))
+        if let position = incoming.firstIndex(where: { $0.id == current.id }) {
+            // A ranked refresh cannot restart the media of an already finishing visit.
+            if finishingID != current.id { items[index] = incoming[position] }
+            try replaceUpcoming(Array(incoming.dropFirst(position + 1)).filter { !historyIDs.contains($0.id) })
+            // An already removed current still finishes once, even if a later feed reintroduces it.
+        } else {
+            try replaceUpcoming(incoming.filter { !historyIDs.contains($0.id) })
+            remove(ids: [current.id], policy: policy, fallbackToHistory: false)
+        }
+    }
+    mutating func remove(ids: Set<String>, policy: HMRemovedCurrentPolicy = .advanceNow, fallbackToHistory: Bool = true) {
+        guard items.contains(where: { ids.contains($0.id) }) else { return }
+        if policy == .finishThenAdvance, let current, ids.contains(current.id) {
+            finishingID = current.id
+            finishingAdvancesOnly = finishingAdvancesOnly || !fallbackToHistory
+            remove(ids: ids.subtracting([current.id]), policy: .advanceNow)
+            return
+        }
+        let old = current
+        let canRetreat = fallbackToHistory && !(finishingID == old?.id && finishingAdvancesOnly)
+        let successor = items.dropFirst(index + 1).first { !ids.contains($0.id) }
+        let predecessor = items.prefix(index).last { !ids.contains($0.id) }
+        items.removeAll { ids.contains($0.id) }
+        if let finishingID, ids.contains(finishingID) { self.finishingID = nil; finishingAdvancesOnly = false }
+        let target = old.flatMap { ids.contains($0.id) ? nil : $0 } ?? successor ?? (canRetreat && old != nil ? predecessor : nil)
+        index = target.flatMap { item in items.firstIndex { $0.id == item.id } } ?? items.count
+    }
+    func window(offsets: [Int]) -> [HMMediaItem] {
+        guard current != nil else { return [] }
+        var seen = Set<String>()
+        return offsets.compactMap { offset in
+            let position = index + offset
+            guard items.indices.contains(position), seen.insert(items[position].id).inserted else { return nil }
+            return items[position]
+        }
+    }
+    func filterSourcePage(_ incoming: [HMMediaItem]) -> (items: [HMMediaItem], duplicates: [String]) {
+        var seen = Set(items.map(\.id)), duplicates: [String] = []
+        let unique = incoming.filter { item in
+            if seen.insert(item.id).inserted { return true }
+            duplicates.append(item.id); return false
+        }
+        return (unique, duplicates)
+    }
+    static func validate(_ items: [HMMediaItem]) throws {
+        var ids = Set<String>()
+        for item in items {
+            guard !item.id.isEmpty, ids.insert(item.id).inserted else { throw HMPlayerError.duplicateID(item.id) }
+            if let url = item.url, !["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") { throw HMPlayerError.unsupportedURL }
+        }
+    }
+}
+
+/// A scroll move remains valid while both endpoint IDs occupy the same positions.
+enum HMPagePosition {
+    static func survives(old: [String], new: [String], current: String?, destination: String?) -> Bool {
+        [current, destination].compactMap { $0 }.allSatisfy { id in
+            guard let position = old.firstIndex(of: id) else { return false }
+            return new.firstIndex(of: id) == position
+        }
+    }
+}
+
+/// Three total automatic attempts, with exponential backoff; explicit selection resets the budget.
+struct HMResolutionRetry {
+    static let maximumAttempts = 3
+    var attempts = 0
+    var nextAttempt: TimeInterval = 0
+    mutating func failed(at now: TimeInterval) {
+        attempts += 1
+        nextAttempt = now + min(4, pow(2, Double(attempts - 1)))
+    }
+    func canRetry(at now: TimeInterval) -> Bool { attempts < Self.maximumAttempts && now >= nextAttempt }
+}
+
+/// Four total attempts, with 1/2/4-second waits. Navigation or explicit loading resets the budget.
+struct HMPagingRetry {
+    static let maximumAttempts = 4
+    var attempts = 0
+    var nextAttempt: TimeInterval = 0
+    var exhausted: Bool { attempts >= Self.maximumAttempts }
+    mutating func failed(at now: TimeInterval) {
+        attempts += 1
+        nextAttempt = now + min(4, pow(2, Double(attempts - 1)))
+    }
+    func canRetry(at now: TimeInterval) -> Bool { !exhausted && now >= nextAttempt }
+}

@@ -1,0 +1,83 @@
+import Foundation
+import CryptoKit
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// Ordered, asynchronous file writes. `flush()` is the export barrier; errors
+/// are surfaced to callers instead of silently claiming a complete run.
+@MainActor
+@_spi(Benchmark) public final class HMJSONLFileSink: HMAnalyticsSink {
+    /// Stable sink identifier used by the hub for deduplication.
+    public let sinkName = "jsonl"
+    /// Local JSONL output file.
+    public let fileURL: URL
+    private let writer: Writer
+    /// Creates a JSONL file and writes a run header with configuration and dimensions.
+    public init(fileURL: URL, runID: String, configuration: HMPlayerConfiguration,
+                format: String, network: String, script: String, buildSHA: String, dimensions: [String: String] = [:]) throws {
+        self.fileURL = fileURL
+        writer = try Writer(fileURL)
+        var model = utsname(); uname(&model)
+        let device = withUnsafeBytes(of: &model.machine) { bytes in String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self) }
+        let header: [String: Any] = ["type": "runHeader", "schema": 1, "run_id": runID,
+            "strategy": configuration.strategy.rawValue, "configuration": configuration.fingerprint,
+            "configuration_sha256": HMCacheKey.hash(configuration.fingerprint), "format": format,
+            "network": network, "script": script, "device_model": ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? device,
+            "os": ProcessInfo.processInfo.operatingSystemVersionString, "build_sha": buildSHA,
+            "dimensions": dimensions, "started_at": ISO8601DateFormatter().string(from: Date()),
+            "clock": "systemUptime", "simulator": ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] != nil]
+        writer.append(try Self.line(header))
+    }
+    /// Consumes one telemetry event on the main actor.
+    public func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+        writer.append(event)
+    }
+    func record(_ decision: HMPrefetchDecision) { writer.append(decision) }
+    nonisolated private static func eventLine(_ event: HMPlaybackEvent) throws -> Data {
+        let object: [String: Any] = ["type": "event", "event": event.kind.rawValue,
+            "event_id": event.id.uuidString, "item_id": event.itemID,
+            "monotonic_s": event.monotonicTime, "position_s": event.position,
+            "metrics": event.metrics.filter { $0.value.isFinite }, "properties": event.properties]
+        return try line(object)
+    }
+    /// Waits for queued file writes and reports any write failure.
+    public func flush() async throws { try await writer.flush() }
+    nonisolated private static func line(_ object: [String: Any]) throws -> Data {
+        var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        data.append(10); return data
+    }
+    private final class Writer: @unchecked Sendable {
+        let queue = DispatchQueue(label: "com.hotmic.analytics.jsonl")
+        let handle: FileHandle
+        var failure: Error?
+        init(_ url: URL) throws {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+            handle = try FileHandle(forWritingTo: url)
+        }
+        deinit { try? handle.close() }
+        func append(_ data: Data) {
+            queue.async { [self] in do { try handle.write(contentsOf: data) } catch { failure = error } }
+        }
+        func append(_ event: HMPlaybackEvent) {
+            queue.async { [self] in
+                do { try handle.write(contentsOf: HMJSONLFileSink.eventLine(event)) } catch { failure = error }
+            }
+        }
+        func append(_ decision: HMPrefetchDecision) {
+            queue.async { [self] in
+                do { try handle.write(contentsOf: HMJSONLFileSink.eventLine(decision.event)) } catch { failure = error }
+            }
+        }
+        func record(_ error: Error) { queue.async { [self] in failure = error } }
+        func flush() async throws {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                queue.async { [self] in
+                    do { try handle.synchronize(); if let failure { throw failure }; c.resume() }
+                    catch { c.resume(throwing: error) }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,9 @@
+# Explicit local diagnostics walkthrough
+
+Ordinary Sample and starter launches keep diagnostics off. Build the Debug Sample and use your own synthetic HLS manifest and a numeric loopback collector that implements POST `/v2/player/diagnostics`. No live key/API is needed. The demo's explicit `--hm-diagnostics-loopback http://127.0.0.1:PORT` option supplies only the fixed synthetic app key `synthetic-diagnostics-key`; it cannot select a real API. `--hm-diagnostics-percent 100` selects every lifetime for local inspection; zero verifies sampling-off. Omit both options to verify default-off.
+
+Use `--hm-regression-feed 1 --hm-probe 1 --hm-probe-receipts 1 --hm-manifest-url http://127.0.0.1:PORT/manifest.json` with the existing native regression support. Wait at least 60 seconds during stable moving playback, inspect actual wire byte/attempt counts and the server-validated numeric aggregate. Confirm position continues advancing. Do not shorten the production timer to make walkthroughs faster.
+
+The existing Darwin probe commands support `diagnostics-off`, `diagnostics-on`, `interaction-begin`, `interaction-end` and `memory-warning` alongside hide/show/background/foreground/teardown. Notify with `xcrun simctl spawn SIMULATOR_UDID notifyutil -p com.hotmic.probe.COMMAND`. Verify cancellation during a delayed response, streaming/large error response cancellation at headers, redirects/errors/offline/429 as single attempts with no replay, and overflow/unrepresentable settings in the compact package acceptance cohort. Probe receipts and synthetic wire fixtures are local evidence only; no result upload or external benchmark service is supplied.
+
+See the [diagnostic contract](../../Sources/HotMicPlayer/HotMicPlayer.docc/OptionalDiagnostics.md) and [partner handoff](../../docs/PARTNER_HANDOFF.md).

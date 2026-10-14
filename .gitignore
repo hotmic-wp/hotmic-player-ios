@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserdatad
+xcuserdata/
+Package.resolved
+.context/
+.bench/
+__pycache__/
+*.pyc
+Sample/LocalMedia/
+# Retain ignored historical local lab output after tooling extraction.
+bench/

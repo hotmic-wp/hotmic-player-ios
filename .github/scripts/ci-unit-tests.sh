@@ -6,6 +6,9 @@ source .github/scripts/ci-common.sh
 validation_dir="${VALIDATION_DIR:-.bench/unit}"
 mkdir -p "$validation_dir"
 derived="$validation_dir/DerivedData"
+# Test-only project: the package's test sources and Fixtures, linked against the
+# local package and injected into an empty UIKit app host (TEST_HOST).
+test_project=Tests/HotMicPlayerTestHost/HotMicPlayerTestHost.xcodeproj
 started=$SECONDS
 job_name=unit-tests
 budget_total=540
@@ -148,7 +151,7 @@ prepare_cached_products() {
     old_xcode=$(sed -n '1p' "$stamp")
     old_packages=$(sed -n '2p' "$stamp")
     old_build_mode=$(sed -n '3p' "$stamp")
-    if [ "$old_xcode" != "$xcode_id" ] || [ "$old_packages" != "$packages" ] || [ "$old_build_mode" != "generic-simulator-v1:$simulator_arch" ]; then
+    if [ "$old_xcode" != "$xcode_id" ] || [ "$old_packages" != "$packages" ] || [ "$old_build_mode" != "app-hosted-simulator-v1:$simulator_arch" ]; then
       echo "Removing cached products: toolchain, package resolution, or simulator build mode changed."
       rm -rf "$derived/Build" "$derived/ModuleCache.noindex" "$derived/SourcePackages"
     fi
@@ -157,7 +160,7 @@ prepare_cached_products() {
     rm -rf "$derived/Build" "$derived/ModuleCache.noindex" "$derived/SourcePackages"
   fi
   mkdir -p "$derived/Build"
-  printf '%s\n%s\ngeneric-simulator-v1:%s\n' "$xcode_id" "$packages" "$simulator_arch" > "$stamp"
+  printf '%s\n%s\napp-hosted-simulator-v1:%s\n' "$xcode_id" "$packages" "$simulator_arch" > "$stamp"
 }
 prepare_cached_products
 start_simulator() {
@@ -187,7 +190,7 @@ python3 .github/scripts/ci-unit-command.py --name simulator-build \
   --total-deadline "$total_deadline" --reserve 30 --grace 5 \
   --cancel-file "$validation_dir/build-cancel" -- \
   xcodebuild build-for-testing \
-  -scheme HotMicPlayer-Package \
+  -project "$test_project" -scheme HotMicPlayerTests \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" \
   -only-testing:HotMicPlayerTests -showBuildTimingSummary \
   ARCHS="$simulator_arch" ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}" &
@@ -201,7 +204,7 @@ start_simulator
 unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
 # The iOS unit target includes native-player tests omitted by macOS swift test.
 unit_step unit-tests "$budget_unit_tests" xcodebuild test-without-building \
-  -scheme HotMicPlayer-Package \
+  -project "$test_project" -scheme HotMicPlayerTests \
   -destination "platform=iOS Simulator,id=$simulator_id,arch=$simulator_arch" -derivedDataPath "$derived" \
   -parallel-testing-enabled NO -only-testing:HotMicPlayerTests \
   -resultBundlePath "$validation_dir/UnitTests.xcresult" \

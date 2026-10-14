@@ -13,6 +13,15 @@ errors are retained and cannot turn a failed command into success. Original
 nonzero command exits and handled interrupt statuses are preserved. Apps/checks
 retain their existing shared helper and post-command budget checks.
 
+The unit job builds and tests the `HotMicPlayerTests` scheme of the test-only
+`Tests/HotMicPlayerTestHost` project. Its `HotMicPlayerTests` bundle compiles the
+package's existing test sources and copies the same `Fixtures` folder, links the
+local `HotMicPlayer`/`HotMicPlayerUI` products, and is injected (`TEST_HOST`) into an
+empty UIKit app launched through `UIApplicationMain` with a connected window scene.
+The host starts no media or services; it writes `[test-host]` launch receipts, and
+native tests check, without waiting, that they run in that launched host. The
+package's own `HotMicPlayerTests` target and resources are unchanged.
+
 The unit job starts generic compilation of the full `HotMicPlayerTests` target
 before simulator discovery, then drives `bootstatus` during compilation. The
 parent tracks both watchdogs and waits for both before testing. On failure or
@@ -43,11 +52,11 @@ interrupts. The create log is cleared before creation starts, so interrupted
 reuse cannot adopt an earlier invocation's UUID. The runner's hard termination cannot guarantee shell cleanup or
 artifact upload, even with `always()`.
 
-Unit build caches use the `derived-unit-v2` prefix, host architecture, Xcode build,
+Unit build caches use the `derived-unit-v3` prefix, host architecture, Xcode build,
 package resolution, and source hash. Prefix restores allow incremental source
 builds within that compatibility boundary. The local compatibility stamp also
-rejects old or unstamped build products. The first v2 hosted run is a cold cache
-run; a passing warm-cache retry is insufficient acceptance evidence.
+rejects old, package-scheme or unstamped build products. The first v3 hosted run
+is a cold cache run; a passing warm-cache retry is insufficient acceptance evidence.
 
 `simulator-build.log` includes Xcode's build timing summary. Selected test progress,
 build timing categories, 15-second heartbeats, last output, deadlines and exit

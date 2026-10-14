@@ -36,11 +36,11 @@ jobs:
             .bench/unit/DerivedData/SourcePackages
             .bench/unit/DerivedData/ModuleCache.noindex
             .bench/unit/DerivedData/Build
-          # v2 starts with generic, native-architecture simulator products. Do not
-          # restore the old device-destination products or a different host slice.
-          key: derived-unit-v2-${{ steps.xcode.outputs.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**') }}
+          # v3 starts with app-hosted, generic native-architecture simulator products.
+          # Do not restore older package-scheme products or a different host slice.
+          key: derived-unit-v3-${{ steps.xcode.outputs.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**') }}
           restore-keys: |
-            derived-unit-v2-${{ steps.xcode.outputs.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-
+            derived-unit-v3-${{ steps.xcode.outputs.arch }}-${{ steps.xcode.outputs.build }}-${{ hashFiles('Package.swift', 'Package.resolved', '**/Package.resolved') }}-
       - name: Build and run the package unit tests
         run: bash .github/scripts/ci-unit-tests.sh
       - name: Upload unit-test evidence

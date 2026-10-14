@@ -670,6 +670,10 @@ struct PlayerNativeReviewTests {
         // one-time application/screen setup after native media preparation. Construct one
         // UIView on main before any media work. Test-host setup only: not a product fix or
         // deadlock proof; synchronous, so only the outer native watchdog bounds it.
+        #if HOTMIC_APP_HOSTED
+        // CI injects these tests into an empty UIKit app (Tests/HotMicPlayerTestHost).
+        try AppHostedTestEnvironment.requireLaunchedHost()
+        #endif
         try #require(pthread_main_np() == 1)
         nativeTestPhase("UIKit view prerequisite begin")
         let uikitBegan = ProcessInfo.processInfo.systemUptime

@@ -22,23 +22,27 @@ The host starts no media or services; it writes `[test-host]` launch receipts, a
 native tests check, without waiting, that they run in that launched host. The
 package's own `HotMicPlayerTests` target and resources are unchanged.
 
-The unit job starts generic compilation of the full `HotMicPlayerTests` target
-before simulator discovery, then drives `bootstatus` during compilation. The
-parent tracks both watchdogs and waits for both before testing. On failure or
-interruption it requests compiler cancellation through an owned file and reaps
-the watchdog before cleanup. Only the compiler watchdog signals its unreaped
-child group; the shell never signals a possibly completed background PID.
-Simulator commands observe the compiler result file and stop promptly on its
-failure, preserving an already observed nonzero command exit. Parallel startup
-allows migration to overlap compilation; resource contention means faster
-completion is not guaranteed. `ARCHS` selects the host's native
+The unit job first runs one generic `build-for-testing` of the host app and the
+full `HotMicPlayerTests` bundle under its own watchdog and waits for it to finish.
+Only after that build succeeds does it discover a runtime, create and boot its
+owned simulator, await `bootstatus` readiness and then run the tests on that
+device, one watchdog-bounded command at a time. A failed or timed-out build exits
+with its original status before any simulator discovery or provisioning. An
+interrupt during the build requests compiler cancellation through an owned file
+and reaps the compiler watchdog before cleanup; only that watchdog signals its
+unreaped child group, and the shell never signals a possibly completed
+background PID. An interrupt during a later step is forwarded to that step's
+watchdog before cleanup. Because startup is sequential, first-boot migration
+adds to compilation time rather than overlapping it; `bootstatus` is still
+bounded by the remaining total allowance and cleanup reserve, so a slow
+migration leaves less time for tests. `ARCHS` selects the host's native
 `arm64` or `x86_64` slice for both build and test; the test destination explicitly
 selects that architecture. This avoids device-specific destination selection
 during compilation. The selected installed iOS runtime need not match the SDK version;
 Xcode 26.6 remains required, and normal deployment-target/runtime compatibility
 checks still apply. The script neither downloads runtimes nor retries failures. Discovery allows
 60 seconds for cold CoreSimulator initialization (the prior 30-second cap timed
-out on a hosted runner); it overlaps compilation and remains subject to the
+out on a hosted runner); it starts after compilation and remains subject to the
 same global deadline and cleanup reserve.
 
 The script creates and cleans up only its own simulator by default. An explicit

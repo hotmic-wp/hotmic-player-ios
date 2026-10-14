@@ -19,8 +19,10 @@ def git(*args):
 
 
 def sources():
+    headers = git("cat-file", "-p", "HEAD").split("\n\n", 1)[0].splitlines()
+    parent = next((line.split(" ", 1)[1] for line in headers if line.startswith("parent ")), None)
     return {"head": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
-            "parent": git("rev-parse", "HEAD^"),
+            "parent": parent,
             "sources_tree": git("rev-parse", "HEAD:Sources"),
             "tests_tree": git("rev-parse", "HEAD:Tests"),
             "origin": git("remote", "get-url", "origin"),

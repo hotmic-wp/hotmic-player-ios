@@ -15,22 +15,36 @@ budget_unit_tests=240
 # another 60s outside this script for upload within the ten-minute job.
 total_deadline=$(python3 -c 'import time; print(time.monotonic() + 540)')
 watchdog_pid=""
+build_watchdog_pid=""
 simulator_id="${SIMULATOR_UDID:-}"
 created_simulator=0
 creating_simulator=0
 unit_step() {
   local name="$1" budget="$2" status=0
+  local failure_args=()
+  if [ -n "$build_watchdog_pid" ]; then
+    failure_args=(--failure-file "$validation_dir/simulator-build.json")
+  fi
   shift 2
   echo "::group::$name"
   python3 .github/scripts/ci-unit-command.py --name "$name" \
     --log "$validation_dir/$name.log" --seconds "$budget" \
     --total-deadline "$total_deadline" --reserve "${command_reserve:-30}" \
-    --grace "${command_grace:-5}" -- "$@" &
+    --grace "${command_grace:-5}" ${failure_args[@]+"${failure_args[@]}"} -- "$@" &
   watchdog_pid=$!
   wait "$watchdog_pid" || status=$?
   watchdog_pid=""
   echo "::endgroup::"
   return "$status"
+}
+stop_build() {
+  if [ -n "$build_watchdog_pid" ]; then
+    # A finished background PID may already have been reaped by bash. Request
+    # cancellation through an owned file; only the watchdog signals its child.
+    touch "$validation_dir/build-cancel"
+    wait "$build_watchdog_pid" || true
+    build_watchdog_pid=""
+  fi
 }
 interrupt() {
   trap '' INT TERM HUP
@@ -39,6 +53,7 @@ interrupt() {
     wait "$watchdog_pid" || true
     watchdog_pid=""
   fi
+  stop_build
   exit "$2"
 }
 read_created_simulator() {
@@ -56,6 +71,8 @@ cleanup() {
   local status=$? summary_status=0
   trap - EXIT
   trap '' INT TERM HUP
+  # Reap the independently owned compiler before simulator cleanup on every exit.
+  stop_build
   # Recover an emitted create UUID if interrupted before the parent assignment.
   if [ "$creating_simulator" = 1 ] && [ -s "$validation_dir/simulator-create.log" ]; then
     read_created_simulator || true
@@ -116,7 +133,7 @@ package_fingerprint() {
     [ -n "$path" ] || continue
     files+=("$path")
   done <<EOF
-$(find . -name Package.resolved -not -path './.git/*' -not -path './.bench/*' | sort)
+$(find . \( -name .git -o -name .bench \) -prune -o -name Package.resolved -print | sort)
 EOF
   shasum -a 256 "${files[@]}" | shasum -a 256 | awk '{print $1}'
 }
@@ -145,7 +162,7 @@ prepare_cached_products
 start_simulator() {
   if [ -z "$simulator_id" ]; then
     local selection runtime simulator_type
-    unit_step simulator-list 30 xcrun simctl list -j
+    unit_step simulator-list 60 xcrun simctl list -j
     selection=$(python3 .github/scripts/select-simulator.py < "$validation_dir/simulator-list.log") || return 1
     runtime=${selection%%$'\n'*}
     simulator_type=${selection#*$'\n'}
@@ -158,19 +175,28 @@ start_simulator() {
   fi
   unit_step simulator-boot 30 xcrun simctl boot "$simulator_id" || true
 }
-# Boot returns before readiness; let migration proceed during compilation.
-# Watchdogs remain sequential, and ownership stays in the parent shell.
-start_simulator
-# A generic destination does not need a booted device or device discovery during
-# compilation. Explicit ARCHS keeps generic builds to the same native slice used
-# by test-without-building, including Intel hosts.
+# Generic compilation needs neither simulator discovery nor readiness. Start its
+# independent watchdog first; the parent still creates/boots/owns the simulator.
+rm -f "$validation_dir/build-cancel"
+rm -f "$validation_dir/simulator-build.json"
 rm -rf "$validation_dir/UnitTests.xcresult"
-unit_step simulator-build "$budget_simulator_build" xcodebuild build-for-testing \
+python3 .github/scripts/ci-unit-command.py --name simulator-build \
+  --log "$validation_dir/simulator-build.log" --seconds "$budget_simulator_build" \
+  --total-deadline "$total_deadline" --reserve 30 --grace 5 \
+  --cancel-file "$validation_dir/build-cancel" -- \
+  xcodebuild build-for-testing \
   -scheme HotMicPlayer-Package \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath "$derived" \
   -only-testing:HotMicPlayerTests -showBuildTimingSummary \
-  ARCHS="$simulator_arch" ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}"
+  ARCHS="$simulator_arch" ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}" &
+build_watchdog_pid=$!
+start_simulator
+# Drive readiness during compilation: simctl boot alone may defer migration.
 unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
+build_status=0
+wait "$build_watchdog_pid" || build_status=$?
+build_watchdog_pid=""
+[ "$build_status" = 0 ] || exit "$build_status"
 # The iOS unit target includes native-player tests omitted by macOS swift test.
 unit_step unit-tests "$budget_unit_tests" xcodebuild test-without-building \
   -scheme HotMicPlayer-Package \

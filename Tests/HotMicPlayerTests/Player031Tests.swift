@@ -29,10 +29,10 @@ struct Player031Tests {
         var starts: [HMPlaybackEvent] = []
         func handle(_ event: HMPlaybackEvent, item: HMMediaItem) { if event.kind == .viewStart { starts.append(event) } }
     }
-    private func wait(until predicate: () async -> Bool, seconds: Double = 2) async throws {
+    private func wait(until predicate: () async -> Bool, seconds: Double = 2, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
         while !(await predicate()), ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(await predicate())
+        #expect(await predicate(), sourceLocation: sourceLocation)
     }
     @Test("Resolution invalidates the initially node-less cell and activates once with the action clock", arguments: [HMMediaItem.Format.hls, .mp4])
     func activationAfterResolution(format: HMMediaItem.Format) async throws {
@@ -93,8 +93,11 @@ struct Player031Tests {
         c.resolveAhead = 0
         let player = HMPlayer(configuration: c, resolver: resolver)
         let bad = HMMediaItem.reference("hotmic", id: "bad")
-        let a = HMMediaItem(id: "a", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-a.mp4"))
-        let b = HMMediaItem(id: "b", url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-b.mp4"))
+        // Success branches own playable media; native missing-file errors must not race policy assertions.
+        let media = try await PlayerNativeReviewTests().videoFixture(rotated: false, duration: 20)
+        defer { try? FileManager.default.removeItem(at: media) }
+        let a = HMMediaItem(id: "a", url: media)
+        let b = HMMediaItem(id: "b", url: media)
         var errors = 0
         let events = player.events
         let consumer = Task { for await event in events { if case .error = event { errors += 1 } } }
@@ -174,17 +177,25 @@ struct Player031Tests {
         #expect(samples.count > 1)
 
         // Repeated resolver connectivity failures do not consume the terminal budget.
-        let net = NetworkResolver()
+        let net = NetworkResolver(media: media)
         let recovering = HMPlayer(configuration: c, resolver: net)
-        defer { recovering.teardown() }
+        var networkErrors = 0
+        let networkEvents = recovering.events
+        let networkConsumer = Task { for await event in networkEvents { if case .error = event { networkErrors += 1 } } }
+        defer { recovering.teardown(); networkConsumer.cancel() }
         let offline = HMMediaItem.reference("hotmic", id: "offline")
         recovering.replaceAll([offline, bad])
-        try await wait(until: { await net.calls >= 4 }, seconds: 9)
+        // Three uninterrupted retry delays can total 8.75s at maximum jitter.
+        // Keep the helper's normal 2s scheduling allowance beyond that policy maximum.
+        let retryDeadline = (1.0 + 2 + 4) * HMNetworkRetry.jitter.upperBound + 2
+        try await wait(until: { await net.calls >= 4 && networkErrors >= 4 }, seconds: retryDeadline)
         #expect(recovering.currentItem == offline); #expect(recovering.snapshot.state == .loading)
         recovering.configuration.failedItemPolicy = .stay
         await net.goOnline()
         recovering.connectivityChanged(satisfied: false); recovering.connectivityChanged(satisfied: true)
-        try await wait { recovering.node(for: offline)?.isActive == true }
+        // The unhosted runner has no visible layer; require native media readiness.
+        try await wait { recovering.node(for: offline)?.isActive == true && recovering.node(for: offline)?.player.currentItem?.status == .readyToPlay }
+        recovering.pause()
         #expect(recovering.currentItem == offline)
 
         // A pending final page must win over a previous-item fallback (including an empty page).
@@ -283,11 +294,13 @@ struct Player031Tests {
     actor NetworkResolver: HMItemResolver {
         var calls = 0
         var offline = true
+        let media: URL
+        init(media: URL) { self.media = media }
         func goOnline() { offline = false }
         func resolve(_ ref: HMMediaItem.Reference) async throws -> HMResolvedItem {
             calls += 1
             if offline { throw URLError(.notConnectedToInternet) }
-            return HMResolvedItem(url: FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-031-recovered.mp4"))
+            return HMResolvedItem(url: media)
         }
     }
     actor GatedPage: HMPlaylistSource {

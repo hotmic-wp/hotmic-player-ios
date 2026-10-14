@@ -78,3 +78,7 @@ Use immutable VOD URLs. Live playback, DRM, variable-substitution HLS and automa
 Speculative payload accounting includes loopback manifest/audio/video/init bodies and warm native requests, including revisits that are currently inactive. It excludes HTTP/TLS overhead, resolver format probes, posters and separate sidecar-caption fetches. The budget is not a bound on all network traffic or activated native playback.
 
 First moving playback is observed from positive media-clock progress on existing native ticks and logged separately from first frame and native control status. Explicit seek/loop decode catch-up with already-playable buffered media receives at most 150 ms of grace, followed by a waiting-state recheck; prolonged waits and empty-buffer waits after playback began count as rebuffering. This observation is sampled timing, not a frame-exact moving-pixel detector.
+
+## Optional aggregate observations
+
+<doc:OptionalDiagnostics> provides host-controlled, default-off sampled counters and fixed startup/moving histograms. Delivery yields to playback and drops windows; use the documented selection-bias and coverage limits alongside host measurements. It changes no playback budgets or request admission.

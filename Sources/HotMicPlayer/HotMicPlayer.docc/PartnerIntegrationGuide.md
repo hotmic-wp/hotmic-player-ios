@@ -2,6 +2,8 @@
 
 Ship a mixed portrait and landscape video feed with your own data, ads and navigation.
 
+Start with the [forwardable partner handoff](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/PARTNER_HANDOFF.md). Optional <doc:OptionalDiagnostics> is independent of playback configuration and off by default; collector deployment is separate.
+
 ## Choose your path
 
 | Path | Pick it when | Copyable starter |
@@ -13,26 +15,24 @@ Both paths share playback, caching, captions, fullscreen and engagement. You can
 
 ## Install
 
-Repository URL: `https://github.com/hotmic-wp/hotmic-player-ios`. **1.1.0 is a draft, not a release tag.** Until it is tagged, pin the commit SHA HotMic provides (including measured defaults and subsequent playback/transport fixes) using SwiftPM's revision requirement. Replace `COMMIT_SHA` with that full 40-character SHA and keep that pin in source control for reproducible CI builds:
+Repository URL: `https://github.com/hotmic-wp/hotmic-player-ios`. Pin the initial **1.0.0** release for reproducible CI builds.
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", revision: "COMMIT_SHA")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0")
 ```
 
-The latest published alpha, `1.1.0-alpha.2`, contains the ready-made social overlay along with core layout, ads, captions and engagement APIs. It predates the measured defaults and later playback/transport fixes in this unreleased source revision. To evaluate that published baseline, pin:
-
-```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.2")
-```
-
-After the stable delivery is published, use that repository URL with `from: "1.1.0"`; do not select an unpublished version in Xcode. Link products using the SwiftPM identity:
+Use `from: "1.0.0"` when accepting compatible updates under the version policy below. Link products using the SwiftPM identity:
 
 ```swift
 .product(name: "HotMicPlayer", package: "hotmic-player-ios"),
 .product(name: "HotMicPlayerUI", package: "hotmic-player-ios") // ready-made path only
 ```
 
-HotMic engagement is an optional separate package at `https://github.com/hotmic-wp/hotmic-player-connect-ios`. Follow that package's README for its compatible published version and authentication setup; it is not required for your backend or URL playback.
+HotMic engagement is an optional separate package at `https://github.com/hotmic-wp/hotmic-player-connect-ios`. Its public main branch currently requires player `from: "1.1.0-alpha.1"`, which cannot resolve a player pinned to `1.0.0`. Compatibility with this release is not validated; select a compatible adapter version separately. It is not required for your backend or URL playback, which needs no HotMic account.
+
+## Version policy
+
+Pin `exact: "1.0.0"` for reproducible initial adoption, or use `from: "1.0.0"` to accept compatible 1.x updates. Stable major versions define the source compatibility boundary; minor releases may add API and fixes, while breaking changes require a major release. Review behavior/default changes and the changelog when updating. Pre-release adapter requirements are separate from the stable player requirement. Version requirements resolve published tags. Unreleased evaluations may pin a reviewed full commit using `revision:`.
 
 ## Twenty-minute quickstart
 

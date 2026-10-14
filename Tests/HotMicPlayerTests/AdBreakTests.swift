@@ -23,9 +23,21 @@ struct AdBreakTests {
             if event.kind == .adPrefetchChanged { prefetch.append(event.properties["paused"] ?? "") }
         }
     }
-    private func wait(_ predicate: () -> Bool) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        while !predicate(), ProcessInfo.processInfo.systemUptime < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    private func wait(receipt: (() -> String)? = nil, _ predicate: () -> Bool) async throws {
+        let began = ProcessInfo.processInfo.systemUptime, deadline = began + 3
+        var last = began, maxGap = 0.0, previous = "", receipts = 0
+        while !predicate(), ProcessInfo.processInfo.systemUptime < deadline {
+            if let receipt {
+                let state = receipt()
+                if state != previous && receipts < 8 {
+                    nativeTestPhase("host wait state \(state)"); previous = state; receipts += 1
+                }
+            }
+            try await Task.sleep(for: .milliseconds(10))
+            let now = ProcessInfo.processInfo.systemUptime
+            maxGap = max(maxGap, now - last); last = now
+        }
+        if let receipt { nativeTestPhase("host wait end elapsed=\(ProcessInfo.processInfo.systemUptime - began) maxResumeGap=\(maxGap) \(receipt())") }
         try #require(predicate())
     }
     @Test("Host completion is one-shot; edits and visibility preserve visits; swipe cancellation invalidates callbacks and protects content heads")
@@ -35,9 +47,14 @@ struct AdBreakTests {
         let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
         phase("fixture after")
         defer { try? FileManager.default.removeItem(at: url) }
+        try await PlayerNativeReviewTests().prepareNativePlayback(url: url)
+        phase("native prerequisite complete; host behavior begin")
         let sink = Sink()
         var contexts: [HMHostAdContext] = [], stops: [HMAdOutcome] = []
-        let provider = Provider { _ in .hostPlayed(HMHostAdBreak(start: { contexts.append($0) }, stop: { stops.append($0) })) }
+        let provider = Provider { _ in
+            phase("provider decision")
+            return .hostPlayed(HMHostAdBreak(start: { contexts.append($0); phase("host start contexts=\(contexts.count)") }, stop: { stops.append($0) }))
+        }
         var configuration = HMPlayerConfiguration(managesAudioSession: false); configuration.restoresPlaybackPosition = true
         phase("setup before")
         let player = HMPlayer(configuration: configuration, analytics: HMAnalyticsHub(sinks: [sink]))
@@ -47,7 +64,10 @@ struct AdBreakTests {
         let items = ["one", "two", "three"].map { HMMediaItem(id: $0, url: url) }
         phase("replaceAll before"); player.replaceAll(items); phase("replaceAll after")
         phase("context one before")
-        try await wait { contexts.count == 1 && player.node(for: items[1]) != nil }
+        try await wait(receipt: {
+            let current = player.currentNode, next = player.node(for: items[1])
+            return "contexts=\(contexts.count) provider=\(provider.calls) ad=\(player.adState) current=\(current?.item?.id ?? "nil") currentGeneration=\(current?.assignmentGeneration ?? -1) currentStatus=\(String(describing: current?.player.currentItem?.status.rawValue)) next=\(next?.item?.id ?? "nil") nextGeneration=\(next?.assignmentGeneration ?? -1) nextStatus=\(String(describing: next?.player.currentItem?.status.rawValue)) nextFrame=\(next?.snapshot.isFrameReady == true)"
+        }) { contexts.count == 1 && player.node(for: items[1]) != nil }
         phase("context one after")
         let content = try #require(player.currentNode)
         let assignment = content.assignmentGeneration

@@ -1199,11 +1199,15 @@ struct PlayerNativeReviewTests {
             // retirements of the same connection. Keep exactly-one retirement strict.
             var prefixPreemptions = 0, completed: Set<String> = [], acceptedBytes: [String: Int] = [:]
             await transport.setEventHandler { event, item in
+                if [warm.id, alias.id, farther.id].contains(item.id) {
+                    fixture.recordProgress("event item=\(item.id) work=\(event.properties["prefetch_work"] ?? "-") reason=\(event.properties["reason"] ?? "-")", event: event)
+                }
                 if event.properties["reason"] == "prefix-shared-resource-preemption" { prefixPreemptions += 1 }
                 if event.properties["prefetch_work"] == "completed" { completed.insert(item.id) }
                 acceptedBytes[item.id, default: 0] += Int(event.metrics["prefetch_bytes"] ?? 0)
             }
             let native = NativeRequestReceipt(url: transport.state.url(url, item: warm))
+            defer { native.connection.cancel() }
             let plan = HMPrefetchPlan(itemsAhead: 2, bytesPerItem: cap, secondsPerItem: 4, reason: "parked owner acceptance")
             if lateParking {
                 let started = Date().addingTimeInterval(2)
@@ -1230,8 +1234,10 @@ struct PlayerNativeReviewTests {
                 #expect(await transport.parkedNativeRequestCount > 0)
                 await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
             }
-            let finished = Date().addingTimeInterval(4)
-            while !completed.contains(farther.id), Date() < finished { try await Task.sleep(for: .milliseconds(10)) }
+            try await waitForNativeProgress(fixture, phase: "parked \(mode) same_ID=\(sameID)") {
+                completed.contains(alias.id) && completed.contains(farther.id)
+            }
+            print("Transport prefix queue: active_tokens=\(await transport.activePrefetchTokens) joined=\(await transport.joinedPlaybackRequestCount)")
             #expect(prefixPreemptions == 1 && completed.contains(alias.id) && completed.contains(farther.id))
             #expect(fixture.requestCount(path: "/farther.mp4") > 0)
             print("Transport parked: mode=\(mode) known_total=\(knownTotal) same_ID=\(sameID) prefix_preemptions=\(prefixPreemptions) farther_GETs=\(fixture.requestCount(path: "/farther.mp4"))")
@@ -1257,12 +1263,12 @@ struct PlayerNativeReviewTests {
             var met: Bool?, payload = 0.0
             await transport.setEventHandler { event, item in
                 guard item.id == next.id else { return }
+                fixture.recordProgress("event item=\(item.id) work=\(event.properties["prefetch_work"] ?? "-") outcome=\(event.properties["prefix_outcome"] ?? "-")", event: event)
                 payload += event.metrics["prefetch_bytes"] ?? 0
                 if let value = event.metrics["prefetch_target_met"] { met = value == 1 }
             }
             await transport.prefetch([next], keeping: [old, next], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "GET-only acceptance"))
-            let done = Date().addingTimeInterval(4)
-            while met == nil, Date() < done { try await Task.sleep(for: .milliseconds(10)) }
+            try await waitForNativeProgress(fixture, phase: "GET-only \(mode)") { met != nil }
             #expect(met == (mode != .oversized200))
             #expect(payload <= 1024)
             if mode != .oversized200 {
@@ -1280,6 +1286,28 @@ struct PlayerNativeReviewTests {
         } catch {
             _ = await transport.finish()
             throw error
+        }
+    }
+
+    /// Serial range fills and HEAD/GET metadata discovery have multiple responses.
+    /// Bound the whole fixture phase and also fail promptly when it stops progressing.
+    /// A local delayed-origin run exceeds the old four-second end-to-end predicate
+    /// while still completing each response; this does not diagnose a hosted stall.
+    private func waitForNativeProgress(_ fixture: PrefixOrigin, phase: String, until complete: () -> Bool) async throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        while true {
+            if complete() {
+                print("Transport wait: phase=\(phase) elapsed=\(ProcessInfo.processInfo.systemUptime - started) completed=true receipts=\(fixture.progressReceipts)")
+                return
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            let idle = now - max(started, fixture.lastProgress)
+            guard now - started < 8, idle < 4 else {
+                print("Transport wait: phase=\(phase) elapsed=\(now - started) idle=\(idle) completed=false receipts=\(fixture.progressReceipts)")
+                try #require(false, "Native fixture made no bounded progress: \(phase)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 
@@ -1345,6 +1373,22 @@ struct PlayerNativeReviewTests {
         static let manifest = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\npart.ts\n#EXT-X-ENDLIST\n"
         let listener: NWListener
         private let requestLock = NSLock()
+        private var progressedAt = 0.0
+        private var progress: [String] = []
+        var lastProgress: Double { requestLock.lock(); defer { requestLock.unlock() }; return progressedAt }
+        var progressReceipts: [String] { requestLock.lock(); defer { requestLock.unlock() }; return progress }
+        func recordProgress(_ receipt: String, event: HMPlaybackEvent? = nil) {
+            if let event {
+                guard event.properties["prefetch_work"] != nil || event.properties["reason"] != nil ||
+                      event.metrics["network_bytes", default: 0] > 0 || event.metrics["ttfb_s"] != nil ||
+                      event.metrics["prefetch_target_met"] != nil else { return }
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            requestLock.lock(); progressedAt = max(progressedAt, now)
+            // Bounded fixture milestones and request lines, never response payloads.
+            if progress.count == 32 { progress.removeFirst() }
+            progress.append("\(now):\(receipt)"); requestLock.unlock()
+        }
         private var requests: [String: Int] = [:]
         private var rangeStarts: [String: Int] = [:]
         func lastRangeStart(path: String) -> Int? { requestLock.lock(); defer { requestLock.unlock() }; return rangeStarts[path] }
@@ -1422,6 +1466,7 @@ struct PlayerNativeReviewTests {
                     let received = String(decoding: request ?? Data(), as: UTF8.self)
                     print("Origin receipt: mode=\(mode) attempt=\(attempt) request=\(received.replacingOccurrences(of: "\r\n", with: " | "))")
                     self?.record(received)
+                    self?.recordProgress("request \(received.components(separatedBy: "\r\n").first ?? "")")
                     if mode != .hanging {
                         let text = String(decoding: request ?? Data(), as: UTF8.self)
                         if [.head403, .head405, .unknownLength, .oversized200, .gatedOversized200].contains(mode) {

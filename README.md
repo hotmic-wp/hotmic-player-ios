@@ -122,8 +122,7 @@ Retain the player with the screen as in level 1; hide it with `isFeedVisible` an
 
 ## Requirements and performance
 
-The source marker is `1.1.0-dev`, not a release tag. Optional [aggregate diagnostics](Sources/HotMicPlayer/HotMicPlayer.docc/OptionalDiagnostics.md) remain default off, yield to playback, and require a separately confirmed collector deployment.
-
+The source marker is `1.1.0-dev`, not a release tag.
 
 - Xcode 16+ / Swift 6 package tools. The package currently compiles in Swift 5 language mode.
 - iOS 17+ for the player and UI. The player/feed also compile for tvOS 17+. HotMicPlayerUI is iOS-only. macOS 14+ supports platform-independent models and tests.

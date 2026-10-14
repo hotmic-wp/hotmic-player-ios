@@ -451,8 +451,7 @@ import UIKit
         guard diagnosticsDraw! < options.samplingPercent / 100 else { return }
         if diagnosticsCadence == nil { diagnosticsCadence = HMDiagnosticsCadence() }
         diagnosticsRecorder = HMDiagnosticsRecorder(options: options, configuration: configuration,
-            lastAttempt: -.infinity, cadence: diagnosticsCadence) { [weak self] in self?.diagnosticsEligible == true }
-        if !isFeedVisible || appBackgrounded { diagnosticsRecorder?.suspend() }
+            lastAttempt: -.infinity, suspended: !isFeedVisible || appBackgrounded, cadence: diagnosticsCadence) { [weak self] in self?.diagnosticsEligible == true }
     }
 
     private var diagnosticsEligible: Bool {
@@ -1572,7 +1571,10 @@ import UIKit
                 recorder.cancelDelivery(); recorder.record(.attempt, at: event.monotonicTime)
             case .firstFrame: recorder.record(.firstFrame(event.metrics["ttff_ms"] ?? .nan), at: event.monotonicTime)
             case .viewEnd:
-                if pool.existingNode(for: item)?.snapshot.timeToFirstFrame == nil {
+                // Resize/trim clear assignments before synchronous release emits viewEnd.
+                if let key = event.properties["player_key"],
+                   let emitting = pool.nodes.first(where: { $0.id == key }),
+                   emitting.snapshot.timeToFirstFrame == nil {
                     recorder.record(.endedBeforeFrame, at: event.monotonicTime)
                 }
             case .rebufferStart: recorder.cancelDelivery()

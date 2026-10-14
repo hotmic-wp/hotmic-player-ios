@@ -10,6 +10,7 @@ import UIKit
     private let rate: Double
     private var config: HMDiagnosticsConfig?
     private var timer: DispatchSourceTimer?
+    private var generation: UInt64 = 0
     private var transport: HMDiagnosticsTransport?
     private var memoryObserver: NSObjectProtocol?
     private let options: HMPlayerDiagnosticsConfiguration
@@ -17,21 +18,21 @@ import UIKit
     private let cadence: HMDiagnosticsCadence
     var lastAttempt: TimeInterval { cadence.lastAttempt }
     init(options: HMPlayerDiagnosticsConfiguration, configuration: HMPlayerConfiguration,
-         lastAttempt: TimeInterval, cadence: HMDiagnosticsCadence? = nil, eligible: @escaping @MainActor () -> Bool) {
+         lastAttempt: TimeInterval, suspended: Bool = false, cadence: HMDiagnosticsCadence? = nil, eligible: @escaping @MainActor () -> Bool) {
         self.options = options; rate = options.samplingPercent / 100
         self.cadence = cadence ?? HMDiagnosticsCadence(lastAttempt: lastAttempt); self.eligible = eligible
         began = ProcessInfo.processInfo.systemUptime
         config = HMDiagnosticsConfig(configuration)
-        resume()
+        if !suspended { resume() }
     }
     func resume() {
         guard timer == nil, options.endpoint != nil else { return }
         began = ProcessInfo.processInfo.systemUptime
         aggregate = config.map { HMDiagnosticsAggregate(config: $0, rate: rate) }
         let source = DispatchSource.makeTimerSource(queue: .main)
-        source.schedule(deadline: .now() + 60, repeating: 60, leeway: .milliseconds(250))
+        // One-shot deadlines avoid shortening the next window when lateness decreases.
         source.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.close() } }
-        timer = source; source.resume()
+        timer = source; arm(at: max(began + 60, lastAttempt + 60)); source.resume()
         #if os(iOS)
         memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -39,7 +40,11 @@ import UIKit
             }
         #endif
     }
+    private func arm(at deadline: TimeInterval) {
+        timer?.schedule(deadline: .now() + max(0, deadline - ProcessInfo.processInfo.systemUptime), leeway: .milliseconds(250))
+    }
     func suspend() {
+        generation &+= 1
         timer?.cancel(); timer = nil; aggregate = nil
         if let memoryObserver { NotificationCenter.default.removeObserver(memoryObserver) }
         memoryObserver = nil
@@ -53,8 +58,10 @@ import UIKit
     func configure(_ configuration: HMPlayerConfiguration) {
         let next = HMDiagnosticsConfig(configuration)
         guard next != config else { return }
+        generation &+= 1
         config = next; began = ProcessInfo.processInfo.systemUptime
         aggregate = timer == nil ? nil : next.map { HMDiagnosticsAggregate(config: $0, rate: rate) }
+        arm(at: max(began + 60, lastAttempt + 60))
     }
     func record(_ observation: Observation, at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         // Later events never enter an expired window, even if the timer wakes late.
@@ -81,17 +88,30 @@ import UIKit
         }
     }
     func close(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard timer != nil else { return }
+        let deadline = max(began + 60, lastAttempt + 60)
+        guard now >= deadline else {
+            arm(at: deadline); return
+        }
         let elapsed = now - began
+        generation &+= 1
+        let submittedGeneration = generation
         defer {
             began = now
             aggregate = config.map { HMDiagnosticsAggregate(config: $0, rate: rate) }
+            arm(at: max(began + 60, lastAttempt + 60))
         }
         // Two intervals defines stale. Ordinary scheduling jitter remains sendable.
         guard elapsed >= 60, elapsed < 120, var snapshot = aggregate, !snapshot.invalid,
               eligible(), now - lastAttempt >= 60, transport?.busy != true, let endpoint = options.endpoint else { return }
         if transport == nil { transport = HMDiagnosticsTransport(endpoint: endpoint, appKey: options.appKey, cadence: cadence) }
         snapshot.window_duration_ms = Int(min(elapsed * 1000, 60_000))
-        _ = transport?.submit(snapshot)
+        _ = transport?.submit(snapshot) { [weak self] admittedAt in
+            guard let self, self.timer != nil, self.generation == submittedGeneration else { return }
+            // Only a numeric scheduling signal crosses back to main. No snapshot waits
+            // for cadence; actual admission retains its independent utility-side guard.
+            self.arm(at: max(self.began + 60, admittedAt + 60))
+        }
     }
     deinit {
         timer?.cancel(); transport?.cancel()

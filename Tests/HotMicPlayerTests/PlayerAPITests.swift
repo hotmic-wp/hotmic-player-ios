@@ -563,6 +563,48 @@ struct PlayerNativeReviewTests {
         try await settle()
         #expect(gesture.singleTap.isEnabled && gesture.doubleTap.isEnabled)
         #expect(node.player.currentItem === native && node.assignmentGeneration == generation)
+
+        // Exercise HMPlayer.configuration -> resize -> release -> synchronous viewEnd
+        // with the current active node above the retained pool range.
+        let shrinking = HMPlayer(configuration: HMPlayerConfiguration(strategy: .S2, poolSize: 2,
+            prefetch: .init(ahead: 1, behind: 1), managesAudioSession: false, failedItemPolicy: .stay))
+        defer { shrinking.teardown() }
+        let filler = HMMediaItem(id: "retained-slot", url: url)
+        let highItem = HMMediaItem(id: "high-current", url: url)
+        shrinking.replaceAll([filler, highItem])
+        let warmDeadline = Date().addingTimeInterval(3)
+        while shrinking.pool.existingNode(for: highItem) == nil, Date() < warmDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let high = try #require(shrinking.pool.existingNode(for: highItem))
+        try #require(high === shrinking.pool.nodes[1])
+        shrinking.next()
+        let activeDeadline = Date().addingTimeInterval(3)
+        while !high.isActive, Date() < activeDeadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(shrinking.currentItem?.id == highItem.id && high.isActive)
+        let highController = HMPlayerViewController(player: shrinking, aspectRatio: nil)
+        window.rootViewController = highController
+        highController.view.layoutIfNeeded()
+        let frameDeadline = Date().addingTimeInterval(3)
+        while !high.playerLayer.isReadyForDisplay, Date() < frameDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Native ready layer + existing display-boundary hook (the unhosted runner
+        // may not deliver a scene display link); no synthetic metric/event injection.
+        high.didDisplayFrame(activation: high.snapshot.activationID, at: ProcessInfo.processInfo.systemUptime)
+        try #require(high.snapshot.timeToFirstFrame != nil)
+        shrinking.setDiagnostics(.init(baseURL: URL(string: "http://127.0.0.1:9")!, appKey: "synthetic", samplingPercent: 100))
+        shrinking.configuration.poolSize = 1
+        #expect(shrinking.diagnosticsRecorder?.aggregate?.playback.ended_before_first_frame == 0)
+        shrinking.configuration.poolSize = 2
+        // The previous item remains resolved. Navigation synchronously activates it
+        // in the new higher slot; shrink before a display boundary can run.
+        shrinking.previous()
+        let blankNode = try #require(shrinking.pool.existingNode(for: filler))
+        try #require(blankNode === shrinking.pool.nodes[1] && blankNode.isActive)
+        try #require(blankNode.snapshot.timeToFirstFrame == nil)
+        shrinking.configuration.poolSize = 1
+        #expect(shrinking.diagnosticsRecorder?.aggregate?.playback.ended_before_first_frame == 1)
     }
     #endif
 

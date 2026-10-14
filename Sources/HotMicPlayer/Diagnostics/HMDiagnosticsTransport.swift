@@ -42,7 +42,7 @@ final class HMDiagnosticsTransport: NSObject, URLSessionDataDelegate, @unchecked
         return URLSession(configuration: c, delegate: self, delegateQueue: queue)
     }
     var busy: Bool { lock.lock(); defer { lock.unlock() }; return reserved }
-    @discardableResult func submit(_ snapshot: HMDiagnosticsAggregate) -> Bool {
+    @discardableResult func submit(_ snapshot: HMDiagnosticsAggregate, onAdmission: (@MainActor @Sendable (TimeInterval) -> Void)? = nil) -> Bool {
         lock.lock()
         guard !stopped, !reserved else { lock.unlock(); return false }
         reserved = true; lock.unlock()
@@ -72,12 +72,16 @@ final class HMDiagnosticsTransport: NSObject, URLSessionDataDelegate, @unchecked
             self.lock.lock()
             // Cadence is checked after encoding/session construction, at task admission.
             // It survives cancelled transports and disable/re-enable on the same player.
+            let admittedAt = ProcessInfo.processInfo.systemUptime
             let admitted = !self.stopped && ProcessInfo.processInfo.systemUptime < expires &&
-                self.cadence.reserve(at: ProcessInfo.processInfo.systemUptime)
+                self.cadence.reserve(at: admittedAt)
             if admitted { self.session = session; self.request = task }
             else { self.reserved = false }
             self.lock.unlock()
-            if admitted { task.resume() }
+            if admitted {
+                task.resume()
+                if let onAdmission { DispatchQueue.main.async { onAdmission(admittedAt) } }
+            }
             else { task.cancel(); session.invalidateAndCancel() }
         }
         return true
@@ -95,7 +99,9 @@ final class HMDiagnosticsTransport: NSObject, URLSessionDataDelegate, @unchecked
         completionHandler(.cancel)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock(); request = nil; reserved = false
+        lock.lock()
+        guard session === self.session else { lock.unlock(); return }
+        request = nil; reserved = false
         let owned = self.session; self.session = nil; lock.unlock()
         owned?.finishTasksAndInvalidate()
     }

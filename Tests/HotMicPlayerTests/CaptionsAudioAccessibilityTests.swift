@@ -215,6 +215,8 @@ extension CaptionsAudioAccessibilityTests {
         weak var owned = player.diagnosticsRecorder
         #expect(owned != nil && player.preparedItemCount == count)
         player.isFeedVisible = false; #expect(owned?.aggregate == nil)
+        player.setDiagnostics(options); owned = player.diagnosticsRecorder
+        #expect(owned?.aggregate == nil) // constructed suspended, no transient window
         player.isFeedVisible = true; #expect(owned?.aggregate != nil)
         player.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
         #expect(owned?.aggregate == nil)
@@ -239,15 +241,34 @@ extension CaptionsAudioAccessibilityTests {
         recorder.close(at: began + 60.2)
         #expect(recorder.aggregate?.playback.attempted == 0 && recorder.lastAttempt == -.infinity)
         let second = recorder.began
-        for _ in 0...10_000 { recorder.record(.attempt, at: second + 1) }
+        // Decreasing grid lateness is an early wake for the new one-shot window.
+        recorder.record(.attempt, at: second + 59.7)
+        recorder.close(at: began + 120.05)
+        #expect(recorder.began == second && recorder.aggregate?.playback.attempted == 1)
+        recorder.close(at: second + 60.05)
+        #expect(recorder.began == second + 60.05 && recorder.aggregate?.playback.attempted == 0)
+        let overflowBegan = recorder.began
+        for _ in 0...10_000 { recorder.record(.attempt, at: overflowBegan + 1) }
         #expect(recorder.aggregate?.invalid == true)
-        recorder.close(at: second + 120)
+        recorder.close(at: overflowBegan + 120)
         #expect(recorder.aggregate?.playback.attempted == 0)
         recorder.record(.stall(.infinity), at: recorder.began + 1)
         #expect(recorder.aggregate?.invalid == true)
         recorder.configure(.highQuality); #expect(recorder.aggregate?.config.startup_bps == 0)
         recorder.discardForPressure(); #expect(recorder.aggregate?.invalid == true)
         recorder.suspend(); #expect(recorder.aggregate == nil)
+
+        let alignedCadence = HMDiagnosticsCadence()
+        let aligned = HMDiagnosticsRecorder(options: options, configuration: .default, lastAttempt: -.infinity,
+            cadence: alignedCadence, eligible: { false })
+        let alignedBegan = aligned.began
+        #expect(alignedCadence.reserve(at: alignedBegan + 0.25))
+        aligned.record(.attempt, at: alignedBegan + 59)
+        aligned.close(at: alignedBegan + 60.05)
+        #expect(aligned.began == alignedBegan && aligned.aggregate?.playback.attempted == 1)
+        aligned.close(at: alignedBegan + 60.25)
+        #expect(aligned.began == alignedBegan + 60.25 && aligned.aggregate?.playback.attempted == 0)
+        aligned.suspend()
 
         let measured = HMDiagnosticsRecorder(options: options, configuration: .default, lastAttempt: -.infinity, eligible: { false })
         let at = measured.began + 1
@@ -262,6 +283,10 @@ extension CaptionsAudioAccessibilityTests {
         print("Diagnostics capture simulator smoke: 5000 identical observations off=\(off)s on=\(on)s; fixed eight buckets, no per-event tasks")
         measured.suspend()
 
+        let spacing = HMDiagnosticsCadence()
+        #expect(spacing.reserve(at: began + 60.25))
+        #expect(!spacing.reserve(at: began + 120.05)) // 59.8 s is not an admissible attempt.
+        #expect(spacing.reserve(at: began + 120.25))
         let cadence = HMDiagnosticsCadence()
         #expect(cadence.reserve(at: 60)); #expect(!cadence.reserve(at: 119.999)); #expect(cadence.reserve(at: 120))
         let snapshot = HMDiagnosticsAggregate(config: try #require(HMDiagnosticsConfig(.default)), rate: 1)

@@ -664,6 +664,24 @@ struct PlayerNativeReviewTests {
     /// First-use native services have their own measured precondition, inside the
     /// same test-command budget. No ad provider, injected frame, or SDK timing seam.
     func prepareNativePlayback(url: URL) async throws {
+        #if canImport(UIKit)
+        // Hostless xctest has no UIApplicationMain, so test order decides when UIKit first
+        // initializes. Hosted #234 samples showed the SDK's UIView init waiting in UIKit's
+        // one-time application/screen setup after native media preparation. Construct one
+        // UIView on main before any media work. Test-host setup only: not a product fix or
+        // deadlock proof; synchronous, so only the outer native watchdog bounds it.
+        #if HOTMIC_APP_HOSTED
+        // CI injects these tests into an empty UIKit app (Tests/HotMicPlayerTestHost).
+        try AppHostedTestEnvironment.requireLaunchedHost()
+        #endif
+        try #require(pthread_main_np() == 1)
+        nativeTestPhase("UIKit view prerequisite begin")
+        let uikitBegan = ProcessInfo.processInfo.systemUptime
+        do {
+            let view = UIView(frame: .zero)
+            nativeTestPhase("UIKit view prerequisite ready elapsed=\(ProcessInfo.processInfo.systemUptime - uikitBegan) displayScale=\(view.traitCollection.displayScale)")
+        }
+        #endif
         nativeTestPhase("native prerequisite first-use begin")
         let deadline = ProcessInfo.processInfo.systemUptime + 10
         let player = HMPlayer()

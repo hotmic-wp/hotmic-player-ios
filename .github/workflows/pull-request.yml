@@ -51,6 +51,7 @@ jobs:
           path: |
             .bench/unit/*.log
             .bench/unit/*.json
+            .bench/unit/*.xctestrun
             .bench/unit/lifecycle.txt
             .bench/unit/UnitTests.xcresult
           retention-days: 7

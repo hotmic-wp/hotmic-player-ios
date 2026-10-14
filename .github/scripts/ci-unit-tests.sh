@@ -14,7 +14,7 @@ job_name=unit-tests
 budget_total=540
 budget_simulator_build=420
 budget_unit_tests=240
-# Reserve 30s for bounded termination, cleanup and result extraction, leaving
+# Reserve 35s for bounded termination, cleanup and result extraction, leaving
 # another 60s outside this script for upload within the ten-minute job.
 total_deadline=$(python3 -c 'import time; print(time.monotonic() + 540)')
 watchdog_pid=""
@@ -32,7 +32,7 @@ unit_step() {
   echo "::group::$name"
   python3 .github/scripts/ci-unit-command.py --name "$name" \
     --log "$validation_dir/$name.log" --seconds "$budget" \
-    --total-deadline "$total_deadline" --reserve "${command_reserve:-30}" \
+    --total-deadline "$total_deadline" --reserve "${command_reserve:-35}" \
     --grace "${command_grace:-5}" ${failure_args[@]+"${failure_args[@]}"} -- "$@" &
   watchdog_pid=$!
   wait "$watchdog_pid" || status=$?
@@ -82,10 +82,10 @@ cleanup() {
   fi
   command_reserve=0
   command_grace=1
-  # Shutdown/delete/summary caps plus 1s grace each use 28s of the 30s reserve.
+  # Shutdown/delete/summary caps plus 1s grace each use 33s of the 35s reserve.
   if [ "$created_simulator" = 1 ]; then
     unit_step simulator-shutdown 10 xcrun simctl shutdown "$simulator_id" || true
-    if ! unit_step simulator-delete 5 xcrun simctl delete "$simulator_id"; then
+    if ! unit_step simulator-delete 10 xcrun simctl delete "$simulator_id"; then
       echo "::error::Could not delete owned simulator $simulator_id."
       [ "$status" != 0 ] || status=1
     fi
@@ -182,12 +182,14 @@ start_simulator() {
 # Complete generic compilation under its owned watchdog before the parent
 # discovers/creates/boots the owned simulator. Xcode may do its own simulator
 # discovery or bootstrap work during the generic build.
+unit_step build-inputs 30 python3 .github/scripts/ci-unit-products.py prepare \
+  --derived "$derived" --evidence "$validation_dir" --arch "$simulator_arch"
 rm -f "$validation_dir/build-cancel"
 rm -f "$validation_dir/simulator-build.json"
 rm -rf "$validation_dir/UnitTests.xcresult"
 python3 .github/scripts/ci-unit-command.py --name simulator-build \
   --log "$validation_dir/simulator-build.log" --seconds "$budget_simulator_build" \
-  --total-deadline "$total_deadline" --reserve 30 --grace 5 \
+  --total-deadline "$total_deadline" --reserve 35 --grace 5 \
   --cancel-file "$validation_dir/build-cancel" -- \
   xcodebuild build-for-testing \
   -project "$test_project" -scheme HotMicPlayerTests \
@@ -199,14 +201,17 @@ build_status=0
 wait "$build_watchdog_pid" || build_status=$?
 build_watchdog_pid=""
 [ "$build_status" = 0 ] || exit "$build_status"
+# Validate/capture the generated runner and all app resources before provisioning.
+unit_step compiled-products 30 python3 .github/scripts/ci-unit-products.py capture \
+  --derived "$derived" --evidence "$validation_dir" --arch "$simulator_arch"
+xctestrun=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["xctestrun"])' "$validation_dir/compiled-products.json")
 start_simulator
 # Await readiness after compilation: simctl boot alone may defer migration.
 unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
 # The iOS unit target includes native-player tests omitted by macOS swift test.
 unit_step unit-tests "$budget_unit_tests" xcodebuild test-without-building \
-  -project "$test_project" -scheme HotMicPlayerTests \
-  -destination "platform=iOS Simulator,id=$simulator_id,arch=$simulator_arch" -derivedDataPath "$derived" \
+  -xctestrun "$xctestrun" \
+  -destination "platform=iOS Simulator,id=$simulator_id,arch=$simulator_arch" \
   -parallel-testing-enabled NO -only-testing:HotMicPlayerTests \
-  -resultBundlePath "$validation_dir/UnitTests.xcresult" \
-  ARCHS="$simulator_arch" ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}"
+  -resultBundlePath "$validation_dir/UnitTests.xcresult"
 enforce_total

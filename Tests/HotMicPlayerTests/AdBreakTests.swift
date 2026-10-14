@@ -332,7 +332,7 @@ final class HostContextStallProbe: @unchecked Sendable {
         if result == KERN_SUCCESS {
             frames[0] = state.__pc; frames[1] = state.__lr; count = 2
             var fp = state.__fp
-            while count < capacity, fp & 7 == 0, fp >= stackLow, fp <= stackHigh, stackHigh - fp >= 16,
+            while count < capacity, fp & 7 == 0, fp >= stackLow, fp + 16 <= stackHigh,
                   let frame = UnsafePointer<UInt64>(bitPattern: UInt(fp)) {
                 let next = frame[0], ret = frame[1]
                 guard ret != 0 else { break }

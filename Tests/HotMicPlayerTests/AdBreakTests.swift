@@ -8,16 +8,22 @@ import Testing
 struct AdBreakTests {
     final class Provider: HMAdBreakProvider {
         var calls = 0
+        var trace: ((String) -> Void)? // TEMPORARY #234 host-context diagnostic receipt.
         let decide: (HMMediaItem) async throws -> HMAdBreak
         init(_ decide: @escaping (HMMediaItem) async throws -> HMAdBreak) { self.decide = decide }
-        func adBreak(for item: HMMediaItem) async throws -> HMAdBreak { calls += 1; return try await decide(item) }
+        func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
+            calls += 1; let decision = try await decide(item)
+            trace?("provider returned main=\(pthread_main_np())"); return decision
+        }
     }
     final class Sink: HMAnalyticsSink {
         let sinkName = "ads-test"
         var outcomes: [String] = []
         var prefetch: [String] = []
         var events: [HMPlaybackEvent] = []
+        var trace: ((HMPlaybackEvent) -> Void)? // TEMPORARY #234 host-context diagnostic receipt.
         func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+            trace?(event)
             events.append(event)
             if event.kind == .adBreakEnded { outcomes.append(event.properties["outcome"] ?? "") }
             if event.kind == .adPrefetchChanged { prefetch.append(event.properties["paused"] ?? "") }
@@ -49,12 +55,18 @@ struct AdBreakTests {
         defer { try? FileManager.default.removeItem(at: url) }
         try await PlayerNativeReviewTests().prepareNativePlayback(url: url)
         phase("native prerequisite complete; host behavior begin")
+        // TEMPORARY #234 host-context diagnostic: thread identity, main/pool liveness, main stacks on missed pings.
+        let probe = HostContextStallProbe()
+        defer { probe.stop() }
         let sink = Sink()
+        sink.trace = { if $0.kind == .adStateChanged { phase("sink adStateChanged state=\($0.properties["state"] ?? "") main=\(pthread_main_np())") } }
         var contexts: [HMHostAdContext] = [], stops: [HMAdOutcome] = []
         let provider = Provider { _ in
             phase("provider decision")
-            return .hostPlayed(HMHostAdBreak(start: { contexts.append($0); phase("host start contexts=\(contexts.count)") }, stop: { stops.append($0) }))
+            phase("provider identity main=\(pthread_main_np())")
+            return .hostPlayed(HMHostAdBreak(start: { contexts.append($0); phase("host start contexts=\(contexts.count)"); phase("host start identity main=\(pthread_main_np())") }, stop: { stops.append($0) }))
         }
+        provider.trace = { phase($0) }
         var configuration = HMPlayerConfiguration(managesAudioSession: false); configuration.restoresPlaybackPosition = true
         phase("setup before")
         let player = HMPlayer(configuration: configuration, analytics: HMAnalyticsHub(sinks: [sink]))
@@ -69,6 +81,7 @@ struct AdBreakTests {
             return "contexts=\(contexts.count) provider=\(provider.calls) ad=\(player.adState) current=\(current?.item?.id ?? "nil") currentGeneration=\(current?.assignmentGeneration ?? -1) currentStatus=\(String(describing: current?.player.currentItem?.status.rawValue)) next=\(next?.item?.id ?? "nil") nextGeneration=\(next?.assignmentGeneration ?? -1) nextStatus=\(String(describing: next?.player.currentItem?.status.rawValue)) nextFrame=\(next?.snapshot.isFrameReady == true)"
         }) { contexts.count == 1 && player.node(for: items[1]) != nil }
         phase("context one after")
+        probe.stop(); sink.trace = nil; provider.trace = nil
         let content = try #require(player.currentNode)
         let assignment = content.assignmentGeneration
         #expect(!content.isActive && content.snapshot.currentTime == 0)
@@ -235,6 +248,113 @@ struct AdBreakTests {
             try await wait { player.adState == .finished && previous.isActive }
             #expect(previous.assignmentGeneration == generation)
         }
+    }
+}
+/// TEMPORARY #234 host-context diagnostic; test-only and not shipped. A plain pthread outside the
+/// Swift cooperative pool pings the main queue and the global executor. While a main ping stays
+/// unacknowledged it suspends the main thread only to copy its frame-pointer return addresses,
+/// resumes it, then symbolizes. No SDK seam, wait, deadline or assertion is changed.
+final class HostContextStallProbe: @unchecked Sendable {
+    private let lock = NSLock(), done = DispatchSemaphore(value: 0)
+    private var running = true, mainAck = 0, poolAck = 0, maxPoolLag = 0.0, slowPool = 0
+    private let mainThread = mach_thread_self(), stackLow: UInt64, stackHigh: UInt64
+    private let threshold: TimeInterval, maxSamples: Int
+
+    init(threshold: TimeInterval = 0.004, maxSamples: Int = 20) {
+        self.threshold = threshold; self.maxSamples = maxSamples
+        let main = pthread_self()
+        stackHigh = UInt64(UInt(bitPattern: pthread_get_stackaddr_np(main)))
+        stackLow = stackHigh - UInt64(pthread_get_stacksize_np(main))
+        nativeTestPhase("probe begin main=\(pthread_main_np()) machThread=\(mainThread) threshold=\(threshold)")
+        let thread = Thread { [self] in run() }
+        thread.name = "hem234-host-context-probe"; thread.qualityOfService = .userInteractive
+        thread.start()
+    }
+    deinit { mach_port_deallocate(mach_task_self_, mainThread) }
+
+    func stop() {
+        lock.lock(); let wasRunning = running; running = false; lock.unlock()
+        if wasRunning { _ = done.wait(timeout: .now() + 1) }
+    }
+    private var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
+    private func run() {
+        let frames = UnsafeMutablePointer<UInt64>.allocate(capacity: 48)
+        defer { frames.deallocate() }
+        var seq = 0, samples = 0, slowMain = 0, maxMain = 0.0, maxLoop = 0.0
+        var last = ProcessInfo.processInfo.systemUptime
+        while isRunning {
+            seq += 1
+            let sent = ProcessInfo.processInfo.systemUptime, s = seq
+            DispatchQueue.main.async { [self] in lock.lock(); mainAck = s; lock.unlock() }
+            Task.detached { [self] in
+                let lag = ProcessInfo.processInfo.systemUptime - sent
+                lock.withLock {
+                    poolAck = max(poolAck, s); maxPoolLag = max(maxPoolLag, lag)
+                    if lag >= threshold { slowPool += 1 }
+                }
+            }
+            var nextSample = threshold
+            while isRunning {
+                lock.lock(); let acked = mainAck >= s, pool = poolAck; lock.unlock()
+                let now = ProcessInfo.processInfo.systemUptime
+                maxLoop = max(maxLoop, now - last); last = now
+                if acked {
+                    maxMain = max(maxMain, now - sent)
+                    if now - sent >= threshold { slowMain += 1; nativeTestPhase("probe main ack seq=\(s) latency=\(now - sent)") }
+                    break
+                }
+                if now - sent >= nextSample, samples < maxSamples {
+                    samples += 1; nextSample *= 2
+                    let count = capture(into: frames, capacity: 48)
+                    nativeTestPhase("probe main unacked seq=\(s) waited=\(now - sent) sample=\(samples) poolAcked=\(pool >= s) poolOutstanding=\(s - pool) maxProbeLoopGap=\(maxLoop) frames=\(count)")
+                    for index in 0..<count { nativeTestPhase("probe main frame \(samples).\(index) \(symbol(frames[index]))") }
+                }
+                usleep(1_000)
+            }
+            usleep(1_000)
+        }
+        lock.lock(); let poolLag = maxPoolLag, slowPools = slowPool, outstanding = seq - poolAck; lock.unlock()
+        nativeTestPhase("probe end pings=\(seq) maxMainAck=\(maxMain) slowMain=\(slowMain) maxPoolAck=\(poolLag) slowPool=\(slowPools) poolOutstanding=\(outstanding) maxProbeLoopGap=\(maxLoop) samples=\(samples)")
+        done.signal()
+    }
+    /// Copies raw return addresses only while suspended: no allocation, locks or symbolization.
+    private func capture(into frames: UnsafeMutablePointer<UInt64>, capacity: Int) -> Int {
+        #if arch(arm64)
+        guard thread_suspend(mainThread) == KERN_SUCCESS else { return 0 }
+        var state = arm_thread_state64_t()
+        var stateCount = mach_msg_type_number_t(MemoryLayout<arm_thread_state64_t>.stride / MemoryLayout<natural_t>.stride)
+        let result = withUnsafeMutablePointer(to: &state) {
+            $0.withMemoryRebound(to: natural_t.self, capacity: Int(stateCount)) {
+                thread_get_state(mainThread, thread_state_flavor_t(ARM_THREAD_STATE64), $0, &stateCount)
+            }
+        }
+        var count = 0
+        if result == KERN_SUCCESS {
+            frames[0] = state.__pc; frames[1] = state.__lr; count = 2
+            var fp = state.__fp
+            while count < capacity, fp & 7 == 0, fp >= stackLow, fp + 16 <= stackHigh,
+                  let frame = UnsafePointer<UInt64>(bitPattern: UInt(fp)) {
+                let next = frame[0], ret = frame[1]
+                guard ret != 0 else { break }
+                frames[count] = ret; count += 1
+                guard next > fp else { break }
+                fp = next
+            }
+        }
+        thread_resume(mainThread)
+        return count
+        #else
+        return 0
+        #endif
+    }
+    private func symbol(_ pc: UInt64) -> String {
+        var info = Dl_info()
+        guard dladdr(UnsafeRawPointer(bitPattern: UInt(pc)), &info) != 0 else { return "0x\(String(pc, radix: 16)) ?" }
+        let image = info.dli_fname.map { String(cString: $0).split(separator: "/").last.map(String.init) ?? "?" } ?? "?"
+        let base = UInt64(UInt(bitPattern: info.dli_fbase))
+        let name = info.dli_sname.map { String(cString: $0) } ?? "?"
+        let offset = info.dli_saddr.map { pc &- UInt64(UInt(bitPattern: $0)) } ?? 0
+        return "\(image)+0x\(String(pc &- base, radix: 16)) \(name)+\(offset)"
     }
 }
 #endif

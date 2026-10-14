@@ -19,6 +19,10 @@ def main():
     parser.add_argument("--total-deadline", type=float, required=True)
     parser.add_argument("--reserve", type=float, default=30)
     parser.add_argument("--grace", type=float, default=5)
+    parser.add_argument("--cancel-file", type=Path,
+                        help="Parent-owned cancellation request; avoids signaling a completed background watchdog PID")
+    parser.add_argument("--failure-file", type=Path,
+                        help="Stop when a concurrent prerequisite records failure")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command
@@ -130,9 +134,25 @@ def main():
                     progress(reader)
                     now = time.monotonic()
                     code = process.poll()
+                    # Preserve an observed command failure before a concurrent
+                    # prerequisite failure can replace its exit status.
+                    if code is not None and code != 0 and received is None:
+                        status = code if code >= 0 else 128 - code
+                        break
+                    if code is None and args.cancel_file is not None and args.cancel_file.exists() and received is None:
+                        received = signal.SIGTERM
                     if received is not None:
                         status = 128 + received
                         break
+                    if args.failure_file is not None:
+                        try:
+                            dependency = json.loads(args.failure_file.read_text())
+                        except (OSError, ValueError):
+                            dependency = {}
+                        if dependency.get("exit_code", 0) != 0:
+                            status = dependency["exit_code"]
+                            record["dependency_exit"] = status
+                            break
                     if code is not None and code != 0:
                         status = code if code >= 0 else 128 - code
                         break

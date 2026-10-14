@@ -13,16 +13,24 @@ errors are retained and cannot turn a failed command into success. Original
 nonzero command exits and handled interrupt statuses are preserved. Apps/checks
 retain their existing shared helper and post-command budget checks.
 
-The unit job creates its simulator and starts boot before building the full
-`HotMicPlayerTests` target for a generic iOS simulator. After compilation it
-awaits `bootstatus` readiness before testing. This allows data migration to
-proceed during compilation; resource contention means faster completion is not
-guaranteed. External commands and their watchdogs stay sequential. `ARCHS` selects the host's native
+The unit job starts generic compilation of the full `HotMicPlayerTests` target
+before simulator discovery, then drives `bootstatus` during compilation. The
+parent tracks both watchdogs and waits for both before testing. On failure or
+interruption it requests compiler cancellation through an owned file and reaps
+the watchdog before cleanup. Only the compiler watchdog signals its unreaped
+child group; the shell never signals a possibly completed background PID.
+Simulator commands observe the compiler result file and stop promptly on its
+failure, preserving an already observed nonzero command exit. Parallel startup
+allows migration to overlap compilation; resource contention means faster
+completion is not guaranteed. `ARCHS` selects the host's native
 `arm64` or `x86_64` slice for both build and test; the test destination explicitly
 selects that architecture. This avoids device-specific destination selection
 during compilation. The selected installed iOS runtime need not match the SDK version;
 Xcode 26.6 remains required, and normal deployment-target/runtime compatibility
-checks still apply. The script neither downloads runtimes nor retries failures.
+checks still apply. The script neither downloads runtimes nor retries failures. Discovery allows
+60 seconds for cold CoreSimulator initialization (the prior 30-second cap timed
+out on a hosted runner); it overlaps compilation and remains subject to the
+same global deadline and cleanup reserve.
 
 The script creates and cleans up only its own simulator by default. An explicit
 `SIMULATOR_UDID` is borrowed and is never shut down or deleted by cleanup. A

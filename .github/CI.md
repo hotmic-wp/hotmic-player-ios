@@ -36,8 +36,8 @@ The script creates and cleans up only its own simulator by default. An explicit
 `SIMULATOR_UDID` is borrowed and is never shut down or deleted by cleanup. A
 failed build still cleans up its owned device. Owned devices are shut down and deleted on normal
 exit, command failure, or handled interruption; deletion failure fails the run.
-Each cleanup command and result extraction has a five-second deadline and
-one-second TERM grace, still capped by the remaining total allowance. Simulator
+Shutdown and result extraction each have a ten-second deadline; deletion has a
+five-second deadline, with one-second TERM grace each, still capped by the remaining total allowance. Simulator
 creation and boot stay sequential in the parent shell so ownership survives
 interrupts. The create log is cleared before creation starts, so interrupted
 reuse cannot adopt an earlier invocation's UUID. The runner's hard termination cannot guarantee shell cleanup or

@@ -79,15 +79,16 @@ cleanup() {
   fi
   command_reserve=0
   command_grace=1
+  # Shutdown/delete/summary caps plus 1s grace each use 28s of the 30s reserve.
   if [ "$created_simulator" = 1 ]; then
-    unit_step simulator-shutdown 5 xcrun simctl shutdown "$simulator_id" || true
+    unit_step simulator-shutdown 10 xcrun simctl shutdown "$simulator_id" || true
     if ! unit_step simulator-delete 5 xcrun simctl delete "$simulator_id"; then
       echo "::error::Could not delete owned simulator $simulator_id."
       [ "$status" != 0 ] || status=1
     fi
   fi
   if [ -d "$validation_dir/UnitTests.xcresult" ]; then
-    unit_step result-summary 5 xcrun xcresulttool get test-results summary \
+    unit_step result-summary 10 xcrun xcresulttool get test-results summary \
       --path "$validation_dir/UnitTests.xcresult" || summary_status=$?
     if [ "$summary_status" = 0 ]; then
       python3 - "$validation_dir/result-summary.log" <<'PY' || summary_status=$?

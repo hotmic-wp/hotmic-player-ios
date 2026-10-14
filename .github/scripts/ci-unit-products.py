@@ -49,7 +49,10 @@ def select(products, arch, since_ns):
     candidates, rejected = [], {}
     for path in sorted(products.glob("*.xctestrun")):
         try:
-            if path.is_symlink() or path.stat().st_mtime_ns < since_ns:
+            # Some CI/worktree volumes store only whole-second mtimes. Prior
+            # specs were removed before this successful build; retain that
+            # generation binding while rejecting older whole-second timestamps.
+            if path.is_symlink() or path.stat().st_mtime_ns // 1_000_000_000 < since_ns // 1_000_000_000:
                 raise ValueError("stale or symlinked specification")
             data = load(path)
             metadata = data.get("__xctestrun_metadata__", {})

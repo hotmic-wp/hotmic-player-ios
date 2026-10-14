@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--seconds", type=float, required=True)
     parser.add_argument("--total-deadline", type=float, required=True)
-    parser.add_argument("--reserve", type=float, default=30)
+    parser.add_argument("--reserve", type=float, default=35)
     parser.add_argument("--grace", type=float, default=5)
     parser.add_argument("--cancel-file", type=Path,
                         help="Parent-owned cancellation request; avoids signaling a completed background watchdog PID")
@@ -76,6 +76,8 @@ def main():
         return True
 
     args.log.parent.mkdir(parents=True, exist_ok=True)
+    # Persist actual argv/deadline before launch, even if the parent is killed.
+    args.log.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
     process = None
     cleanup_attempted = False
     status = 125

@@ -1,5 +1,7 @@
 # Changelog
 
+Optional aggregate diagnostics in the unreleased candidate are default off, with host-controlled lifetime sampling and expendable delivery. See the [partner handoff](docs/PARTNER_HANDOFF.md) and [diagnostic contract](Sources/HotMicPlayer/HotMicPlayer.docc/OptionalDiagnostics.md). `HotMicPlayer.version` is the source marker `1.1.0-dev`; this creates no published tag.
+
 ## 1.1.0 (draft — unreleased)
 
 ### Measured defaults and queue correctness

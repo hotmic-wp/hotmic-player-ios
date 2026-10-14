@@ -631,6 +631,7 @@ enum HMPlaybackState
 @MainActor func seek(to seconds: TimeInterval)
 @MainActor func seek(toProgress progress: Double)
 @MainActor func selectCaption(_ language: String?)
+@MainActor func setDiagnostics(_ options: HMPlayerDiagnosticsConfiguration?)
 @MainActor func skipAd()
 @MainActor func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot
 @MainActor func start() async
@@ -639,7 +640,7 @@ enum HMPlaybackState
 @MainActor func toggleMute()
 @MainActor func togglePlayPause()
 @MainActor func videoFrame(for item: HMMediaItem, in bounds: CGRect) -> CGRect
-@MainActor init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil)
+@MainActor init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil, diagnostics: HMPlayerDiagnosticsConfiguration? = nil)
 @MainActor let analytics: HMAnalyticsHub
 @MainActor var activeIndex: Int { get }
 @MainActor var adBreakProvider: (any HMAdBreakProvider)?
@@ -710,6 +711,16 @@ var resolveAhead: Int
 var startsMuted: Bool
 var startupPeakBitRate: Double
 var volatileSigningQueryParameters: [String]
+```
+
+## HMPlayerDiagnosticsConfiguration
+
+```swift
+init(baseURL: URL, appKey: String, samplingPercent: Double = 1)
+struct HMPlayerDiagnosticsConfiguration
+var appKey: String
+var baseURL: URL
+var samplingPercent: Double
 ```
 
 ## HMPlayerError

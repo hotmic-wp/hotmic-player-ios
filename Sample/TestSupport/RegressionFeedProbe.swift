@@ -65,7 +65,8 @@ struct RegressionFeedProbe: View {
             "commandsReady": commandsReady, "itemID": controller.currentItem?.id ?? "",
             "mediaURL": controller.currentItem?.url?.absoluteString ?? "", "index": controller.activeIndex,
             "interacting": controller.isInteracting, "applicationState": UIApplication.shared.applicationState.rawValue,
-            "playbackState": String(describing: controller.snapshot.state), "position": controller.snapshot.currentTime,
+            "playbackState": String(describing: controller.snapshot.state), "position": controller.snapshot.currentTime, "bufferedAhead": controller.snapshot.bufferedAhead,
+            "thermalState": ProcessInfo.processInfo.thermalState.rawValue, "lowPower": ProcessInfo.processInfo.isLowPowerModeEnabled,
             "frameReady": controller.snapshot.isFrameReady, "fullscreen": controller.isFullscreen]
         payload.merge(extra) { _, new in new }
         do {
@@ -83,7 +84,7 @@ enum RegressionCommands {
         var commands = ["next", "previous", "reconcile", "metadata", "remove-current", "remove-next", "insert-next", "append",
             "jump-last", "finish-policy", "advance-policy", "pause", "play", "seek", "seek-end", "hide", "show", "fullscreen", "exit-fullscreen", "captions", "teardown"]
         #if DEBUG
-        commands += ["inspect", "interrupt-began", "interrupt-end-paused", "media-reset", "seek-middle", "background", "foreground"]
+        commands += ["diagnostics-off", "diagnostics-on", "interaction-begin", "interaction-end", "memory-warning", "inspect", "interrupt-began", "interrupt-end-paused", "media-reset", "seek-middle", "background", "foreground"]
         #endif
         let names = commands.map { "com.hotmic.probe." + $0 }
         let center = CFNotificationCenterGetDarwinNotifyCenter()
@@ -114,6 +115,14 @@ enum RegressionCommands {
             let beforeInteracting = controller.isInteracting
             switch command {
             #if DEBUG
+            case "diagnostics-off": controller.setDiagnostics(nil)
+            case "diagnostics-on":
+                if let raw = DemoOptions().values["diagnostics-loopback"], let url = URL(string: raw), url.scheme == "http", url.host == "127.0.0.1" {
+                    controller.setDiagnostics(.init(baseURL: url, appKey: "synthetic-diagnostics-key", samplingPercent: 100))
+                }
+            case "interaction-begin": controller.beginInteraction()
+            case "interaction-end": controller.endInteraction()
+            case "memory-warning": NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
             case "inspect": break
             case "background": NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
             case "foreground": NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: nil)

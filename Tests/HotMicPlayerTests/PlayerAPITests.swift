@@ -218,6 +218,44 @@ struct PlayerReviewTests {
         let old = try JSONDecoder().decode(HMPlayerConfiguration.BenchmarkRecord.self, from: oldData).configuration
         #expect(old.failedItemPolicy == .skip && old.presentation == .automatic)
         #expect(old.aspectRatioTolerance == 0.25 && !old.followsDeviceRotation && !old.allowsBackgroundAudio)
+        // The aggregate DTO is a distinct allowlist, never the benchmark fingerprint.
+        c.volatileSigningQueryParameters = ["PRIVATE_PROPERTY_SENTINEL"]
+        let reported = try #require(HMDiagnosticsConfig(c))
+        let aggregate = HMDiagnosticsAggregate(config: reported, rate: 0.01)
+        let wire = try JSONEncoder().encode(aggregate)
+        let object = try #require(JSONSerialization.jsonObject(with: wire) as? [String: Any])
+        #expect(Set(object.keys) == Set(["schema_version", "sdk_version", "os_version", "hardware_model", "sample_rate", "window_duration_ms", "config", "playback", "startup_buckets", "moving_start_buckets", "stalls"]))
+        #expect(wire.count <= 8192 && !String(decoding: wire, as: UTF8.self).contains("PRIVATE_"))
+        #expect(reported.startup_bps == 0)
+        c.startupPeakBitRate = 1_600_000.6
+        #expect(HMDiagnosticsConfig(c)?.startup_bps == 1_600_001)
+        for invalid in [Double.nan, .infinity, -1, 1_000_000_001] {
+            c.startupPeakBitRate = invalid; #expect(HMDiagnosticsConfig(c) == nil)
+        }
+        c.startupPeakBitRate = 0; c.prefetch.secondsPerItem = 0.0000001
+        #expect(HMDiagnosticsConfig(c)?.entry_ms == 1)
+        c.prefetch.secondsPerItem = nil; #expect(HMDiagnosticsConfig(c)?.entry_ms == 0)
+        c.prefetch.secondsPerItem = -1
+        #expect(HMDiagnosticsConfig(c)?.entry_bytes == 0 && HMDiagnosticsConfig(c)?.entry_ms == 0)
+        c.prefetch.secondsPerItem = 60.0001; #expect(HMDiagnosticsConfig(c) == nil)
+        c.prefetch.secondsPerItem = .nan; #expect(HMDiagnosticsConfig(c) == nil)
+        c.prefetch.secondsPerItem = 4; c.prefetch.bytesPerItem = 100_000_000
+        #expect(HMDiagnosticsConfig(c) == nil)
+        c.prefetch.bytesPerItem = 0
+        #expect(HMDiagnosticsConfig(c)?.entry_bytes == 0 && HMDiagnosticsConfig(c)?.entry_ms == 0)
+        for (ms, index) in [(0.0,0),(99.99,0),(100,1),(150,2),(250,3),(500,4),(1000,5),(2000,6),(5000,7)] {
+            #expect(HMDiagnosticsAggregate.bucket(ms) == index)
+        }
+        #expect(HMDiagnosticsAggregate.bucket(.nan) == nil)
+        #expect(HMDiagnosticsAggregate.bucket(-1) == nil)
+        for raw in ["http://example.com", "https://name@example.com", "https://example.com?a=1", "https://example.com#private", "http://127.0.0.1.example.com"] {
+            #expect(HMPlayerDiagnosticsConfiguration(baseURL: URL(string: raw)!, appKey: "synthetic").endpoint == nil)
+        }
+        for percent in [0.0, -1, 101, .nan, .infinity, 0.00001] {
+            #expect(HMPlayerDiagnosticsConfiguration(baseURL: URL(string: "https://example.com")!, appKey: "synthetic", samplingPercent: percent).endpoint == nil)
+        }
+        #expect(HMPlayerDiagnosticsConfiguration(baseURL: URL(string: "http://127.0.0.1")!, appKey: "synthetic").endpoint != nil)
+
     }
     actor RecoveringResolver: HMItemResolver {
         var calls = 0

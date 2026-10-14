@@ -2,6 +2,8 @@
 
 Ship a mixed portrait and landscape video feed with your own data, ads and navigation.
 
+Start with the [forwardable partner handoff](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/docs/PARTNER_HANDOFF.md). Optional <doc:OptionalDiagnostics> is independent of playback configuration and off by default; collector deployment is separate.
+
 ## Choose your path
 
 | Path | Pick it when | Copyable starter |

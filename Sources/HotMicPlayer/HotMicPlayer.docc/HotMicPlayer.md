@@ -106,3 +106,7 @@ All player, timeline, source, and engagement access is isolated to the main acto
 - ``HMAdProgress``
 - ``HMAdKind``
 - ``HMAdOutcome``
+
+## Optional performance collection
+
+- <doc:OptionalDiagnostics>

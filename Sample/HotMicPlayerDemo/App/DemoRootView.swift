@@ -91,6 +91,14 @@ struct DemoRootView: View {
             source = try await options.dataSource()
             #endif
             let created = HMPlayer(configuration: configuration, interactions: interactions, analytics: hub)
+            #if DEBUG
+            // Explicit local-only walkthrough: ordinary demos remain completely off.
+            if let raw = options.values["diagnostics-loopback"], let url = URL(string: raw),
+               url.scheme == "http", url.host == "127.0.0.1" {
+                created.setDiagnostics(.init(baseURL: url, appKey: "synthetic-diagnostics-key",
+                    samplingPercent: Double(options.values["diagnostics-percent"] ?? "100") ?? 0))
+            }
+            #endif
             created.playlistSource = source; created.isFeedVisible = false
             settings.applyConfiguration = { [weak created] in created?.configuration = $0 }
             settings.showsHUD = false

@@ -12,6 +12,8 @@ See [Engagement from your backend or HotMic](Sources/HotMicPlayer/HotMicPlayer.d
 
 Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md), [capability matrix](Sources/HotMicPlayer/HotMicPlayer.docc/CapabilityMatrix.md) and [integration checklist](Sources/HotMicPlayer/HotMicPlayer.docc/IntegrationChecklist.md). Choose either [ReadyMadeOverlay](Examples/ReadyMadeOverlay) or [CustomOverlay](Examples/CustomOverlay); both starters build in examples CI. The 1.1.0 changelog is a draft.
 
+**Forwardable partner brief:** [Evaluate HotMicPlayer](docs/PARTNER_HANDOFF.md). Optional [aggregate diagnostics](Sources/HotMicPlayer/HotMicPlayer.docc/OptionalDiagnostics.md) are default off and require a separately confirmed collector deployment.
+
 ## Install
 
 For the latest features, pin the commit SHA HotMic provides from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the latest published alpha baseline:
@@ -119,6 +121,9 @@ import HotMicPlayerUI
 Retain the player with the screen as in level 1; hide it with `isFeedVisible` and call terminal `teardown()` only when its owner is permanently dismissed. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
 
 ## Requirements and performance
+
+The source marker is `1.1.0-dev`, not a release tag. Optional [aggregate diagnostics](Sources/HotMicPlayer/HotMicPlayer.docc/OptionalDiagnostics.md) remain default off, yield to playback, and require a separately confirmed collector deployment.
+
 
 - Xcode 16+ / Swift 6 package tools. The package currently compiles in Swift 5 language mode.
 - iOS 17+ for the player and UI. The player/feed also compile for tvOS 17+. HotMicPlayerUI is iOS-only. macOS 14+ supports platform-independent models and tests.

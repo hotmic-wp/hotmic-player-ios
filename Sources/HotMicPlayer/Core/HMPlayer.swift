@@ -109,12 +109,14 @@ import UIKit
         case UIApplication.didEnterBackgroundNotification:
             guard !appBackgrounded else { return }
             appBackgrounded = true
+            diagnosticsRecorder?.suspend()
             if !configuration.allowsBackgroundAudio { pauseAll() }
             updateHostPlaybackPermission(); emit(.audioSession(.enteredBackground))
         case UIApplication.didBecomeActiveNotification:
             // Latest explicit host intent also includes play/navigation while blocked.
             let eligible = wantsPlayback
             appBackgrounded = false; audioInterrupted = false
+            if isFeedVisible { diagnosticsRecorder?.resume() }
             resumeAfterInterruption = false
             let resumed = eligible && isFeedVisible && !audioBlocked
             if resumed { activateAudioIfManaged(); resumeActive() }
@@ -141,6 +143,7 @@ import UIKit
         }
     }
     #else
+    private var appBackgrounded: Bool { false }
     private var audioBlocked: Bool { false }
     #endif
     @ObservationIgnored private var didActivateAudioSession = false
@@ -240,7 +243,7 @@ import UIKit
     /// Playback and prefetch settings. Updating these may resize the engine pool.
     ///
     /// Access on the main actor.
-    public var configuration: HMPlayerConfiguration { didSet { applyConfiguration() } }
+    public var configuration: HMPlayerConfiguration { didSet { diagnosticsRecorder?.configure(configuration); applyConfiguration() } }
     /// Replaceable measured-performance policy. Fixed mode bypasses custom providers.
     ///
     /// Access on the main actor.
@@ -261,6 +264,8 @@ import UIKit
     public var isFeedVisible = true {
         didSet {
             guard isFeedVisible != oldValue else { return }
+            if isFeedVisible && !appBackgrounded { diagnosticsRecorder?.resume() }
+            else { diagnosticsRecorder?.suspend() }
             updateHostPlaybackPermission()
             if isFeedVisible { Task { [weak self] in await self?.prepareTransport() }; activateAudioIfManaged(); refreshWindow() }
             else { pauseAll() }
@@ -296,7 +301,7 @@ import UIKit
     public var isInteracting: Bool { pageIsMoving || feedIsTouching || partnerIsInteracting }
     private var feedIsTouching = false
     private var partnerIsInteracting = false
-    private var pageIsMoving = false
+    private var pageIsMoving = false { didSet { if pageIsMoving { diagnosticsRecorder?.cancelDelivery() } } }
     @ObservationIgnored private var interactionTimeoutTask: Task<Void, Never>?
     /// Defers automatic failure skips for a custom control. Repeated calls renew the 30-second timeout.
     ///
@@ -305,6 +310,7 @@ import UIKit
     func beginInteraction(timeout: Duration) {
         guard !ended else { return }
         partnerIsInteracting = true
+        diagnosticsRecorder?.cancelDelivery()
         interactionTimeoutTask?.cancel()
         interactionTimeoutTask = Task { [weak self] in
             do { try await Task.sleep(for: timeout) } catch { return }
@@ -321,6 +327,7 @@ import UIKit
     }
     func setFeedTouching(_ touching: Bool) {
         feedIsTouching = touching
+        if touching { diagnosticsRecorder?.cancelDelivery() }
         if !touching { scheduleFailedItemAdvance() }
     }
     private var failureIdle = false
@@ -395,7 +402,8 @@ import UIKit
     ///
     /// Access on the main actor.
     public init(configuration: HMPlayerConfiguration = .default, resolver: HMItemResolver? = nil,
-                interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil) {
+                interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil,
+                diagnostics: HMPlayerDiagnosticsConfiguration? = nil) {
         self.configuration = configuration; self.resolver = resolver
         // Without a source there is no engagement: an empty, read-only timeline. Demo content is opt-in.
         self.interactions = interactions ?? HMEmptyInteractionSource()
@@ -419,6 +427,33 @@ import UIKit
         connectivityMonitor = HMConnectivityMonitor { [weak self] satisfied in
             Task { @MainActor [weak self] in self?.connectivityChanged(satisfied: satisfied) }
         }
+        setDiagnostics(diagnostics)
+    }
+
+    @ObservationIgnored private(set) var diagnosticsRecorder: HMDiagnosticsRecorder?
+    @ObservationIgnored private var diagnosticsDraw: Double?
+    @ObservationIgnored private var diagnosticsCadence: HMDiagnosticsCadence?
+
+    /// Enables optional sampled aggregate diagnostics, or immediately cancels/discards with nil.
+    /// Does not change playback configuration or rebuild preparation. Access on the main actor.
+    public func setDiagnostics(_ options: HMPlayerDiagnosticsConfiguration?) {
+        diagnosticsRecorder?.suspend()
+        diagnosticsRecorder = nil
+        guard !ended, let options, options.endpoint != nil else { return }
+        if diagnosticsDraw == nil { diagnosticsDraw = Double.random(in: 0..<1) }
+        guard diagnosticsDraw! < options.samplingPercent / 100 else { return }
+        if diagnosticsCadence == nil { diagnosticsCadence = HMDiagnosticsCadence() }
+        diagnosticsRecorder = HMDiagnosticsRecorder(options: options, configuration: configuration,
+            lastAttempt: -.infinity, cadence: diagnosticsCadence) { [weak self] in self?.diagnosticsEligible == true }
+        if !isFeedVisible || appBackgrounded { diagnosticsRecorder?.suspend() }
+    }
+
+    private var diagnosticsEligible: Bool {
+        guard !ended, isFeedVisible, !appBackgrounded, !audioBlocked, !adState.isActive,
+              !isInteracting, let node = currentNode, node.hasStartedMoving,
+              node.snapshot.state == .playing, node.snapshot.bufferedAhead >= 3,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
+        return ProcessInfo.processInfo.thermalState == .nominal || ProcessInfo.processInfo.thermalState == .fair
     }
 
     private func wire(_ node: HMPlayerNode) {
@@ -1310,6 +1345,7 @@ import UIKit
         if configuration.managesAudioSession && didActivateAudioSession { HMAudioSession.deactivate(); didActivateAudioSession = false }
     }
     private func stopWork() {
+        setDiagnostics(nil)
         mediaResetPosition = nil
         captionObserver?.cancel(); captionObserver = nil
         #if os(iOS)
@@ -1370,6 +1406,7 @@ import UIKit
     private func setAdState(_ state: HMAdState) {
         guard state != adState else { return }
         adState = state
+        if state.isActive { diagnosticsRecorder?.cancelDelivery() }
         if let item = adItem {
             emit(.adStateChanged(item: item, state: state))
             analytics.emit(HMPlaybackEvent(kind: .adStateChanged, itemID: item.id, properties: Self.adStateProperties(state)), item: item)
@@ -1522,6 +1559,22 @@ import UIKit
         refreshWindow(); checkEnd(); scheduleFailedItemAdvance()
     }
     private func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+        if let recorder = diagnosticsRecorder {
+            switch event.kind {
+            case .viewStart:
+                recorder.cancelDelivery(); recorder.record(.attempt, at: event.monotonicTime)
+            case .firstFrame: recorder.record(.firstFrame(event.metrics["ttff_ms"] ?? .nan), at: event.monotonicTime)
+            case .viewEnd:
+                if pool.existingNode(for: item)?.snapshot.timeToFirstFrame == nil {
+                    recorder.record(.endedBeforeFrame, at: event.monotonicTime)
+                }
+            case .rebufferStart: recorder.cancelDelivery()
+            case .rebufferEnd: recorder.record(.stall(event.metrics["stall_ms"] ?? .nan), at: event.monotonicTime)
+            case .playing:
+                if let ms = event.metrics["first_moving_playback_ms"] { recorder.record(.moving(ms), at: event.monotonicTime) }
+            default: break
+            }
+        }
         if event.kind == .playing, event.metrics["first_moving_playback_ms"] != nil {
             if event.properties["activation_id"] == currentNode?.snapshot.activationID {
                 playedActivationID = event.properties["activation_id"] ?? ""

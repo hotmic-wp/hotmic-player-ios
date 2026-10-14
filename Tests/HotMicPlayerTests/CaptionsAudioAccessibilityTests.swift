@@ -42,6 +42,7 @@ import UIKit
 extension CaptionsAudioAccessibilityTests {
     @MainActor @Test("Host-managed audio stays configured by its host; paused, unmatched and route notifications cannot resume")
     func audioObservation() async throws {
+        try await diagnosticsLifetime()
         let session = AVAudioSession.sharedInstance()
         let originalCategory = session.category, originalMode = session.mode
         try session.setCategory(.ambient, mode: .default)
@@ -198,6 +199,119 @@ extension CaptionsAudioAccessibilityTests {
         #expect(HMAudioSession.configurationCount == beforePlay + 1)
 
     }
+    @MainActor private func diagnosticsLifetime() async throws {
+        let options = HMPlayerDiagnosticsConfiguration(baseURL: URL(string: "http://127.0.0.1:9")!, appKey: "synthetic", samplingPercent: 100)
+        let player = HMPlayer()
+        #expect(player.diagnosticsRecorder == nil)
+        let count = player.preparedItemCount
+        player.setDiagnostics(.init(baseURL: options.baseURL, appKey: options.appKey, samplingPercent: 0))
+        #expect(player.diagnosticsRecorder == nil)
+        player.setDiagnostics(options)
+        weak var owned = player.diagnosticsRecorder
+        #expect(owned != nil && player.preparedItemCount == count)
+        player.isFeedVisible = false; #expect(owned?.aggregate == nil)
+        player.isFeedVisible = true; #expect(owned?.aggregate != nil)
+        player.handleAudioNotification(Notification(name: UIApplication.didEnterBackgroundNotification))
+        #expect(owned?.aggregate == nil)
+        player.handleAudioNotification(Notification(name: UIApplication.didBecomeActiveNotification))
+        #expect(owned?.aggregate != nil)
+        player.setDiagnostics(nil); #expect(owned == nil)
+        player.setDiagnostics(options); weak var terminal = player.diagnosticsRecorder
+        player.teardown(); #expect(terminal == nil)
+        player.setDiagnostics(options); #expect(player.diagnosticsRecorder == nil)
+
+        let recorder = HMDiagnosticsRecorder(options: options, configuration: .default, lastAttempt: -.infinity, eligible: { false })
+        defer { recorder.suspend() }
+        let began = recorder.began
+        recorder.record(.attempt, at: began + 59.9)
+        recorder.record(.attempt, at: began + 60)
+        recorder.record(.firstFrame(149), at: began + 59)
+        recorder.record(.moving(251), at: began + 59)
+        recorder.record(.stall(500), at: began + 59)
+        #expect(recorder.aggregate?.playback.attempted == 1)
+        #expect(recorder.aggregate?.startup_buckets[1] == 1 && recorder.aggregate?.moving_start_buckets[3] == 1)
+        #expect(recorder.aggregate?.stalls.total_duration_ms == 500)
+        recorder.close(at: began + 60.2)
+        #expect(recorder.aggregate?.playback.attempted == 0 && recorder.lastAttempt == -.infinity)
+        let second = recorder.began
+        for _ in 0...10_000 { recorder.record(.attempt, at: second + 1) }
+        #expect(recorder.aggregate?.invalid == true)
+        recorder.close(at: second + 120)
+        #expect(recorder.aggregate?.playback.attempted == 0)
+        recorder.record(.stall(.infinity), at: recorder.began + 1)
+        #expect(recorder.aggregate?.invalid == true)
+        recorder.configure(.highQuality); #expect(recorder.aggregate?.config.startup_bps == 0)
+        recorder.discardForPressure(); #expect(recorder.aggregate?.invalid == true)
+        recorder.suspend(); #expect(recorder.aggregate == nil)
+
+        let measured = HMDiagnosticsRecorder(options: options, configuration: .default, lastAttempt: -.infinity, eligible: { false })
+        let at = measured.began + 1
+        let disabled: HMDiagnosticsRecorder? = nil
+        let offStart = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<5000 { disabled?.record(.firstFrame(149), at: at) }
+        let off = ProcessInfo.processInfo.systemUptime - offStart
+        let onStart = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<5000 { measured.record(.firstFrame(149), at: at) }
+        let on = ProcessInfo.processInfo.systemUptime - onStart
+        #expect(measured.aggregate?.playback.first_frames == 5000)
+        print("Diagnostics capture simulator smoke: 5000 identical observations off=\(off)s on=\(on)s; fixed eight buckets, no per-event tasks")
+        measured.suspend()
+
+        let cadence = HMDiagnosticsCadence()
+        #expect(cadence.reserve(at: 60)); #expect(!cadence.reserve(at: 119.999)); #expect(cadence.reserve(at: 120))
+        let snapshot = HMDiagnosticsAggregate(config: try #require(HMDiagnosticsConfig(.default)), rate: 1)
+        let url = URL(string: "https://diagnostics.unit.test/v2/player/diagnostics")!
+        DiagnosticsURLProtocol.reset(202)
+        let oversized = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic", protocolClasses: [DiagnosticsURLProtocol.self])
+        var excessive = snapshot
+        excessive.startup_buckets = [Int](repeating: 10_000, count: 2000)
+        #expect(oversized.submit(excessive))
+        for _ in 0..<100 where oversized.busy { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!oversized.busy && DiagnosticsURLProtocol.counts.0 == 0)
+        oversized.cancel()
+        for mode in [202, 503, 429, 0] {
+            DiagnosticsURLProtocol.reset(mode)
+            let transport = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic", protocolClasses: [DiagnosticsURLProtocol.self])
+            #expect(transport.submit(snapshot))
+            for _ in 0..<100 where transport.busy { try await Task.sleep(for: .milliseconds(5)) }
+            #expect(!transport.busy)
+            try await Task.sleep(for: .milliseconds(30))
+            #expect(DiagnosticsURLProtocol.counts.0 == 1)
+            transport.cancel()
+        }
+        let headersOnly = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic")
+        let unstartedSession = URLSession(configuration: .ephemeral)
+        let unstartedTask = unstartedSession.dataTask(with: url)
+        let largeResponse = HTTPURLResponse(url: url, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "1073741824"])!
+        headersOnly.urlSession(unstartedSession, dataTask: unstartedTask, didReceive: largeResponse) { disposition in
+            #expect(disposition == .cancel)
+        }
+        unstartedSession.invalidateAndCancel(); headersOnly.cancel()
+        DiagnosticsURLProtocol.reset(1)
+        let timedOut = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic", protocolClasses: [DiagnosticsURLProtocol.self])
+        #expect(timedOut.submit(snapshot))
+        for _ in 0..<120 where timedOut.busy { try await Task.sleep(for: .milliseconds(25)) }
+        #expect(!timedOut.busy && DiagnosticsURLProtocol.counts.0 == 1)
+        timedOut.cancel()
+        DiagnosticsURLProtocol.reset(1)
+        let busy = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic", protocolClasses: [DiagnosticsURLProtocol.self])
+        #expect(busy.submit(snapshot)); #expect(!busy.submit(snapshot))
+        for _ in 0..<100 where DiagnosticsURLProtocol.counts.0 == 0 { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(DiagnosticsURLProtocol.counts.0 == 1)
+        busy.cancel(); #expect(!busy.submit(snapshot))
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(DiagnosticsURLProtocol.counts.0 == 1)
+        // Publication/cancel races cannot retain a transport through its URLSession delegate.
+        for _ in 0..<20 {
+            var transport: HMDiagnosticsTransport? = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic", protocolClasses: [DiagnosticsURLProtocol.self])
+            weak var weakTransport = transport
+            _ = transport?.submit(snapshot); transport?.cancel(); transport = nil
+            for _ in 0..<100 where weakTransport != nil { try await Task.sleep(for: .milliseconds(2)) }
+            #expect(weakTransport == nil)
+        }
+
+    }
+
     @MainActor @Test("Native actions invoke core controls, update names and become inert while disabled")
     func nativeActions() {
         #expect(HMVideoAccessibility.position(2, duration: 12) == "2 of 12 seconds")
@@ -300,3 +414,28 @@ private actor CaptionDownloadProbe {
     func release() { for waiter in waiters { waiter.resume() }; waiters.removeAll() }
 }
 #endif
+
+// Controlled transport outcomes extend the existing lifecycle cohort; no live key/API.
+private final class DiagnosticsURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var attempts = 0
+    private static var stops = 0
+    private static var mode = 202
+    static func reset(_ value: Int) { lock.lock(); attempts = 0; stops = 0; mode = value; lock.unlock() }
+    static var counts: (Int, Int) { lock.lock(); defer { lock.unlock() }; return (attempts, stops) }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "diagnostics.unit.test" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock(); Self.attempts += 1; let status = Self.mode; Self.lock.unlock()
+        if status == 0 { client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return }
+        if status == 1 { return } // Hold the slot for busy/cancel coverage.
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "1", "Retry-After": "1"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        // Custom URLProtocol needs a first byte to surface headers to Foundation.
+        // The real local HTTP cohort separately verifies streaming cancellation.
+        client?.urlProtocol(self, didLoad: Data([0]))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() { Self.lock.lock(); Self.stops += 1; Self.lock.unlock() }
+}

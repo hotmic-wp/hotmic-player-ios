@@ -616,6 +616,7 @@ enum HMPlaybackState
 ## HMPlayer
 
 ```swift
+@MainActor convenience init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil, diagnostics: HMPlayerDiagnosticsConfiguration?)
 @MainActor final class HMPlayer
 @MainActor func beginInteraction()
 @MainActor func endInteraction()
@@ -640,7 +641,7 @@ enum HMPlaybackState
 @MainActor func toggleMute()
 @MainActor func togglePlayPause()
 @MainActor func videoFrame(for item: HMMediaItem, in bounds: CGRect) -> CGRect
-@MainActor init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil, diagnostics: HMPlayerDiagnosticsConfiguration? = nil)
+@MainActor init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil)
 @MainActor let analytics: HMAnalyticsHub
 @MainActor var activeIndex: Int { get }
 @MainActor var adBreakProvider: (any HMAdBreakProvider)?

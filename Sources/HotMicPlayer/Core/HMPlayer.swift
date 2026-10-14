@@ -402,8 +402,7 @@ import UIKit
     ///
     /// Access on the main actor.
     public init(configuration: HMPlayerConfiguration = .default, resolver: HMItemResolver? = nil,
-                interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil,
-                diagnostics: HMPlayerDiagnosticsConfiguration? = nil) {
+                interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil) {
         self.configuration = configuration; self.resolver = resolver
         // Without a source there is no engagement: an empty, read-only timeline. Demo content is opt-in.
         self.interactions = interactions ?? HMEmptyInteractionSource()
@@ -427,6 +426,14 @@ import UIKit
         connectivityMonitor = HMConnectivityMonitor { [weak self] satisfied in
             Task { @MainActor [weak self] in self?.connectivityChanged(satisfied: satisfied) }
         }
+    }
+
+    /// Creates a player with an explicit optional diagnostics policy. Default construction stays off.
+    /// Access on the main actor. The original four-argument initializer remains unchanged.
+    public convenience init(configuration: HMPlayerConfiguration = .default, resolver: HMItemResolver? = nil,
+                            interactions: HMInteractionSource? = nil, analytics: HMAnalyticsHub? = nil,
+                            diagnostics: HMPlayerDiagnosticsConfiguration?) {
+        self.init(configuration: configuration, resolver: resolver, interactions: interactions, analytics: analytics)
         setDiagnostics(diagnostics)
     }
 

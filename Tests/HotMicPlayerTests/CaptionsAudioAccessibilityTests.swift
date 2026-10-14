@@ -201,6 +201,11 @@ extension CaptionsAudioAccessibilityTests {
     }
     @MainActor private func diagnosticsLifetime() async throws {
         let options = HMPlayerDiagnosticsConfiguration(baseURL: URL(string: "http://127.0.0.1:9")!, appKey: "synthetic", samplingPercent: 100)
+        let legacyFactory: @MainActor (HMPlayerConfiguration, (any HMItemResolver)?, (any HMInteractionSource)?, HMAnalyticsHub?) -> HMPlayer = HMPlayer.init(configuration:resolver:interactions:analytics:)
+        let legacy = legacyFactory(.default, nil, nil, nil)
+        #expect(legacy.diagnosticsRecorder == nil); legacy.teardown()
+        let explicit = HMPlayer(diagnostics: options)
+        #expect(explicit.diagnosticsRecorder != nil); explicit.teardown()
         let player = HMPlayer()
         #expect(player.diagnosticsRecorder == nil)
         let count = player.preparedItemCount

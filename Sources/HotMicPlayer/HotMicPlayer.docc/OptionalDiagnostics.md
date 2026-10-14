@@ -10,9 +10,12 @@ let diagnostics = HMPlayerDiagnosticsConfiguration(
 player.setDiagnostics(diagnostics)
 // Immediate cancellation, counter discard and timer removal:
 player.setDiagnostics(nil)
+// An explicit overload also accepts the policy; ordinary HMPlayer() remains off.
+let anotherPlayer = HMPlayer(diagnostics: diagnostics)
+anotherPlayer.teardown()
 ```
 
-The same optional policy can be supplied as `HMPlayer(diagnostics: diagnostics)`. Existing initializer calls still work. Changing diagnostics does not resize players, rebuild the queue or reset preparation. The host owns permission, disclosure and when to enable/disable it. Keep ordinary demos off; see the explicit [local walkthrough](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sample/TestSupportTools/Diagnostics.md).
+The same optional policy can be supplied as `HMPlayer(diagnostics: diagnostics)`. The original four-argument initializer signature and defaults remain intact, including typed factory references. The convenience overload requires an explicit `diagnostics:` argument. Changing diagnostics does not resize players, rebuild the queue or reset preparation. The host owns permission, disclosure and when to enable/disable it. Keep ordinary demos off; see the explicit [local walkthrough](https://github.com/hotmic-wp/hotmic-player-ios/blob/main/Sample/TestSupportTools/Diagnostics.md).
 
 ## Expendable delivery
 

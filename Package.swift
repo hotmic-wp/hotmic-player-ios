@@ -26,6 +26,7 @@ let package = Package(
         .testTarget(
             name: "HotMicPlayerTests",
             dependencies: ["HotMicPlayer", "HotMicPlayerUI"],
+            resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]

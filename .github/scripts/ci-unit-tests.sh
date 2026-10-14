@@ -202,7 +202,7 @@ wait "$build_watchdog_pid" || build_status=$?
 build_watchdog_pid=""
 [ "$build_status" = 0 ] || exit "$build_status"
 # Validate/capture the generated runner and all app resources before provisioning.
-unit_step compiled-products 30 python3 .github/scripts/ci-unit-products.py capture \
+unit_step validate-products 30 python3 .github/scripts/ci-unit-products.py capture \
   --derived "$derived" --evidence "$validation_dir" --arch "$simulator_arch"
 xctestrun=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["xctestrun"])' "$validation_dir/compiled-products.json")
 start_simulator

@@ -76,6 +76,8 @@ def main():
         return True
 
     args.log.parent.mkdir(parents=True, exist_ok=True)
+    # Persist actual argv/deadline before launch, even if the parent is killed.
+    args.log.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
     process = None
     cleanup_attempted = False
     status = 125

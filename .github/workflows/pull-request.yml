@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      # Pin an installed runtime for repeatability while isolating migration delay.
+      SIMULATOR_RUNTIME_ID: com.apple.CoreSimulator.SimRuntime.iOS-26-2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Require Xcode 26.6 for reproducible API exports

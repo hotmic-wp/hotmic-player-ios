@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Select an installed iOS runtime and available iPhone model for a new CI device."""
 import json
+import os
 import sys
 
 inventory = json.load(sys.stdin)
@@ -11,6 +12,11 @@ runtimes = sorted(
     key=lambda runtime: tuple(map(int, runtime["version"].split("."))),
     reverse=True,
 )
+runtime_id = os.environ.get("SIMULATOR_RUNTIME_ID")
+if runtime_id:
+    runtimes = [runtime for runtime in runtimes if runtime["identifier"] == runtime_id]
+    if not runtimes:
+        sys.exit(f"SIMULATOR_RUNTIME_ID={runtime_id}: no exact available installed iOS runtime.")
 for runtime in runtimes:
     iphones = [device for device in inventory["devices"].get(runtime["identifier"], [])
                if device.get("isAvailable") and models.get(device.get("deviceTypeIdentifier"), "").startswith("iPhone")]
@@ -22,4 +28,6 @@ for runtime in runtimes:
     print(chosen["deviceTypeIdentifier"])
     break
 else:
+    if runtime_id:
+        sys.exit(f"SIMULATOR_RUNTIME_ID={runtime_id}: no available iPhone simulator on this runtime.")
     sys.exit("No available iPhone simulator on an installed iOS runtime.")

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package tests only. Start simulator boot, build generically, then await readiness.
+# Package tests only. Complete generic build, then create/boot and await the simulator.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 source .github/scripts/ci-common.sh
@@ -175,8 +175,9 @@ start_simulator() {
   fi
   unit_step simulator-boot 30 xcrun simctl boot "$simulator_id" || true
 }
-# Generic compilation needs neither simulator discovery nor readiness. Start its
-# independent watchdog first; the parent still creates/boots/owns the simulator.
+# Complete generic compilation under its owned watchdog before the parent
+# discovers/creates/boots the owned simulator. Xcode may do its own simulator
+# discovery or bootstrap work during the generic build.
 rm -f "$validation_dir/build-cancel"
 rm -f "$validation_dir/simulator-build.json"
 rm -rf "$validation_dir/UnitTests.xcresult"
@@ -190,13 +191,13 @@ python3 .github/scripts/ci-unit-command.py --name simulator-build \
   -only-testing:HotMicPlayerTests -showBuildTimingSummary \
   ARCHS="$simulator_arch" ONLY_ACTIVE_ARCH=YES "${speed_flags[@]}" &
 build_watchdog_pid=$!
-start_simulator
-# Drive readiness during compilation: simctl boot alone may defer migration.
-unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
 build_status=0
 wait "$build_watchdog_pid" || build_status=$?
 build_watchdog_pid=""
 [ "$build_status" = 0 ] || exit "$build_status"
+start_simulator
+# Await readiness after compilation: simctl boot alone may defer migration.
+unit_step simulator 540 xcrun simctl bootstatus "$simulator_id" -b
 # The iOS unit target includes native-player tests omitted by macOS swift test.
 unit_step unit-tests "$budget_unit_tests" xcodebuild test-without-building \
   -scheme HotMicPlayer-Package \

@@ -320,6 +320,11 @@ private final class FormatProtocol: URLProtocol {
 import AVFoundation
 import Network
 import Darwin
+
+/// Flush receipts immediately so a stuck native call leaves its last completed phase in CI logs.
+func nativeTestPhase(_ phase: String) {
+    FileHandle.standardError.write(Data("[native-test] \(ProcessInfo.processInfo.systemUptime) \(phase)\n".utf8))
+}
 #if canImport(UIKit)
 import UIKit
 import SwiftUI
@@ -329,6 +334,7 @@ import SwiftUI
 struct PlayerNativeReviewTests {
     @Test("Warm track detection respects camera transforms before activation", arguments: [false, true])
     func warmDisplayAspect(rotated: Bool) async throws {
+        if !rotated { try await verifyFixtureTermination() }
         let url = try await videoFixture(rotated: rotated)
         defer { try? FileManager.default.removeItem(at: url) }
         let node = HMPlayerNode(id: "aspect", configuration: HMPlayerConfiguration(managesAudioSession: false))
@@ -608,36 +614,123 @@ struct PlayerNativeReviewTests {
     }
     #endif
 
+    enum VideoFixtureError: Error { case timedOut, unexpectedCompletion }
+
     /// Small local encoded fixture; tests never depend on a network origin or checked-in video.
-    func videoFixture(rotated: Bool, duration: TimeInterval = 1) async throws -> URL {
+    /// The finish seam lets the existing native regression hold a real writer in `.writing`.
+    func videoFixture(rotated: Bool, duration: TimeInterval = 1, finishTimeout: TimeInterval = 3,
+                      finish: (AVAssetWriter) -> Void = { $0.finishWriting {} }) async throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("hotmic-aspect-\(UUID()).mp4")
+        let receiptID = UUID().uuidString.prefix(8)
+        func phase(_ value: String) { nativeTestPhase("fixture=\(receiptID) rotated=\(rotated) duration=\(duration) \(value)") }
+        phase("create before")
+        var completed = false
+        defer { if !completed { try? FileManager.default.removeItem(at: url) } }
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        // Every throw, including Task.sleep cancellation, cancels native work before releasing ownership.
+        defer {
+            if !completed {
+                phase("cancel before status=\(writer.status.rawValue)")
+                writer.cancelWriting()
+                phase("cancel after status=\(writer.status.rawValue)")
+            }
+        }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 160, AVVideoHeightKey: 90])
         if rotated { input.transform = CGAffineTransform(rotationAngle: .pi / 2) }
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: 160, kCVPixelBufferHeightKey as String: 90])
         writer.add(input)
+        try Task.checkCancellation()
+        phase("start before")
         try #require(writer.startWriting())
         writer.startSession(atSourceTime: .zero)
+        phase("start after")
         var buffer: CVPixelBuffer?
         try #require(CVPixelBufferCreate(kCFAllocatorDefault, 160, 90, kCVPixelFormatType_32BGRA, nil, &buffer) == kCVReturnSuccess)
         let pixels = try #require(buffer)
         CVPixelBufferLockBaseAddress(pixels, [])
         memset(try #require(CVPixelBufferGetBaseAddress(pixels)), 64, CVPixelBufferGetDataSize(pixels))
         CVPixelBufferUnlockBaseAddress(pixels, [])
-        let deadline = Date().addingTimeInterval(2)
-        while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        func ready() async throws {
+            while !input.isReadyForMoreMediaData {
+                try Task.checkCancellation()
+                try #require(writer.status == .writing)
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw VideoFixtureError.timedOut }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            try Task.checkCancellation()
+        }
+        phase("append before")
+        try await ready()
         try #require(adaptor.append(pixels, withPresentationTime: .zero))
         if duration > 1 {
             for frame in 1..<Int(duration * 10) {
-                while !input.isReadyForMoreMediaData, Date() < deadline { try await Task.sleep(for: .milliseconds(1)) }
+                try await ready()
                 try #require(adaptor.append(pixels, withPresentationTime: CMTime(seconds: Double(frame) / 10, preferredTimescale: 600)))
             }
         }
+        phase("append after")
+        phase("end-session before")
         writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
         input.markAsFinished()
-        await writer.finishWriting()
+        phase("end-session after")
+        try Task.checkCancellation()
+        phase("finish before")
+        finish(writer)
+        // Do not await the non-cooperative native completion or a task-group child.
+        // Poll terminal status; timeout/cancellation synchronously cancels the owned writer above.
+        let finishDeadline = ProcessInfo.processInfo.systemUptime + finishTimeout
+        while writer.status == .writing {
+            try Task.checkCancellation()
+            guard ProcessInfo.processInfo.systemUptime < finishDeadline else { throw VideoFixtureError.timedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try Task.checkCancellation()
+        phase("finish after status=\(writer.status.rawValue)")
         try #require(writer.status == .completed)
+        completed = true
         return url
+    }
+
+    /// A held finish must fail promptly and release real native work and its partial file.
+    func verifyFixtureTermination() async throws {
+        var held: AVAssetWriter?
+        var heldAt: TimeInterval?
+        do {
+            let url = try await videoFixture(rotated: false, finishTimeout: 0.05, finish: {
+                held = $0; heldAt = ProcessInfo.processInfo.systemUptime
+            })
+            try? FileManager.default.removeItem(at: url)
+            throw VideoFixtureError.unexpectedCompletion
+        } catch VideoFixtureError.timedOut { }
+        let timedOut = try #require(held)
+        let began = try #require(heldAt)
+        #expect(timedOut.status == .cancelled)
+        #expect(!FileManager.default.fileExists(atPath: timedOut.outputURL.path))
+        #expect(ProcessInfo.processInfo.systemUptime - began < 2)
+
+        var cancelling: AVAssetWriter?
+        let task = Task { try await videoFixture(rotated: false, finish: { cancelling = $0 }) }
+        do {
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while cancelling == nil, ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            let cancelled = try #require(cancelling)
+            task.cancel()
+            do {
+                let url = try await task.value
+                try? FileManager.default.removeItem(at: url)
+                throw VideoFixtureError.unexpectedCompletion
+            } catch is CancellationError { }
+            #expect(cancelled.status == .cancelled)
+            #expect(!FileManager.default.fileExists(atPath: cancelled.outputURL.path))
+        } catch {
+            task.cancel()
+            // Drain the cooperative fixture on readiness/assertion/parent-cancellation errors too.
+            if let url = try? await task.value { try? FileManager.default.removeItem(at: url) }
+            throw error
+        }
     }
 
     private func item(_ id: String, path: String? = nil) -> HMMediaItem {
@@ -800,7 +893,9 @@ struct PlayerNativeReviewTests {
     func overlappingPrefetch() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HotMic-prefix-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = try PrefixOrigin(); defer { origin.listener.cancel() }
+        // A valid range whose tail is withheld: `a` stays on the wire, holding the serial prefix slot.
+        let origin = try PrefixOrigin(mode: .gatedRange)
+        defer { origin.stop(); #expect(!origin.gateExpired) }
         let deadline = Date().addingTimeInterval(3)
         while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { await Task.yield() }
         let port = try #require(origin.listener.port?.rawValue)
@@ -809,6 +904,14 @@ struct PlayerNativeReviewTests {
         var configuration = HMPlayerConfiguration()
         configuration.volatileSigningQueryParameters = ["token"]
         let transport = try HMCacheTransport(configuration: configuration, directory: directory)
+        var work: [String] = []
+        await transport.setEventHandler { event, item in
+            if let phase = event.properties["prefetch_work"] {
+                work.append("\(item.id):\(phase):\(event.properties["work_token"] ?? "")")
+            }
+            origin.recordProgress("event \(item.id)", event: event)
+        }
+        do {
         #expect(await transport.start())
         await transport.prioritizePlayback(a, urgent: false)
         let plan = HMPrefetchPlan(itemsAhead: 2, itemsBehind: 0, bytesPerItem: 262144, secondsPerItem: nil,
@@ -816,7 +919,15 @@ struct PlayerNativeReviewTests {
         await transport.prefetch([a, b], keeping: [a, b], plan: plan)
         let tokens = await transport.activePrefetchTokens
         #expect(tokens.count == 1)
+        let tokenA = try #require(tokens["a"])
         #expect(transport.state.isPrefixing(b) && !transport.state.isPrefixRunning(b))
+        // A started token is not yet a transfer: until its task reaches the scheduler,
+        // a reorder legitimately parks it before any byte and admits the new head.
+        // Edits below must preserve a prefix that is actually in flight.
+        try await waitForNativeProgress(origin, phase: "a in flight") {
+            origin.requestCount(path: "/a.mp4") == 1 && origin.hasHeldResponse
+        }
+        #expect(await transport.activePrefetchTokens == tokens)
         var presentationOnly = configuration; presentationOnly.presentation = .fit; presentationOnly.removedCurrentPolicy = .finishThenAdvance
         await transport.updateConfiguration(presentationOnly)
         #expect(await transport.activePrefetchTokens == tokens)
@@ -828,10 +939,23 @@ struct PlayerNativeReviewTests {
         await transport.retainWindow([signed, b])
         await transport.prefetch([signed, b], keeping: [signed, b], plan: plan)
         #expect(await transport.activePrefetchTokens == tokens)
+        #expect(transport.state.isPrefixing(b) && !transport.state.isPrefixRunning(b))
         await transport.retainWindow([signed])
-        #expect(await transport.activePrefetchTokens == ["a": tokens["a"]!])
+        #expect(await transport.activePrefetchTokens == ["a": tokenA])
         #expect(!transport.state.isPrefixing(b))
+        // The original connection then delivers the whole range once, under the signed item's cache key.
+        origin.releaseResponses()
+        let token = tokenA.uuidString
+        try await waitForNativeProgress(origin, phase: "a completes") { work.contains("a:completed:\(token)") }
+        #expect(work == ["a:started:\(token)", "a:completed:\(token)"])
+        #expect(await transport.activePrefetchTokens.isEmpty)
+        #expect(await transport.cachedBytes[HMCacheKey.canonical(signed.url!, ignoring: ["token"])] == 32)
+        #expect(origin.requestCount(path: "/a.mp4") == 1 && origin.requestCount(path: "/b.mp4") == 0)
         _ = await transport.finish()
+        } catch {
+            _ = await transport.finish()
+            throw error
+        }
     }
     actor Source: HMPlaylistSource {
         var requests: [String] = []
@@ -1199,11 +1323,15 @@ struct PlayerNativeReviewTests {
             // retirements of the same connection. Keep exactly-one retirement strict.
             var prefixPreemptions = 0, completed: Set<String> = [], acceptedBytes: [String: Int] = [:]
             await transport.setEventHandler { event, item in
+                if [warm.id, alias.id, farther.id].contains(item.id) {
+                    fixture.recordProgress("event item=\(item.id) work=\(event.properties["prefetch_work"] ?? "-") reason=\(event.properties["reason"] ?? "-")", event: event)
+                }
                 if event.properties["reason"] == "prefix-shared-resource-preemption" { prefixPreemptions += 1 }
                 if event.properties["prefetch_work"] == "completed" { completed.insert(item.id) }
                 acceptedBytes[item.id, default: 0] += Int(event.metrics["prefetch_bytes"] ?? 0)
             }
             let native = NativeRequestReceipt(url: transport.state.url(url, item: warm))
+            defer { native.connection.cancel() }
             let plan = HMPrefetchPlan(itemsAhead: 2, bytesPerItem: cap, secondsPerItem: 4, reason: "parked owner acceptance")
             if lateParking {
                 let started = Date().addingTimeInterval(2)
@@ -1230,8 +1358,10 @@ struct PlayerNativeReviewTests {
                 #expect(await transport.parkedNativeRequestCount > 0)
                 await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
             }
-            let finished = Date().addingTimeInterval(4)
-            while !completed.contains(farther.id), Date() < finished { try await Task.sleep(for: .milliseconds(10)) }
+            try await waitForNativeProgress(fixture, phase: "parked \(mode) same_ID=\(sameID)") {
+                completed.contains(alias.id) && completed.contains(farther.id)
+            }
+            print("Transport prefix queue: active_tokens=\(await transport.activePrefetchTokens) joined=\(await transport.joinedPlaybackRequestCount)")
             #expect(prefixPreemptions == 1 && completed.contains(alias.id) && completed.contains(farther.id))
             #expect(fixture.requestCount(path: "/farther.mp4") > 0)
             print("Transport parked: mode=\(mode) known_total=\(knownTotal) same_ID=\(sameID) prefix_preemptions=\(prefixPreemptions) farther_GETs=\(fixture.requestCount(path: "/farther.mp4"))")
@@ -1257,12 +1387,12 @@ struct PlayerNativeReviewTests {
             var met: Bool?, payload = 0.0
             await transport.setEventHandler { event, item in
                 guard item.id == next.id else { return }
+                fixture.recordProgress("event item=\(item.id) work=\(event.properties["prefetch_work"] ?? "-") outcome=\(event.properties["prefix_outcome"] ?? "-")", event: event)
                 payload += event.metrics["prefetch_bytes"] ?? 0
                 if let value = event.metrics["prefetch_target_met"] { met = value == 1 }
             }
             await transport.prefetch([next], keeping: [old, next], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "GET-only acceptance"))
-            let done = Date().addingTimeInterval(4)
-            while met == nil, Date() < done { try await Task.sleep(for: .milliseconds(10)) }
+            try await waitForNativeProgress(fixture, phase: "GET-only \(mode)") { met != nil }
             #expect(met == (mode != .oversized200))
             #expect(payload <= 1024)
             if mode != .oversized200 {
@@ -1280,6 +1410,28 @@ struct PlayerNativeReviewTests {
         } catch {
             _ = await transport.finish()
             throw error
+        }
+    }
+
+    /// Serial range fills and HEAD/GET metadata discovery have multiple responses.
+    /// Bound the whole fixture phase and also fail promptly when it stops progressing.
+    /// A local delayed-origin run exceeds the old four-second end-to-end predicate
+    /// while still completing each response; this does not diagnose a hosted stall.
+    private func waitForNativeProgress(_ fixture: PrefixOrigin, phase: String, until complete: () -> Bool) async throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        while true {
+            if complete() {
+                print("Transport wait: phase=\(phase) elapsed=\(ProcessInfo.processInfo.systemUptime - started) completed=true receipts=\(fixture.progressReceipts)")
+                return
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            let idle = now - max(started, fixture.lastProgress)
+            guard now - started < 8, idle < 4 else {
+                print("Transport wait: phase=\(phase) elapsed=\(now - started) idle=\(idle) completed=false receipts=\(fixture.progressReceipts)")
+                try #require(false, "Native fixture made no bounded progress: \(phase)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 
@@ -1345,6 +1497,22 @@ struct PlayerNativeReviewTests {
         static let manifest = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\npart.ts\n#EXT-X-ENDLIST\n"
         let listener: NWListener
         private let requestLock = NSLock()
+        private var progressedAt = 0.0
+        private var progress: [String] = []
+        var lastProgress: Double { requestLock.lock(); defer { requestLock.unlock() }; return progressedAt }
+        var progressReceipts: [String] { requestLock.lock(); defer { requestLock.unlock() }; return progress }
+        func recordProgress(_ receipt: String, event: HMPlaybackEvent? = nil) {
+            if let event {
+                guard event.properties["prefetch_work"] != nil || event.properties["reason"] != nil ||
+                      event.metrics["network_bytes", default: 0] > 0 || event.metrics["ttfb_s"] != nil ||
+                      event.metrics["prefetch_target_met"] != nil else { return }
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            requestLock.lock(); progressedAt = max(progressedAt, now)
+            // Bounded fixture milestones and request lines, never response payloads.
+            if progress.count == 32 { progress.removeFirst() }
+            progress.append("\(now):\(receipt)"); requestLock.unlock()
+        }
         private var requests: [String: Int] = [:]
         private var rangeStarts: [String: Int] = [:]
         func lastRangeStart(path: String) -> Int? { requestLock.lock(); defer { requestLock.unlock() }; return rangeStarts[path] }
@@ -1422,6 +1590,7 @@ struct PlayerNativeReviewTests {
                     let received = String(decoding: request ?? Data(), as: UTF8.self)
                     print("Origin receipt: mode=\(mode) attempt=\(attempt) request=\(received.replacingOccurrences(of: "\r\n", with: " | "))")
                     self?.record(received)
+                    self?.recordProgress("request \(received.components(separatedBy: "\r\n").first ?? "")")
                     if mode != .hanging {
                         let text = String(decoding: request ?? Data(), as: UTF8.self)
                         if [.head403, .head405, .unknownLength, .oversized200, .gatedOversized200].contains(mode) {

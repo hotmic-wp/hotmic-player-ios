@@ -1,5 +1,7 @@
 # Getting started: HotMic streams and engagement
 
+The optional Connect adapter's public main branch currently requires player `from: "1.1.0-alpha.1"` and cannot resolve a player pinned to `1.0.0`. A compatible adapter release must be selected separately; compatibility with 1.0.0 is not validated. URL playback and custom backends require no HotMic account.
+
 Use the separate HotMicPlayerConnect adapter package when content and interaction data come from HotMic.
 
 ## Package boundary

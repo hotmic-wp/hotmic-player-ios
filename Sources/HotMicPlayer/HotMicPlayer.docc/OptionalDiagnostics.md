@@ -1,6 +1,6 @@
 # Optional aggregate diagnostics
 
-Diagnostics are completely off unless the host enables them. URL playback needs no HotMic account; diagnostic delivery separately needs a Platform app key and the HTTPS base URL for its tenant. Obtain those from your Platform contact. Collector code being prepared does **not** mean that collector is deployed: confirm endpoint availability before a pilot. No release/tag containing this feature has been published.
+Diagnostics are completely off unless the host enables them. URL playback needs no HotMic account; diagnostic delivery separately needs a Platform app key and the HTTPS base URL for its tenant. Obtain those from your Platform contact. Confirm tenant endpoint availability before a pilot; SDK source publication does not configure host enablement or prove valid live aggregate storage. The 1.0.0 aggregate reports SDK version `1.0.0` with schema version 1. Collector availability and host enablement are separate from SDK installation.
 
 ```swift
 // Main actor. Use your Platform base URL and app key, never a viewer JWT.

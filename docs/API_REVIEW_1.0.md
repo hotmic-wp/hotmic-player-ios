@@ -1,4 +1,6 @@
-# API review for 1.0.0-rc.1
+# Historical API review snapshot for 1.0.0-rc.1
+
+This is a prerelease review snapshot. The current generated inventory is [PUBLIC_API.md](PUBLIC_API.md); this snapshot does not assert final 1.0.0 validation.
 
 Reviewed the complete `docs/PUBLIC_API.md` inventory, source declarations and behavior against 0.4.1, with 0.4.0 as the compatibility reference. The candidate keeps the two-product split: HotMicPlayer for playback/data and HotMicPlayerUI for optional iOS rendering. HotMicPlayerConnect remains a [separate adapter package](https://github.com/hotmic-wp/hotmic-player-connect-ios).
 

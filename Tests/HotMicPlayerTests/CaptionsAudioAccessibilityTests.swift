@@ -290,6 +290,9 @@ extension CaptionsAudioAccessibilityTests {
         let cadence = HMDiagnosticsCadence()
         #expect(cadence.reserve(at: 60)); #expect(!cadence.reserve(at: 119.999)); #expect(cadence.reserve(at: 120))
         let snapshot = HMDiagnosticsAggregate(config: try #require(HMDiagnosticsConfig(.default)), rate: 1)
+        let serialized = try #require(JSONSerialization.jsonObject(with: try JSONEncoder().encode(snapshot)) as? [String: Any])
+        #expect(serialized["sdk_version"] as? String == "1.0.0")
+        #expect(serialized["schema_version"] as? Int == 1)
         let url = URL(string: "https://diagnostics.unit.test/v2/player/diagnostics")!
         DiagnosticsURLProtocol.reset(202)
         let oversized = HMDiagnosticsTransport(endpoint: url, appKey: "synthetic", protocolClasses: [DiagnosticsURLProtocol.self])

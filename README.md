@@ -6,23 +6,23 @@ A dependency-free Swift package for embedding a vertical MP4 and HLS VOD feed in
 | --- | --- | --- |
 | URLs → your feed UI | `HotMicPlayer` | [PlayerOnly Example](Examples/PlayerOnly), [getting started](Sources/HotMicPlayer/HotMicPlayer.docc/GettingStarted.md) |
 | Player + engagement overlay + your data | `HotMicPlayer`, `HotMicPlayerUI` | [PlayerWithUI Example](Examples/PlayerWithUI), [UI guide](Sources/HotMicPlayerUI/HotMicPlayerUI.docc/GettingStarted.md) |
-| HotMic content + engagement | Above plus separate `HotMicPlayerConnect` | [HotMicPlayerConnect package](https://github.com/hotmic-wp/hotmic-player-connect-ios) |
+| HotMic content + engagement (adapter version compatibility required) | Above plus separate `HotMicPlayerConnect` | [HotMicPlayerConnect package](https://github.com/hotmic-wp/hotmic-player-connect-ios) |
 
 See [Engagement from your backend or HotMic](Sources/HotMicPlayer/HotMicPlayer.docc/EngagementFromYourBackendOrHotMic.md) and the [custom backend adapter](Examples/CustomEngagementBackend) for host-built comments and fire UI.
 
-Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md), [capability matrix](Sources/HotMicPlayer/HotMicPlayer.docc/CapabilityMatrix.md) and [integration checklist](Sources/HotMicPlayer/HotMicPlayer.docc/IntegrationChecklist.md). Choose either [ReadyMadeOverlay](Examples/ReadyMadeOverlay) or [CustomOverlay](Examples/CustomOverlay); both starters build in examples CI. The 1.1.0 changelog is a draft.
+Start with the [Partner integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md), [capability matrix](Sources/HotMicPlayer/HotMicPlayer.docc/CapabilityMatrix.md) and [integration checklist](Sources/HotMicPlayer/HotMicPlayer.docc/IntegrationChecklist.md). Choose either [ReadyMadeOverlay](Examples/ReadyMadeOverlay) or [CustomOverlay](Examples/CustomOverlay); both starters build in examples CI. The initial 1.0.0 delivery includes both paths.
 
 **Forwardable partner brief:** [Evaluate HotMicPlayer](docs/PARTNER_HANDOFF.md). Optional [aggregate diagnostics](Sources/HotMicPlayer/HotMicPlayer.docc/OptionalDiagnostics.md) are default off and require a separately confirmed collector deployment.
 
 ## Install
 
-For the latest features, pin the commit SHA HotMic provides from this repository in SwiftPM as described in the [integration guide](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md). Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target. For the latest published alpha baseline:
+Install 1.0.0 from the canonical repository. Link **HotMicPlayer**, and optionally **HotMicPlayerUI**, to your app target.
 
 ```swift
-.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.1.0-alpha.2")
+.package(url: "https://github.com/hotmic-wp/hotmic-player-ios", exact: "1.0.0")
 ```
 
-`1.1.0-alpha.2` includes the ready-made overlay, core layout, ads, captions and engagement. The measured defaults and subsequent playback/transport fixes described here remain unreleased; pin the reviewed commit SHA HotMic provides for them, following the integration guide. Use the repository URL above with `from: "1.1.0"` only after the stable tag is published.
+Use `from: "1.0.0"` instead when your integration accepts compatible updates under the [version policy](Sources/HotMicPlayer/HotMicPlayer.docc/PartnerIntegrationGuide.md#version-policy).
 
 Use the SwiftPM identity `hotmic-player-ios` in your target dependencies:
 
@@ -103,7 +103,7 @@ Without a source, engagement is empty and read-only. Sources declare supported a
 
 ## 3. HotMic content + engagement
 
-Install [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect-ios) separately and follow its README to construct its adapters. Its `HotMicItemResolver`, `HotMicPlaylistSource` and `HotMicInteractionSource` implement the player’s public plug-in protocols:
+The separate [HotMicPlayerConnect](https://github.com/hotmic-wp/hotmic-player-connect-ios) adapter currently requires player `from: "1.1.0-alpha.1"` on its public main branch and cannot resolve a player pinned to `1.0.0`. Compatibility with 1.0.0 is not validated; choose a compatible adapter release before using this optional path. URL playback and a custom backend need no HotMic account. Follow the adapter README to construct its adapters. Its `HotMicItemResolver`, `HotMicPlaylistSource` and `HotMicInteractionSource` implement the player’s public plug-in protocols:
 
 ```swift
 import SwiftUI
@@ -118,17 +118,17 @@ import HotMicPlayerUI
 }
 ```
 
-Retain the player with the screen as in level 1; hide it with `isFeedVisible` and call terminal `teardown()` only when its owner is permanently dismissed. The adapter package owns the HotMicCore integration; this package has no Core dependency. This candidate supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
+Retain the player with the screen as in level 1; hide it with `isFeedVisible` and call terminal `teardown()` only when its owner is permanently dismissed. The adapter package owns the HotMicCore integration; this package has no Core dependency. The 1.0.0 contract supports VOD. See the [integration boundary](Sources/HotMicPlayer/HotMicPlayer.docc/HotMicIntegration.md).
 
 ## Requirements and performance
 
-The source marker is `1.1.0-dev`, not a release tag.
+`HotMicPlayer.version` is `1.0.0`.
 
 - Xcode 16+ / Swift 6 package tools. The package currently compiles in Swift 5 language mode.
 - iOS 17+ for the player and UI. The player/feed also compile for tvOS 17+. HotMicPlayerUI is iOS-only. macOS 14+ supports platform-independent models and tests.
 - Immutable public HTTP(S) or file VOD URLs. Live, DRM, authenticated-origin renewal and advanced HLS coverage are outside this release's supported contract.
 
-The defaults and new APIs below describe this unreleased source revision. Existing alpha tags retain their published behavior; pin the reviewed public commit supplied by HotMic for these changes. `.default`, `HMPlayerConfiguration()` and `HMPlayer()` use the same settings:
+The 1.0.0 defaults include bounded preparation and optional diagnostics. `.default`, `HMPlayerConfiguration()` and `HMPlayer()` use the same settings:
 
 | Setting | Default and units |
 | --- | --- |

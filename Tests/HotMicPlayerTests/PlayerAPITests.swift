@@ -900,6 +900,7 @@ struct PlayerNativeReviewTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HotMic-review-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let transport = try HMCacheTransport(configuration: .default, directory: directory)
+        do {
         let old = HMMediaItem(id: "same", url: URL(string: "https://example.com/old.mp4")!)
         let new = HMMediaItem(id: "same", url: URL(string: "https://example.com/new.mp4")!)
         #expect(await transport.start())
@@ -922,10 +923,10 @@ struct PlayerNativeReviewTests {
         #expect(transport.state.allURLs().isEmpty)
         await transport.interruptListenerForTesting()
         let deadline = Date().addingTimeInterval(3)
-        while transport.state.port != 0, Date() < deadline { await Task.yield() }
+        while transport.state.port != 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(transport.state.port == 0)
         #expect(transport.url(for: new) == new.url) // safe direct fallback while checking health
-        while transport.state.port == 0, Date() < deadline { await Task.yield() }
+        while transport.state.port == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(transport.state.port != 0)
         let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(transport.state.port)/health")!)
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
@@ -933,9 +934,9 @@ struct PlayerNativeReviewTests {
         // A two-byte native probe establishes total size. The subsequent miss
         // must reach the client before the upstream range completes.
         let origin = try PrefixOrigin()
-        defer { origin.listener.cancel() }
+        defer { origin.stop() }
         // NWListener can publish .any (rawValue 0) before it is ready.
-        while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { await Task.yield() }
+        while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         let port = try #require(origin.listener.port)
         try #require(port.rawValue != 0)
         let media = URL(string: "http://127.0.0.1:\(port.rawValue)/slow.mp4")!
@@ -957,7 +958,7 @@ struct PlayerNativeReviewTests {
         let timeout = Task { try await Task.sleep(for: .seconds(3)); reader.cancel() }
         defer { timeout.cancel() }
         let heldDeadline = Date().addingTimeInterval(2)
-        while await transport.heldPlaybackRequestCount == 0, Date() < heldDeadline { await Task.yield() }
+        while await transport.heldPlaybackRequestCount == 0, Date() < heldDeadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(await transport.heldPlaybackRequestCount == 1)
         // Promoting a held neighbour releases its original proxy request.
         await transport.prioritizePlayback(entry, urgent: true)
@@ -985,7 +986,7 @@ struct PlayerNativeReviewTests {
             }
         }
         let parked = Date().addingTimeInterval(2)
-        while !receivedWarmPrefix, Date() < parked { await Task.yield() }
+        while !receivedWarmPrefix, Date() < parked { try await Task.sleep(for: .milliseconds(10)) }
         #expect(receivedWarmPrefix)
         await transport.prioritizePlayback(promoted, urgent: true)
         await transport.markPlayed(promoted)
@@ -999,9 +1000,9 @@ struct PlayerNativeReviewTests {
         _ = try? await nativeOwner.value
         for mode in [PrefixOrigin.Mode.shortRange, .ignoresRange] {
             let fixture = try PrefixOrigin(mode: mode)
-            defer { fixture.listener.cancel() }
+            defer { fixture.stop(); #expect(!fixture.gateExpired) }
             let readyDeadline = Date().addingTimeInterval(2)
-            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < readyDeadline { await Task.yield() }
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < readyDeadline { try await Task.sleep(for: .milliseconds(10)) }
             let fixturePort = try #require(fixture.listener.port)
             try #require(fixturePort.rawValue != 0)
             let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/bounded.mp4")!
@@ -1034,16 +1035,16 @@ struct PlayerNativeReviewTests {
                 tail.setValue("bytes=8-15", forHTTPHeaderField: "Range"); tail.timeoutInterval = 3
                 _ = try? await URLSession.shared.data(for: tail)
                 let deliveredDeadline = Date().addingTimeInterval(1)
-                while directFallbacks == 0, Date() < deliveredDeadline { await Task.yield() }
+                while directFallbacks == 0, Date() < deliveredDeadline { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(directFallbacks == 1)
             }
         }
         // The origin withholds its tail until contention is observed. This is
         // a real streaming native owner, not a parked task or a timing assumption.
         let healthy = try PrefixOrigin(mode: .gatedRange)
-        defer { healthy.listener.cancel() }
+        defer { healthy.stop(); #expect(!healthy.gateExpired) }
         let healthyReady = Date().addingTimeInterval(2)
-        while (healthy.listener.port?.rawValue ?? 0) == 0, Date() < healthyReady { await Task.yield() }
+        while (healthy.listener.port?.rawValue ?? 0) == 0, Date() < healthyReady { try await Task.sleep(for: .milliseconds(10)) }
         let healthyPort = try #require(healthy.listener.port)
         let healthyURL = URL(string: "http://127.0.0.1:\(healthyPort.rawValue)/healthy.mp4")!
         let same = HMMediaItem(id: "healthy-next", url: healthyURL, format: .mp4)
@@ -1064,26 +1065,26 @@ struct PlayerNativeReviewTests {
             return data
         }
         let streaming = Date().addingTimeInterval(2)
-        while !firstBytes, Date() < streaming { await Task.yield() }
+        while !firstBytes, Date() < streaming { try await Task.sleep(for: .milliseconds(10)) }
         try #require(firstBytes)
         let healthyPlan = HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "healthy coalescing acceptance")
         for cancel in [true, false] {
             healthyCompleted = false
             await transport.prefetch([same], keeping: [old, same], plan: healthyPlan)
             let joined = Date().addingTimeInterval(2)
-            while await transport.joinedPlaybackRequestCount == 0, Date() < joined { await Task.yield() }
+            while await transport.joinedPlaybackRequestCount == 0, Date() < joined { try await Task.sleep(for: .milliseconds(10)) }
             #expect(await transport.joinedPlaybackRequestCount == 1)
             if cancel {
                 await transport.cancelPrefetch()
                 let drained = Date().addingTimeInterval(2)
-                while await transport.joinedPlaybackRequestCount > 0, Date() < drained { await Task.yield() }
+                while await transport.joinedPlaybackRequestCount > 0, Date() < drained { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(await transport.joinedPlaybackRequestCount == 0)
             }
         }
         healthy.releaseResponses()
         #expect(try await healthyReader.value == Data(repeating: 7, count: 32))
         let coalesced = Date().addingTimeInterval(3)
-        while !healthyCompleted, Date() < coalesced { await Task.yield() }
+        while !healthyCompleted, Date() < coalesced { try await Task.sleep(for: .milliseconds(10)) }
         #expect(healthyCompleted && joins >= 2 && healthyPreemptions == 0)
         #expect(healthy.requestCount(path: "/healthy.mp4") == 1)
         print("Transport healthy: joins=\(joins) prefix_preemptions=\(healthyPreemptions) origin_GETs=\(healthy.requestCount(path: "/healthy.mp4")) retained_bytes=32")
@@ -1091,10 +1092,11 @@ struct PlayerNativeReviewTests {
         // A real TCP client advertises a tiny receive window and stops reading.
         // Its sustained send wait must retire safely, retaining the pending chunk
         // without attributing that chunk as successfully delivered to playback.
+        print("Transport bulk phase: setup")
         let backpressured = try PrefixOrigin(mode: .bulk)
-        defer { backpressured.listener.cancel() }
+        defer { backpressured.stop(); #expect(!backpressured.gateExpired) }
         let bulkReady = Date().addingTimeInterval(2)
-        while (backpressured.listener.port?.rawValue ?? 0) == 0, Date() < bulkReady { await Task.yield() }
+        while (backpressured.listener.port?.rawValue ?? 0) == 0, Date() < bulkReady { try await Task.sleep(for: .milliseconds(10)) }
         let bulkPort = try #require(backpressured.listener.port)
         let bulkURL = URL(string: "http://127.0.0.1:\(bulkPort.rawValue)/bulk.mp4")!
         let bulkTotal = 8 * 1024 * 1024
@@ -1129,38 +1131,48 @@ struct PlayerNativeReviewTests {
         }
         let nativeRequest = Data("GET \(bulkProxy.path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".utf8)
         #expect(nativeRequest.withUnsafeBytes { Darwin.send(socket, $0.baseAddress, $0.count, 0) } == nativeRequest.count)
+        print("Transport bulk phase: awaiting-native-park")
         let clientBlocked = Date().addingTimeInterval(4)
-        while await transport.parkedNativeRequestCount == 0, Date() < clientBlocked { await Task.yield() }
+        while await transport.parkedNativeRequestCount == 0, Date() < clientBlocked { try await Task.sleep(for: .milliseconds(10)) }
         try #require(await transport.parkedNativeRequestCount > 0)
+        print("Transport bulk phase: prefetch-enter native_received=\(nativeReceived)")
         await transport.prefetch([bulkPrefix], keeping: [old, bulkWarm, bulkPrefix], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: bulkTotal, secondsPerItem: 4, reason: "client backpressure acceptance"))
+        print("Transport bulk phase: prefetch-return")
         let blocked = Date().addingTimeInterval(4)
-        while !backpressured.hasHeldResponse, Date() < blocked { await Task.yield() }
-        #expect(blockedPreemptions == 1 && nativeReceived > 0 && backpressured.hasHeldResponse)
-        var retained = Data()
-        while let hit = await cache.available(key: bulkURL.absoluteString, start: retained.count, count: bulkTotal - retained.count) {
-            retained.append(hit.data)
-            if retained.count >= bulkTotal { break }
-        }
-        #expect(retained == Data(repeating: 7, count: nativeReceived))
+        while !backpressured.hasHeldResponse, Date() < blocked { try await Task.sleep(for: .milliseconds(10)) }
+        print("Transport bulk phase: held-response preemptions=\(blockedPreemptions) native_received=\(nativeReceived) held=\(backpressured.hasHeldResponse)")
+        try #require(blockedPreemptions == 1 && nativeReceived > 0 && backpressured.hasHeldResponse)
+        try #require(!backpressured.gateExpired)
+        let retained = try await cachedPrefix(cache, url: bulkURL, total: bulkTotal, phase: "before-release")
+        // The close event precedes cancellation's final byte accounting. Wait
+        // for that receipt explicitly rather than assuming actor delivery order.
+        let accounted = Date().addingTimeInterval(2)
+        while nativeReceived < retained.count, Date() < accounted { try await Task.sleep(for: .milliseconds(10)) }
+        print("Transport bulk phase: retained-prefix bytes=\(retained.count) native_received=\(nativeReceived)")
+        #expect(retained.count == nativeReceived)
+        let retainedBytesMatch = retained.allSatisfy { $0 == 7 }
+        #expect(retainedBytesMatch)
         #expect(backpressured.lastRangeStart(path: "/bulk.mp4") == retained.count)
+        try #require(!backpressured.gateExpired)
+        print("Transport bulk phase: release-responses")
         backpressured.releaseResponses()
         let bulkFinished = Date().addingTimeInterval(3)
-        while !bulkComplete, Date() < bulkFinished { await Task.yield() }
-        #expect(bulkComplete && blockedPreemptions == 1)
-        var allRetained = Data()
-        while allRetained.count < bulkTotal,
-              let hit = await cache.available(key: bulkURL.absoluteString, start: allRetained.count, count: bulkTotal - allRetained.count) {
-            allRetained.append(hit.data)
-        }
-        #expect(allRetained == Data(repeating: 7, count: bulkTotal))
+        while !bulkComplete, Date() < bulkFinished { try await Task.sleep(for: .milliseconds(10)) }
+        print("Transport bulk phase: completed=\(bulkComplete) preemptions=\(blockedPreemptions)")
+        try #require(bulkComplete && blockedPreemptions == 1)
+        #expect(!backpressured.gateExpired)
+        let allRetained = try await cachedPrefix(cache, url: bulkURL, total: bulkTotal, phase: "after-release")
+        #expect(allRetained.count == bulkTotal)
+        let allBytesMatch = allRetained.allSatisfy { $0 == 7 }
+        #expect(allBytesMatch)
         print("Transport backpressure: prefix_preemptions=\(blockedPreemptions) native_received=\(nativeReceived) retained_before_suffix=\(retained.count) final_retained=\(allRetained.count) origin_GETs=\(backpressured.requestCount(path: "/bulk.mp4"))")
         // A warm native reader parked for budget or activation must not monopolize
         // the serial prefix slot for a distinct entry sharing its exact URL.
         for (mode, knownTotal, cap, sameID) in [(PrefixOrigin.Mode.shortRange, true, 8, false), (.shortRange, true, 8, true), (.oversized200, false, 1024, false), (.oversized200, true, 1024, false), (.gatedOversized200, false, 1024, false), (.gatedOversized200, false, 1024, true)] {
             let fixture = try PrefixOrigin(mode: mode)
-            defer { fixture.listener.cancel() }
+            defer { fixture.stop(); #expect(!fixture.gateExpired) }
             let ready = Date().addingTimeInterval(2)
-            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { await Task.yield() }
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { try await Task.sleep(for: .milliseconds(10)) }
             let fixturePort = try #require(fixture.listener.port)
             let lateParking = mode == .gatedOversized200
             let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/\(lateParking ? "part.ts" : "parked.mp4")")!
@@ -1195,36 +1207,36 @@ struct PlayerNativeReviewTests {
             let plan = HMPrefetchPlan(itemsAhead: 2, bytesPerItem: cap, secondsPerItem: 4, reason: "parked owner acceptance")
             if lateParking {
                 let started = Date().addingTimeInterval(2)
-                while fixture.requestCount(path: "/part.ts") == 0, Date() < started { await Task.yield() }
+                while fixture.requestCount(path: "/part.ts") == 0, Date() < started { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(fixture.requestCount(path: "/part.ts") == 1)
                 await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
                 let joined = Date().addingTimeInterval(2)
-                while await transport.joinedPlaybackRequestCount == 0, Date() < joined { await Task.yield() }
+                while await transport.joinedPlaybackRequestCount == 0, Date() < joined { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(await transport.joinedPlaybackRequestCount > 0)
                 // A cancelled metadata waiter must not leave a preemption trigger.
                 await transport.cancelPrefetch()
                 let drained = Date().addingTimeInterval(2)
-                while await transport.joinedPlaybackRequestCount > 0, Date() < drained { await Task.yield() }
+                while await transport.joinedPlaybackRequestCount > 0, Date() < drained { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(await transport.joinedPlaybackRequestCount == 0 && prefixPreemptions == 0)
                 completed.removeAll()
                 await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
                 let rejoined = Date().addingTimeInterval(2)
-                while await transport.joinedPlaybackRequestCount == 0, Date() < rejoined { await Task.yield() }
+                while await transport.joinedPlaybackRequestCount == 0, Date() < rejoined { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(await transport.joinedPlaybackRequestCount > 0 && prefixPreemptions == 0)
                 fixture.releaseResponses() // Now the native header callback parks.
             } else {
                 let parked = Date().addingTimeInterval(2)
-                while await transport.parkedNativeRequestCount == 0, Date() < parked { await Task.yield() }
+                while await transport.parkedNativeRequestCount == 0, Date() < parked { try await Task.sleep(for: .milliseconds(10)) }
                 #expect(await transport.parkedNativeRequestCount > 0)
                 await transport.prefetch([alias, farther], keeping: [old, warm, alias, farther], plan: plan)
             }
             let finished = Date().addingTimeInterval(4)
-            while !completed.contains(farther.id), Date() < finished { await Task.yield() }
+            while !completed.contains(farther.id), Date() < finished { try await Task.sleep(for: .milliseconds(10)) }
             #expect(prefixPreemptions == 1 && completed.contains(alias.id) && completed.contains(farther.id))
             #expect(fixture.requestCount(path: "/farther.mp4") > 0)
             print("Transport parked: mode=\(mode) known_total=\(knownTotal) same_ID=\(sameID) prefix_preemptions=\(prefixPreemptions) farther_GETs=\(fixture.requestCount(path: "/farther.mp4"))")
             let retired = Date().addingTimeInterval(2)
-            while !native.finished, Date() < retired { await Task.yield() }
+            while !native.finished, Date() < retired { try await Task.sleep(for: .milliseconds(10)) }
             #expect(native.sentRequests == 1 && native.finished)
             #expect(acceptedBytes[warm.id, default: 0] <= cap && acceptedBytes[alias.id, default: 0] <= cap)
             print("Transport native receipts: \(native.receipts) accepted_bytes=\(acceptedBytes)")
@@ -1233,9 +1245,9 @@ struct PlayerNativeReviewTests {
         // GET-only origins must produce an explicit complete prefix, not just native fallback.
         for mode in [PrefixOrigin.Mode.head403, .head405, .unknownLength, .oversized200] {
             let fixture = try PrefixOrigin(mode: mode)
-            defer { fixture.listener.cancel() }
+            defer { fixture.stop(); #expect(!fixture.gateExpired) }
             let ready = Date().addingTimeInterval(2)
-            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { await Task.yield() }
+            while (fixture.listener.port?.rawValue ?? 0) == 0, Date() < ready { try await Task.sleep(for: .milliseconds(10)) }
             let fixturePort = try #require(fixture.listener.port)
             let url = URL(string: "http://127.0.0.1:\(fixturePort.rawValue)/master.m3u8")!
             let next = HMMediaItem(id: "get-only-\(fixturePort)", url: url, format: .hls)
@@ -1250,7 +1262,7 @@ struct PlayerNativeReviewTests {
             }
             await transport.prefetch([next], keeping: [old, next], plan: HMPrefetchPlan(itemsAhead: 1, bytesPerItem: 1024, secondsPerItem: 4, reason: "GET-only acceptance"))
             let done = Date().addingTimeInterval(4)
-            while met == nil, Date() < done { await Task.yield() }
+            while met == nil, Date() < done { try await Task.sleep(for: .milliseconds(10)) }
             #expect(met == (mode != .oversized200))
             #expect(payload <= 1024)
             if mode != .oversized200 {
@@ -1259,10 +1271,31 @@ struct PlayerNativeReviewTests {
                 #expect(payload == Double(PrefixOrigin.manifest.utf8.count + 32))
             } else { #expect(payload == Double(PrefixOrigin.manifest.utf8.count)) }
         }
+        print("Transport route phase: finish-enter")
         _ = await transport.finish()
+        print("Transport route phase: finish-return")
         #expect(await transport.heldPlaybackRequestCount == 0)
         #expect(await transport.joinedPlaybackRequestCount == 0)
         #expect(await transport.parkedNativeRequestCount == 0)
+        } catch {
+            _ = await transport.finish()
+            throw error
+        }
+    }
+
+    /// A cache miss ends a scan; an empty hit or unbounded scan is a failure.
+    private func cachedPrefix(_ cache: HMDiskCache, url: URL, total: Int, phase: String) async throws -> Data {
+        var data = Data()
+        let deadline = Date().addingTimeInterval(2)
+        while data.count < total {
+            try #require(Date() < deadline, "Cache scan deadline: \(phase), cursor=\(data.count)")
+            print("Transport bulk cache: phase=\(phase) cursor=\(data.count) read-enter")
+            guard let hit = await cache.available(key: url.absoluteString, start: data.count, count: total - data.count) else { break }
+            print("Transport bulk cache: phase=\(phase) cursor=\(data.count) bytes=\(hit.data.count)")
+            try #require(!hit.data.isEmpty && hit.data.count <= total - data.count, "Cache scan made no valid progress: \(phase)")
+            data.append(hit.data)
+        }
+        return data
     }
 
     /// No automatic retry, one send and explicit per-connection receive/EOF receipts.
@@ -1318,17 +1351,53 @@ struct PlayerNativeReviewTests {
         private var heldResponses: [@Sendable () -> Void] = []
         private var released = false
         private var holdBulk = false
+        private var connections: [String: NWConnection] = [:]
+        private var stopped = false
+        private var gateTimer: DispatchWorkItem?
+        private var expired = false
+        var gateExpired: Bool { requestLock.lock(); defer { requestLock.unlock() }; return expired }
+        func stop() {
+            requestLock.lock(); stopped = true; released = true
+            gateTimer?.cancel(); gateTimer = nil
+            heldResponses.removeAll()
+            let owned = Array(connections.values); connections.removeAll(); requestLock.unlock()
+            listener.cancel()
+            for connection in owned { connection.cancel() }
+        }
+        private func own(_ connection: NWConnection, attempt: String) -> Bool {
+            requestLock.lock(); defer { requestLock.unlock() }
+            guard !stopped else { return false }
+            connections[attempt] = connection; return true
+        }
+        private func closed(_ attempt: String) {
+            requestLock.lock(); connections[attempt] = nil; requestLock.unlock()
+        }
+        private func expireGate() {
+            requestLock.lock()
+            guard !released, !stopped, !heldResponses.isEmpty else { requestLock.unlock(); return }
+            expired = true; requestLock.unlock()
+            print("Origin response gate: deadline expired; releasing owned responses")
+            releaseResponses()
+        }
         var hasHeldResponse: Bool { requestLock.lock(); defer { requestLock.unlock() }; return !heldResponses.isEmpty }
         func holdBulkResponses() { requestLock.lock(); holdBulk = true; requestLock.unlock() }
         private var shouldHoldBulk: Bool { requestLock.lock(); defer { requestLock.unlock() }; return holdBulk }
         func releaseResponses() {
-            requestLock.lock(); released = true; let responses = heldResponses; heldResponses.removeAll(); requestLock.unlock()
+            requestLock.lock(); released = true; gateTimer?.cancel(); gateTimer = nil; let responses = heldResponses; heldResponses.removeAll(); requestLock.unlock()
             for response in responses { response() }
         }
         private func hold(_ response: @escaping @Sendable () -> Void) {
             requestLock.lock()
             if released { requestLock.unlock(); response() }
-            else { heldResponses.append(response); requestLock.unlock() }
+            else {
+                heldResponses.append(response)
+                if gateTimer == nil {
+                    let timer = DispatchWorkItem { [weak self] in self?.expireGate() }
+                    gateTimer = timer
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 6, execute: timer)
+                }
+                requestLock.unlock()
+            }
         }
         func requestCount(path: String) -> Int { requestLock.lock(); defer { requestLock.unlock() }; return requests[path, default: 0] }
         private func record(_ request: String) {
@@ -1341,8 +1410,10 @@ struct PlayerNativeReviewTests {
             listener = try NWListener(using: .tcp, on: .any)
             listener.newConnectionHandler = { [weak self] connection in
                 let attempt = UUID().uuidString
+                guard self?.own(connection, attempt: attempt) == true else { connection.cancel(); return }
                 print("Origin receipt: mode=\(mode) attempt=\(attempt) accepted")
-                connection.stateUpdateHandler = { state in
+                connection.stateUpdateHandler = { [weak self] state in
+                    switch state { case .cancelled, .failed: self?.closed(attempt); default: break }
                     if case .cancelled = state { print("Origin receipt: mode=\(mode) attempt=\(attempt) closed") }
                     if case .failed(let error) = state { print("Origin receipt: mode=\(mode) attempt=\(attempt) failed=\(error)") }
                 }

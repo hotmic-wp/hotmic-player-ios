@@ -266,8 +266,9 @@ extension CaptionsAudioAccessibilityTests {
         aligned.record(.attempt, at: alignedBegan + 59)
         aligned.close(at: alignedBegan + 60.05)
         #expect(aligned.began == alignedBegan && aligned.aggregate?.playback.attempted == 1)
-        aligned.close(at: alignedBegan + 60.25)
-        #expect(aligned.began == alignedBegan + 60.25 && aligned.aggregate?.playback.attempted == 0)
+        let alignedDeadline = alignedCadence.lastAttempt + 60
+        aligned.close(at: alignedDeadline)
+        #expect(aligned.began == alignedDeadline && aligned.aggregate?.playback.attempted == 0)
         aligned.suspend()
 
         let measured = HMDiagnosticsRecorder(options: options, configuration: .default, lastAttempt: -.infinity, eligible: { false })
@@ -284,9 +285,10 @@ extension CaptionsAudioAccessibilityTests {
         measured.suspend()
 
         let spacing = HMDiagnosticsCadence()
-        #expect(spacing.reserve(at: began + 60.25))
-        #expect(!spacing.reserve(at: began + 120.05)) // 59.8 s is not an admissible attempt.
-        #expect(spacing.reserve(at: began + 120.25))
+        // Fixed quarter-second endpoints keep the 60 s boundary binary-exact.
+        #expect(spacing.reserve(at: 60.25))
+        #expect(!spacing.reserve(at: 120.05)) // 59.8 s is not an admissible attempt.
+        #expect(spacing.reserve(at: 120.25))
         let cadence = HMDiagnosticsCadence()
         #expect(cadence.reserve(at: 60)); #expect(!cadence.reserve(at: 119.999)); #expect(cadence.reserve(at: 120))
         let snapshot = HMDiagnosticsAggregate(config: try #require(HMDiagnosticsConfig(.default)), rate: 1)

@@ -1,0 +1,587 @@
+{
+ "version": 1,
+ "seed": 20261015,
+ "generator": "br-player-v2 ticket 03 make-content.py",
+ "horizontalSideCarMinimumDuration": 90.0,
+ "feed": [
+  {
+   "key": "s01",
+   "clipID": "b583313c-3af8-492a-91b0-eb8cc4b0e1f3",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b583313c-3af8-492a-91b0-eb8cc4b0e1f3/hls-as-served/master_vqbzyav.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b583313c-3af8-492a-91b0-eb8cc4b0e1f3/poster.jpg",
+   "width": 576,
+   "height": 1024,
+   "aspect": 0.5625,
+   "duration": 7.43,
+   "title": "Reaves threw this lob to the sky 😅",
+   "description": "Nobody on the floor saw this pass coming, including the guy it was meant for. Run it back and watch the defense turn around.",
+   "community": "B/R Hoops",
+   "hashtags": [
+    "NBA",
+    "Lakers",
+    "Highlights"
+   ],
+   "creator": {
+    "handle": "@br_hoops",
+    "name": "B/R Hoops",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 413,
+    "comments": 20,
+    "shares": 81,
+    "views": 1200
+   },
+   "liveCounts": false,
+   "ad": "preRoll16x9",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b583313c-3af8-492a-91b0-eb8cc4b0e1f3/poster.jpg",
+   "comments": "br-comments-s01.json"
+  },
+  {
+   "key": "s02",
+   "clipID": "0b0b42c0-3420-4b81-81d5-7887059ba31b",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/0b0b42c0-3420-4b81-81d5-7887059ba31b/hls-as-served/master_vlzd1em.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/0b0b42c0-3420-4b81-81d5-7887059ba31b/poster.jpg",
+   "width": 720,
+   "height": 1280,
+   "aspect": 0.5625,
+   "duration": 51.83,
+   "title": "Target Talk with Sid",
+   "description": "Sid breaks down who should be on your radar this week, and who you can safely leave on the bench.",
+   "community": "B/R Fantasy",
+   "hashtags": [
+    "FantasyFootball",
+    "StartSit",
+    "TargetTalk"
+   ],
+   "creator": {
+    "handle": "@brfantasy",
+    "name": "B/R Fantasy",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 2734,
+    "comments": 186,
+    "shares": 412,
+    "views": 48300
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/0b0b42c0-3420-4b81-81d5-7887059ba31b/poster.jpg",
+   "comments": "br-comments-s02.json"
+  },
+  {
+   "key": "s03",
+   "clipID": "5a5bec16-0ca4-4663-b4b1-ee581067d20b",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/5a5bec16-0ca4-4663-b4b1-ee581067d20b/hls-as-served/master_viqj2yz.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/5a5bec16-0ca4-4663-b4b1-ee581067d20b/poster.jpg",
+   "width": 720,
+   "height": 1280,
+   "aspect": 0.5625,
+   "duration": 40.7,
+   "title": "Every Yankees fan watching that near-homer 😅",
+   "description": "Deuce and Kolek lived every second of the ALDS Game 3 drive that died at the wall.",
+   "community": "B/R Walk-Off",
+   "hashtags": [
+    "MLB",
+    "Postseason",
+    "ALDS"
+   ],
+   "creator": {
+    "handle": "@brwalkoff",
+    "name": "B/R Walk-Off",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 6158,
+    "comments": 342,
+    "shares": 1207,
+    "views": 96800
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/5a5bec16-0ca4-4663-b4b1-ee581067d20b/poster.jpg",
+   "comments": "br-comments-s03.json"
+  },
+  {
+   "key": "s04",
+   "clipID": "47a558c6-0ccd-45b8-b566-f9e37590ac32",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/47a558c6-0ccd-45b8-b566-f9e37590ac32/hls-as-served/master_v3k3u9s.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/47a558c6-0ccd-45b8-b566-f9e37590ac32/poster.jpg",
+   "width": 720,
+   "height": 900,
+   "aspect": 0.8,
+   "duration": 148.69,
+   "title": "Moore's locker-room speech 🗣️",
+   "description": "The full speech after the win. Two and a half minutes the room will remember all season.",
+   "community": "B/R Gridiron",
+   "hashtags": [
+    "NFL",
+    "Saints",
+    "LockerRoom"
+   ],
+   "creator": {
+    "handle": "@br_gridiron",
+    "name": "B/R Gridiron",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 999,
+    "comments": 12318,
+    "shares": 1048213,
+    "views": 4120000
+   },
+   "liveCounts": false,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/47a558c6-0ccd-45b8-b566-f9e37590ac32/poster.jpg",
+   "comments": "br-comments-s04.json"
+  },
+  {
+   "key": "s05",
+   "clipID": "8fd747e8-a5a2-432e-96c1-8b0dd3ed7756",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8fd747e8-a5a2-432e-96c1-8b0dd3ed7756/hls-as-served/master_vsyvktv.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8fd747e8-a5a2-432e-96c1-8b0dd3ed7756/poster.jpg",
+   "width": 576,
+   "height": 1024,
+   "aspect": 0.5625,
+   "duration": 51.97,
+   "title": "Zegras is loving life in the Show",
+   "description": "First playoff run, first sold-out white-out, and he still can't get over it.",
+   "community": "B/R Open Ice",
+   "hashtags": [
+    "NHL",
+    "Playoffs",
+    "Golf"
+   ],
+   "creator": {
+    "handle": "@br_openice",
+    "name": "B/R Open Ice",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 3412,
+    "comments": 228,
+    "shares": 519,
+    "views": 61400
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": {
+    "en": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8fd747e8-a5a2-432e-96c1-8b0dd3ed7756/captions/en.vtt"
+   },
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8fd747e8-a5a2-432e-96c1-8b0dd3ed7756/poster.jpg",
+   "comments": "br-comments-s05.json"
+  },
+  {
+   "key": "s06",
+   "clipID": "746e9976-fd8a-4fbe-982b-befa68ea643b",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/746e9976-fd8a-4fbe-982b-befa68ea643b/hls-as-served/master_vgk34ay.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/746e9976-fd8a-4fbe-982b-befa68ea643b/poster.jpg",
+   "width": 720,
+   "height": 1280,
+   "aspect": 0.5625,
+   "duration": 13.2,
+   "title": "Knicks fans showed love to Deuce and Kolek 👏",
+   "description": "New York was in the building for ALDS Game 3 and they made sure everybody knew it.",
+   "community": "B/R Walk-Off",
+   "hashtags": [
+    "MLB",
+    "ALDS",
+    "NewYork"
+   ],
+   "creator": {
+    "handle": "@brwalkoff",
+    "name": "B/R Walk-Off",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 1874,
+    "comments": 97,
+    "shares": 233,
+    "views": 22900
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/746e9976-fd8a-4fbe-982b-befa68ea643b/poster.jpg",
+   "comments": "br-comments-s06.json"
+  },
+  {
+   "key": "s07",
+   "clipID": "53160f2a-bdcd-4699-a49a-afb4f4cf665e",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/53160f2a-bdcd-4699-a49a-afb4f4cf665e/hls-as-served/master_v3eh221.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/53160f2a-bdcd-4699-a49a-afb4f4cf665e/poster.jpg",
+   "width": 720,
+   "height": 1280,
+   "aspect": 0.5625,
+   "duration": 14.53,
+   "title": "Bro couldn't believe who he was sitting next to 🤣",
+   "description": "Courtside seat, best seat in the house, and the most famous neighbor in the arena.",
+   "community": "B/R Hoops",
+   "hashtags": [
+    "NBA",
+    "Courtside",
+    "Lakers"
+   ],
+   "creator": {
+    "handle": "@br_hoops",
+    "name": "B/R Hoops",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 24581,
+    "comments": 1934,
+    "shares": 3806,
+    "views": 412000
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-banner-sponsor/banner.png",
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/53160f2a-bdcd-4699-a49a-afb4f4cf665e/poster.jpg",
+   "comments": "br-comments-s07.json"
+  },
+  {
+   "key": "s08",
+   "clipID": "fab78152-07b3-4927-8c6d-d08f5a2b8830",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/fab78152-07b3-4927-8c6d-d08f5a2b8830/hls-as-served/master_vgwpctn.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/fab78152-07b3-4927-8c6d-d08f5a2b8830/poster.jpg",
+   "width": 1600,
+   "height": 900,
+   "aspect": 1.7778,
+   "duration": 55.37,
+   "title": "Falcons are on FIRE 🔥",
+   "description": "Three straight scoring drives and the sideline is losing it. Full-field view of the run.",
+   "community": "B/R Gridiron",
+   "hashtags": [
+    "NFL",
+    "Falcons",
+    "Highlights"
+   ],
+   "creator": {
+    "handle": "@br_gridiron",
+    "name": "B/R Gridiron",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 8903,
+    "comments": 611,
+    "shares": 1492,
+    "views": 133000
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/fab78152-07b3-4927-8c6d-d08f5a2b8830/poster.jpg",
+   "comments": "br-comments-s08.json"
+  },
+  {
+   "key": "s09",
+   "clipID": "8bb581ba-ce6b-4f3e-890f-78fe73304876",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8bb581ba-ce6b-4f3e-890f-78fe73304876/hls-as-served/master_v78jcil.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8bb581ba-ce6b-4f3e-890f-78fe73304876/poster.jpg",
+   "width": 720,
+   "height": 1280,
+   "aspect": 0.5625,
+   "duration": 10.7,
+   "title": "A'ja Wilson is the 2026 WNBA MVP 🚨🔥",
+   "description": "Another MVP for the trophy shelf. Share it with the friend who doubted her in May.",
+   "community": "B/R WNBA",
+   "hashtags": [
+    "WNBA",
+    "MVP",
+    "Aces"
+   ],
+   "creator": {
+    "handle": "@br_wnba",
+    "name": "B/R WNBA",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 15220,
+    "comments": 842,
+    "shares": 9311,
+    "views": 288000
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/8bb581ba-ce6b-4f3e-890f-78fe73304876/poster.jpg",
+   "comments": "br-comments-s09.json"
+  },
+  {
+   "key": "s10",
+   "clipID": "299e4d01-c5ff-448b-b1b1-ffcf7e136b42",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/299e4d01-c5ff-448b-b1b1-ffcf7e136b42/hls-as-served/master_vmp52c7.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/299e4d01-c5ff-448b-b1b1-ffcf7e136b42/poster.jpg",
+   "width": 720,
+   "height": 1280,
+   "aspect": 0.5625,
+   "duration": 7.1,
+   "title": "Only one team can draft Arch Manning… 👀",
+   "description": "The most-watched draft decision of the decade is coming. Who gets the pick?",
+   "community": "B/R CFB",
+   "hashtags": [
+    "CFB",
+    "NFLDraft",
+    "Texas"
+   ],
+   "creator": {
+    "handle": "@brcfb",
+    "name": "B/R CFB",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 4602,
+    "comments": 1177,
+    "shares": 688,
+    "views": 75100
+   },
+   "liveCounts": true,
+   "ad": "preRoll9x16",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/299e4d01-c5ff-448b-b1b1-ffcf7e136b42/poster.jpg",
+   "comments": "br-comments-s10.json"
+  }
+ ],
+ "playlist": {
+  "title": "MLB Postseason",
+  "clips": [
+   {
+    "key": "p1",
+    "clipID": "b9725240-3bed-4878-a7ca-79dea46119a9",
+    "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b9725240-3bed-4878-a7ca-79dea46119a9/hls-as-served/master_vk5cnem.m3u8",
+    "format": "hls",
+    "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b9725240-3bed-4878-a7ca-79dea46119a9/poster.jpg",
+    "width": 720,
+    "height": 900,
+    "aspect": 0.8,
+    "duration": 35.22,
+    "title": "Insane view of the Rice grand slam",
+    "description": "The angle you didn't see on the broadcast, from the seats behind the plate.",
+    "community": "B/R Walk-Off",
+    "hashtags": [
+     "MLB",
+     "Postseason",
+     "GrandSlam"
+    ],
+    "creator": {
+     "handle": "@brwalkoff",
+     "name": "B/R Walk-Off",
+     "avatarURL": null
+    },
+    "counts": {
+     "fire": 5520,
+     "comments": 301,
+     "shares": 744,
+     "views": 88700
+    },
+    "liveCounts": true,
+    "ad": "none",
+    "captions": null,
+    "banner": null,
+    "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b9725240-3bed-4878-a7ca-79dea46119a9/poster.jpg",
+    "comments": "br-comments-p1.json"
+   },
+   {
+    "key": "p2",
+    "clipID": "dd3361b5-c8dd-4787-8000-54f59d5aac4e",
+    "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/dd3361b5-c8dd-4787-8000-54f59d5aac4e/hls-as-served/master_vu1u8bq.m3u8",
+    "format": "hls",
+    "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/dd3361b5-c8dd-4787-8000-54f59d5aac4e/poster.jpg",
+    "width": 720,
+    "height": 1280,
+    "aspect": 0.5625,
+    "duration": 10.31,
+    "title": "The pitch that sealed the Rays' sweep 🤮",
+    "description": "Ninety-eight with run. Good luck.",
+    "community": "B/R Walk-Off",
+    "hashtags": [
+     "MLB",
+     "Rays",
+     "Nasty"
+    ],
+    "creator": {
+     "handle": "@brwalkoff",
+     "name": "B/R Walk-Off",
+     "avatarURL": null
+    },
+    "counts": {
+     "fire": 3015,
+     "comments": 144,
+     "shares": 402,
+     "views": 41200
+    },
+    "liveCounts": true,
+    "ad": "none",
+    "captions": null,
+    "banner": null,
+    "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/dd3361b5-c8dd-4787-8000-54f59d5aac4e/poster.jpg",
+    "comments": "br-comments-p2.json"
+   },
+   {
+    "key": "p3",
+    "clipID": "3736f3d3-feee-4773-9490-e38062a4950e",
+    "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/3736f3d3-feee-4773-9490-e38062a4950e/hls-as-served/master_v7jk1a5.m3u8",
+    "format": "hls",
+    "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/3736f3d3-feee-4773-9490-e38062a4950e/poster.jpg",
+    "width": 720,
+    "height": 900,
+    "aspect": 0.8,
+    "duration": 33.26,
+    "title": "Braves fans boo Freddie 🗣️",
+    "description": "Atlanta has a long memory and a loud upper deck.",
+    "community": "B/R Walk-Off",
+    "hashtags": [
+     "MLB",
+     "Braves",
+     "Postseason"
+    ],
+    "creator": {
+     "handle": "@brwalkoff",
+     "name": "B/R Walk-Off",
+     "avatarURL": null
+    },
+    "counts": {
+     "fire": 2288,
+     "comments": 516,
+     "shares": 301,
+     "views": 57600
+    },
+    "liveCounts": true,
+    "ad": "none",
+    "captions": null,
+    "banner": null,
+    "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/3736f3d3-feee-4773-9490-e38062a4950e/poster.jpg",
+    "comments": "br-comments-p3.json"
+   }
+  ]
+ },
+ "horizontal": [
+  {
+   "key": "h1",
+   "clipID": "fab78152-07b3-4927-8c6d-d08f5a2b8830",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/fab78152-07b3-4927-8c6d-d08f5a2b8830/hls-as-served/master_vgwpctn.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/fab78152-07b3-4927-8c6d-d08f5a2b8830/poster.jpg",
+   "width": 1600,
+   "height": 900,
+   "aspect": 1.7778,
+   "duration": 55.37,
+   "title": "Falcons are on FIRE 🔥",
+   "description": "Three straight scoring drives and the sideline is losing it.",
+   "community": "B/R Gridiron",
+   "hashtags": [
+    "NFL",
+    "Falcons"
+   ],
+   "creator": {
+    "handle": "@br_gridiron",
+    "name": "B/R Gridiron",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 8903,
+    "comments": 611,
+    "shares": 1492,
+    "views": 133000
+   },
+   "liveCounts": true,
+   "ad": "none",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/fab78152-07b3-4927-8c6d-d08f5a2b8830/poster.jpg",
+   "comments": "br-comments-s08.json"
+  },
+  {
+   "key": "h2",
+   "clipID": "b2396a29-0781-4f40-a999-1afe42dec055",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b2396a29-0781-4f40-a999-1afe42dec055/hls-as-served/master_v4ierz0.m3u8",
+   "format": "hls",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b2396a29-0781-4f40-a999-1afe42dec055/poster.jpg",
+   "width": 1920,
+   "height": 1080,
+   "aspect": 1.7778,
+   "duration": 35.74,
+   "title": "Walk of sham 🔔😭 (stand-in: under 90 s)",
+   "description": "Stand-in until the long landscape clip lands; the demo's side-car threshold is 30 s for it.",
+   "community": "B/R Football",
+   "hashtags": [
+    "Soccer",
+    "PremierLeague"
+   ],
+   "creator": {
+    "handle": "@brfootball",
+    "name": "B/R Football",
+    "avatarURL": null
+   },
+   "counts": {
+    "fire": 7744,
+    "comments": 455,
+    "shares": 1120,
+    "views": 102000
+   },
+   "liveCounts": true,
+   "ad": "sideCar",
+   "captions": null,
+   "banner": null,
+   "shareURL": "https://d1s9ql8g8ygo3y.cloudfront.net/content/b2396a29-0781-4f40-a999-1afe42dec055/poster.jpg",
+   "sideCarMinimumDuration": 30,
+   "comments": "br-comments-h2.json"
+  }
+ ],
+ "ads": {
+  "sideCar16x9_30": {
+   "id": "hm-demo-ad-16x9-30s",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-ad-16x9-30s/mp4-faststart-720.mp4",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-ad-16x9-30s/poster.jpg",
+   "duration": 30.0,
+   "aspect": 1.7778
+  },
+  "sideCar16x9_15": {
+   "id": "hm-demo-ad-16x9-15s",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-ad-16x9-15s/mp4-faststart-720.mp4",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-ad-16x9-15s/poster.jpg",
+   "duration": 15.0,
+   "aspect": 1.7778
+  },
+  "preRoll16x9": {
+   "id": "hm-demo-preroll-16x9-15s",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-preroll-16x9-15s/mp4-faststart-720.mp4",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-preroll-16x9-15s/poster.jpg",
+   "duration": 15.0,
+   "aspect": 1.7778
+  },
+  "preRoll9x16": {
+   "id": "hm-demo-preroll-9x16-15s",
+   "url": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-preroll-9x16-15s/mp4-faststart-720x1280.mp4",
+   "poster": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-preroll-9x16-15s/poster.jpg",
+   "duration": 15.0,
+   "aspect": 0.5625
+  }
+ },
+ "banner": "https://d1s9ql8g8ygo3y.cloudfront.net/content/hm-demo-banner-sponsor/banner.png"
+}

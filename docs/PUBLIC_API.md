@@ -1083,6 +1083,8 @@ static let version: String
 
 @MainActor func hmExcludedHitAreas(_ regions: [CGRect]) -> some View
 
+@MainActor func hmFeedPagingDisabled(_ disabled: Bool) -> some View
+
 @MainActor func hmFullscreenVideoLayout(_ layout: HMVideoLayout) -> some View
 
 @MainActor func hmVideoGestures(isAdPlaying: Bool = false, accessibilityLabel: String? = nil, onTap: (() -> Void)? = nil, onDoubleTap: ((CGPoint) -> Void)? = nil) -> some View
@@ -1274,6 +1276,16 @@ var showsScrubber: Bool
 @MainActor var isPaused: Bool
 ```
 
+## HMPlaybackStatusView
+
+```swift
+@MainActor init(snapshot: HMPlaybackSnapshot, onRetry: (() -> Void)? = nil)
+@MainActor struct HMPlaybackStatusView
+@MainActor var body: some View { get }
+@MainActor var onRetry: (() -> Void)?
+@MainActor var snapshot: HMPlaybackSnapshot
+```
+
 ## HMPollCard
 
 ```swift
@@ -1387,13 +1399,25 @@ struct HMSocialMetadataContext
 ```swift
 init()
 struct HMSocialOptions
+var allowsPagingWhileSheetOpen: Bool
 var allowsScrubbing: Bool
+var closesSheetOnVideoTap: Bool
 var hidesMetadataDuringAds: Bool
 var hostNavigationHeight: CGFloat
 var previewDuration: TimeInterval
 var previewRotationInterval: TimeInterval?
 var sheetHeight: CGFloat
+var sheetMode: HMSocialOptions.SheetMode
 var showsMute: Bool
+var showsPlaybackStatus: Bool
+```
+
+## HMSocialOptions.SheetMode
+
+```swift
+case continuous
+case snapped(squeezeFraction: Double)
+enum SheetMode
 ```
 
 ## HMSocialOverlay
@@ -1466,7 +1490,9 @@ struct HMSocialRailContext
 @MainActor func dragComments(to height: CGFloat)
 @MainActor func fire(at point: CGPoint?, item: HMMediaItem, data: any HMSocialDataSource, addOnly: Bool = false, isAdActive: Bool = false, onToggle: @escaping (HMMediaItem, Bool) -> Void = { _, _ in })
 @MainActor func openComments(item: HMMediaItem, height: CGFloat, isAdActive: Bool, onChange: @escaping (HMMediaItem, Bool) -> Void = { _, _ in })
+@MainActor func snapComments(to position: HMSocialState.SheetPosition)
 @MainActor func updateSheetLayout(maximumHeight: CGFloat, bottomInset: CGFloat)
+@MainActor func updateSheetSnapping(squeezedHeight: CGFloat?)
 @MainActor init()
 @MainActor var error: String? { get set }
 @MainActor var fireID: Int { get set }
@@ -1476,6 +1502,16 @@ struct HMSocialRailContext
 @MainActor var maximumSheetHeight: CGFloat { get set }
 @MainActor var sheetBottomInset: CGFloat { get set }
 @MainActor var sheetHeight: CGFloat { get set }
+@MainActor var sheetPosition: HMSocialState.SheetPosition? { get set }
+@MainActor var squeezedSheetHeight: CGFloat? { get set }
+```
+
+## HMSocialState.SheetPosition
+
+```swift
+case expanded
+case squeezed
+enum SheetPosition
 ```
 
 ## HMTheme
@@ -1500,6 +1536,7 @@ var playSymbol: String
 var primaryReaction: String { get }
 var railSpacing: CGFloat
 var reactionPalette: [String]
+var retrySymbol: String
 var sheetAnimationDuration: TimeInterval
 ```
 
@@ -1541,6 +1578,7 @@ case fullscreen
 case muted
 case pause
 case play
+case retry
 case share
 case unmuted
 enum Icon

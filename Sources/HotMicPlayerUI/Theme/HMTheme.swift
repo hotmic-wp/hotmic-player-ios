@@ -184,6 +184,8 @@ public struct HMTheme {
         case pause
         /// Closes sheets or exits fullscreen.
         case close
+        /// Retries failed playback.
+        case retry
     }
     /// Host images overriding the corresponding social SF Symbol icons.
     public var customImages: [Icon: Image] = [:]
@@ -203,6 +205,8 @@ public struct HMTheme {
     public var pauseSymbol = "pause.fill"
     /// Fallback SF Symbol for close and fullscreen exit controls.
     public var closeSymbol = "xmark"
+    /// Fallback SF Symbol for the playback retry control.
+    public var retrySymbol = "arrow.clockwise"
 
     /// Resolves host images before falling back to the theme's symbols.
     public func image(for icon: Icon) -> Image {
@@ -219,6 +223,7 @@ public struct HMTheme {
         case .play: symbol = playSymbol
         case .pause: symbol = pauseSymbol
         case .close: symbol = closeSymbol
+        case .retry: symbol = retrySymbol
         }
         return Image(systemName: symbol)
     }

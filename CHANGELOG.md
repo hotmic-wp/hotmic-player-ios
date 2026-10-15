@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Ready-made social overlay
+
+- `HMSocialOptions.sheetMode` adds `.snapped(squeezeFraction:)`: the comment sheet rests only at squeezed, expanded or closed, snapping on release by the predicted end of the drag. The expanded sheet pauses playback through the player and resumes on leaving unless the viewer had paused. `HMSocialState` exposes `sheetPosition`, `squeezedSheetHeight`, `snapComments(to:)` and `updateSheetSnapping(squeezedHeight:)`. The default `.continuous` mode is unchanged.
+- `allowsPagingWhileSheetOpen` (default true) and the new `hmFeedPagingDisabled` view modifier block feed swipes while the sheet is open. `closesSheetOnVideoTap` (default false) closes the sheet from a tap on the squeezed video instead of ignoring it.
+- `HMPlaybackStatusView` shows a delayed buffering spinner and a tap-to-retry failure control sized to the visible video; `showsPlaybackStatus` (default false) places it in the kit's layouts, retrying through `jump(toID:)`. `HMTheme.Icon.retry` and `retrySymbol` theme it.
+
 ## 1.0.0
 
 Initial stable delivery from [hotmic-wp/hotmic-player-ios](https://github.com/hotmic-wp/hotmic-player-ios), consolidating pre-release development into one release. `HotMicPlayer.version` and the optional diagnostic aggregate identify the SDK as `1.0.0`.

@@ -1,7 +1,8 @@
 #if os(iOS)
 import XCTest
+import SwiftUI
 import Observation
-import HotMicPlayer
+@testable import HotMicPlayer
 @testable import HotMicPlayerUI
 
 @MainActor final class SocialOverlayTests: XCTestCase {
@@ -186,6 +187,137 @@ import HotMicPlayer
         adapter.setReplayActive(true, for: fullscreen)
         XCTAssertFalse(adapter.refreshReplay())
         XCTAssertEqual(clock.reads, beforeSocketStop)
+    }
+
+    func testSnappedSheetRestsOnlyAtSqueezedExpandedOrClosed() {
+        let state = HMSocialState()
+        let item = HMMediaItem(id: "clip", url: URL(string: "https://example.com/clip.mp4")!)
+        var events: [String] = []
+        let callback: (HMMediaItem, Bool) -> Void = { events.append("\($0.id):\($1)") }
+        state.updateSheetLayout(maximumHeight: 780, bottomInset: 34)
+        XCTAssertNil(state.sheetPosition)
+        XCTAssertNil(state.squeezedSheetHeight)
+        state.updateSheetSnapping(squeezedHeight: 560)
+        XCTAssertEqual(state.squeezedSheetHeight, 560)
+        state.openComments(item: item, height: 380, isAdActive: false, onChange: callback)
+        XCTAssertEqual(state.sheetHeight, 560) // The squeezed rest position replaces the configured height.
+        XCTAssertEqual(state.sheetPosition, .squeezed)
+        state.dragComments(to: 610) // The finger is followed while dragging; the rest position is unchanged.
+        XCTAssertEqual(state.sheetHeight, 610)
+        XCTAssertEqual(state.sheetPosition, .squeezed)
+        XCTAssertEqual(state.snapTarget(forPredictedHeight: 610), .squeezed)
+        XCTAssertEqual(state.snapTarget(forPredictedHeight: 700), .expanded)
+        XCTAssertEqual(state.snapTarget(forPredictedHeight: 280), .squeezed)
+        XCTAssertNil(state.snapTarget(forPredictedHeight: 279)) // Below half the squeezed height the sheet closes.
+        state.snapComments(to: .expanded)
+        XCTAssertEqual(state.sheetHeight, 780)
+        XCTAssertEqual(state.sheetPosition, .expanded)
+        state.updateSheetLayout(maximumHeight: 500, bottomInset: 300) // Keyboard: the expanded sheet follows the maximum.
+        XCTAssertEqual(state.sheetHeight, 500)
+        XCTAssertEqual(state.sheetPosition, .expanded)
+        state.updateSheetLayout(maximumHeight: 780, bottomInset: 34)
+        XCTAssertEqual(state.sheetHeight, 780) // And grows back once the keyboard leaves.
+        state.snapComments(to: .squeezed)
+        XCTAssertEqual(state.sheetHeight, 560)
+        state.updateSheetLayout(maximumHeight: 400, bottomInset: 300)
+        XCTAssertEqual(state.sheetHeight, 400) // The squeezed rest position is clamped to the viewport.
+        state.updateSheetLayout(maximumHeight: 780, bottomInset: 34)
+        XCTAssertEqual(state.sheetHeight, 560)
+        state.closeComments()
+        XCTAssertNil(state.sheetPosition)
+        XCTAssertEqual(state.sheetHeight, 0)
+        state.snapComments(to: .expanded) // A closed sheet ignores snapping.
+        XCTAssertEqual(state.sheetHeight, 0)
+        XCTAssertNil(state.sheetPosition)
+        state.updateSheetSnapping(squeezedHeight: nil)
+        state.openComments(item: item, height: 380, isAdActive: false, onChange: callback)
+        XCTAssertEqual(state.sheetHeight, 380) // A continuous sheet keeps the configured height.
+        XCTAssertEqual(state.sheetPosition, .squeezed)
+        state.dragComments(to: 700)
+        XCTAssertEqual(state.sheetHeight, 700)
+        state.closeComments()
+        XCTAssertEqual(events, ["clip:true", "clip:false", "clip:true", "clip:false"])
+    }
+
+    func testRapidSheetGesturesEndWhereTheLastOneSentThem() {
+        let state = HMSocialState()
+        let item = HMMediaItem(id: "clip", url: URL(string: "https://example.com/clip.mp4")!)
+        let other = HMMediaItem(id: "other", url: URL(string: "https://example.com/other.mp4")!)
+        var events: [String] = []
+        let callback: (HMMediaItem, Bool) -> Void = { events.append("\($0.id):\($1)") }
+        state.updateSheetLayout(maximumHeight: 780, bottomInset: 34)
+        state.updateSheetSnapping(squeezedHeight: 560)
+        for _ in 0..<5 {
+            state.openComments(item: item, height: 380, isAdActive: false, onChange: callback)
+            state.dragComments(to: 700)
+            state.closeComments()
+        }
+        XCTAssertFalse(state.isSheetOpen)
+        XCTAssertEqual(state.sheetHeight, 0)
+        XCTAssertNil(state.sheetPosition)
+        XCTAssertEqual(events.count, 10)
+        XCTAssertEqual(events.filter { $0.hasSuffix("true") }.count, 5)
+        state.openComments(item: item, height: 380, isAdActive: false, onChange: callback)
+        state.snapComments(to: .expanded)
+        state.closeComments()
+        state.openComments(item: item, height: 380, isAdActive: false, onChange: callback)
+        state.snapComments(to: .squeezed)
+        state.snapComments(to: .expanded)
+        state.dragComments(to: 620)
+        state.closeComments()
+        state.openComments(item: item, height: 380, isAdActive: false, onChange: callback)
+        XCTAssertEqual(state.sheetPosition, .squeezed) // The last gesture decides the end state.
+        XCTAssertEqual(state.sheetHeight, 560)
+        XCTAssertEqual(events.last, "clip:true")
+        let count = events.count
+        state.openComments(item: other, height: 380, isAdActive: false, onChange: callback)
+        XCTAssertEqual(state.sheetPosition, .squeezed) // A second opener never replaces the active sheet.
+        XCTAssertEqual(events.count, count)
+        state.closeComments()
+        XCTAssertEqual(events.last, "clip:false")
+    }
+
+    func testPlaybackStatusPhasesFollowSnapshotStateIncludingLiveWindows() {
+        var snapshot = HMPlaybackSnapshot()
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .hidden)
+        snapshot.state = .loading
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .buffering)
+        snapshot.state = .playing
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .hidden)
+        snapshot.state = .paused
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .hidden)
+        // A live DVR window: the phase reads playback state only, never positions or durations.
+        snapshot.state = .buffering
+        snapshot.isLive = true; snapshot.seekableStart = 1_200; snapshot.duration = 1_260; snapshot.currentTime = 1_255
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .buffering)
+        snapshot.state = .failed; snapshot.errorDescription = "Playback failed"
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .failed)
+        snapshot.isLive = false
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .failed)
+        snapshot.state = .ready
+        XCTAssertEqual(HMPlaybackStatusView.phase(for: snapshot), .hidden)
+    }
+
+    func testSocialOptionsKeepTheCurrentFeelByDefaultAndSnappingSizesTheVideo() {
+        let options = HMSocialOptions()
+        XCTAssertEqual(options.sheetMode, .continuous)
+        XCTAssertTrue(options.allowsPagingWhileSheetOpen)
+        XCTAssertFalse(options.closesSheetOnVideoTap)
+        XCTAssertFalse(options.showsPlaybackStatus)
+        var snapped = options
+        snapped.sheetMode = .snapped(squeezeFraction: 1.0 / 3)
+        XCTAssertNotEqual(snapped, options)
+        XCTAssertNil(HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .continuous))
+        let third = HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: 1.0 / 3))
+        XCTAssertEqual(third ?? 0, 844 * 2 / 3, accuracy: 0.001) // The video keeps a third of the viewport.
+        let clamped = HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: 2))
+        XCTAssertEqual(clamped ?? 0, 844 * 0.1, accuracy: 0.001) // Fractions clamp to the 0.1...0.9 range.
+        let invalid = HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: .nan))
+        XCTAssertEqual(invalid ?? 0, 844 * 2 / 3, accuracy: 0.001) // Invalid fractions fall back to a third.
+        var environment = EnvironmentValues()
+        XCTAssertFalse(environment.hmFeedPagingDisabled)
+        environment.hmFeedPagingDisabled = true
+        XCTAssertTrue(environment.hmFeedPagingDisabled)
     }
 
 }

@@ -14,11 +14,18 @@ final class EngagementWalkthroughUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        guard let path = ProcessInfo.processInfo.environment["HM_SHOT_DIR"] else {
+        guard let path = ProcessInfo.processInfo.environment["HM_SHOT_DIR"] ?? Self.bundledShotDirectory() else {
             throw XCTSkip("Set TEST_RUNNER_HM_SHOT_DIR to capture the walkthrough")
         }
         directory = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    /// Device farms pass no environment to XCTest. A device build opts in by bundling
+    /// `walkthrough.txt` in this test bundle; shots then stay in the runner's temporary directory.
+    private static func bundledShotDirectory() -> String? {
+        guard Bundle(for: EngagementWalkthroughUITests.self).url(forResource: "walkthrough", withExtension: "txt") != nil else { return nil }
+        return FileManager.default.temporaryDirectory.appendingPathComponent("walkthrough", isDirectory: true).path
     }
 
     func testWalkthrough() throws {

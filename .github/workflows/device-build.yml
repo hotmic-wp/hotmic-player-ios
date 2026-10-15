@@ -1,0 +1,109 @@
+name: Demo device build
+
+# Unsigned arm64 device build of the BRPlayerDemo Sample target plus its XCTest UI runner,
+# packaged for Device Farm (which re-signs for its devices). Manual dispatch from any branch,
+# and pull requests that touch this build or the demo target. Partner release checks are separate.
+"on":
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Debug (default; UI walkthrough and lab screens work) or Release (optimised, no local-networking ATS exception)
+        required: false
+        default: Debug
+        type: choice
+        options:
+          - Debug
+          - Release
+      walkthrough:
+        description: Bundle walkthrough.txt so EngagementWalkthroughUITests runs on Device Farm (needs Debug)
+        required: false
+        default: true
+        type: boolean
+  pull_request:
+    paths:
+      - .github/workflows/device-build.yml
+      - .github/scripts/package-device-build.py
+      - Sample/BRPlayerDemo/**
+      - Sample/HotMicPlayerDemo.xcodeproj/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-device-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      APP: BRPlayerDemo
+      TESTS: BRPlayerDemoUITests
+      CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
+      WALKTHROUGH: ${{ github.event_name != 'workflow_dispatch' || inputs.walkthrough }}
+      BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PRODUCTS: .bench/device/Build/Products/${{ inputs.configuration || 'Debug' }}-iphoneos
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require Xcode 26.6
+        run: bash .github/scripts/require-xcode-26.6.sh
+      - name: Build the device app and XCTest UI runner, unsigned
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing \
+            -project Sample/HotMicPlayerDemo.xcodeproj -scheme "$APP" \
+            -configuration "$CONFIGURATION" -destination 'generic/platform=iOS' \
+            -derivedDataPath .bench/device ARCHS=arm64 CODE_SIGNING_ALLOWED=NO
+          test "$(lipo -archs "$PRODUCTS/$APP.app/$APP")" = arm64
+      - name: Stamp the build sha and the walkthrough opt-in
+        run: |
+          set -euo pipefail
+          plist="$PRODUCTS/$APP.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :HMBuildSHA $BUILD_SHA" "$plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :HMBuildSHA string $BUILD_SHA" "$plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :HMBuildSHA' "$plist")" = "$BUILD_SHA"
+          if [ "$WALKTHROUGH" = true ]; then
+            printf 'testWalkthrough\n' > "$PRODUCTS/$TESTS-Runner.app/PlugIns/$TESTS.xctest/walkthrough.txt"
+          fi
+      - name: Package Device Farm artifacts
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/package-device-build.py \
+            --products "$PRODUCTS" --app "$APP" --tests "$TESTS" --output .bench/device-artifacts
+          printf 'configuration: %s\nbuild_sha: %s\nrun_sha: %s\nref: %s\nwalkthrough: %s\n' \
+            "$CONFIGURATION" "$BUILD_SHA" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$WALKTHROUGH" >> .bench/device-artifacts/README.txt
+          {
+            echo "### $APP device build"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| build sha | \`$BUILD_SHA\` |"
+            echo "| ref | \`$GITHUB_REF_NAME\` |"
+            echo "| configuration | $CONFIGURATION |"
+            echo "| walkthrough bundled | $WALKTHROUGH |"
+            echo "| $APP.ipa | $(du -h ".bench/device-artifacts/$APP.ipa" | cut -f1) |"
+            echo "| $TESTS.zip | $(du -h ".bench/device-artifacts/$TESTS.zip" | cut -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "build_sha=$BUILD_SHA"
+      - name: Upload app IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: br-demo-ios-app
+          path: .bench/device-artifacts/${{ env.APP }}.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload XCTest UI runner ZIP
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: br-demo-xctest-ui
+          path: .bench/device-artifacts/${{ env.TESTS }}.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: br-demo-build-notes
+          path: .bench/device-artifacts/README.txt
+          retention-days: 14

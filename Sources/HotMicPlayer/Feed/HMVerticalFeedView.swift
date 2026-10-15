@@ -18,6 +18,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
     private let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
 
     @GestureState private var isTouching = false
+    @Environment(\.hmFeedPagingDisabled) private var pagingDisabled
     @State private var scrollReference = HMScrollViewReference()
     @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
@@ -74,7 +75,7 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                 .onChange(of: controller.isFullscreen) { _, _ in
                     fallbackCommit?.cancel(); scrolledID = controller.currentItem?.id
                 }
-                .scrollDisabled(controller.isFullscreen || controller.isAdSwipeBlocked)
+                .scrollDisabled(controller.isFullscreen || controller.isAdSwipeBlocked || pagingDisabled)
                 .scrollTargetBehavior(.paging)
                 .scrollIndicators(.hidden)
                 .scrollPosition(id: $scrolledID)

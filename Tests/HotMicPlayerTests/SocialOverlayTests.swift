@@ -307,12 +307,12 @@ import Observation
         var snapped = options
         snapped.sheetMode = .snapped(squeezeFraction: 1.0 / 3)
         XCTAssertNotEqual(snapped, options)
-        XCTAssertNil(HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .continuous))
-        let third = HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: 1.0 / 3))
+        XCTAssertNil(HMSocialState.squeezedRestHeight(viewportHeight: 844, mode: .continuous))
+        let third = HMSocialState.squeezedRestHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: 1.0 / 3))
         XCTAssertEqual(third ?? 0, 844 * 2 / 3, accuracy: 0.001) // The video keeps a third of the viewport.
-        let clamped = HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: 2))
+        let clamped = HMSocialState.squeezedRestHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: 2))
         XCTAssertEqual(clamped ?? 0, 844 * 0.1, accuracy: 0.001) // Fractions clamp to the 0.1...0.9 range.
-        let invalid = HMSocialState.squeezedSheetHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: .nan))
+        let invalid = HMSocialState.squeezedRestHeight(viewportHeight: 844, mode: .snapped(squeezeFraction: .nan))
         XCTAssertEqual(invalid ?? 0, 844 * 2 / 3, accuracy: 0.001) // Invalid fractions fall back to a third.
         var environment = EnvironmentValues()
         XCTAssertFalse(environment.hmFeedPagingDisabled)

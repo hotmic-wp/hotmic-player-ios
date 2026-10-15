@@ -271,6 +271,13 @@ public struct HMSocialCallbacks {
 
 /// Configuration is independent of backend and theme. Heights are points, excluding the system safe area.
 public struct HMSocialOptions: Equatable {
+    /// How the comment sheet rests after a drag.
+    public enum SheetMode: Equatable, Sendable {
+        /// Any dragged height is kept; dragging below the close threshold dismisses the sheet.
+        case continuous
+        /// A release snaps to squeezed, expanded or closed. The squeezed video keeps this fraction of the viewport height.
+        case snapped(squeezeFraction: Double)
+    }
     /// Height of persistent host navigation, excluding the system bottom safe area.
     public var hostNavigationHeight: CGFloat = 0
     /// Shows a mute button when true; defaults to false.
@@ -285,6 +292,14 @@ public struct HMSocialOptions: Equatable {
     public var previewDuration: TimeInterval = 4
     /// Nil shows only the host-selected first candidate once per item. Otherwise rotates after this interval.
     public var previewRotationInterval: TimeInterval? = 7
+    /// Rest behavior of the comment sheet; defaults to continuous dragging.
+    public var sheetMode: SheetMode = .continuous
+    /// Keeps feed paging available while the sheet is open; false blocks swipes until it closes. Defaults to true.
+    public var allowsPagingWhileSheetOpen = true
+    /// Closes an open sheet when the visible video is tapped, instead of ignoring the tap; defaults to false.
+    public var closesSheetOnVideoTap = false
+    /// Shows buffering and failure status with tap-to-retry inside the visible video frame; defaults to false.
+    public var showsPlaybackStatus = false
     /// Creates this component with host-supplied data and actions.
     public init() {}
 }

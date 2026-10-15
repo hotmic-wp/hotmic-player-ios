@@ -93,7 +93,7 @@ private struct HMSocialChrome: View {
                     .allowsHitTesting(false).accessibilityHidden(true)
                 HMSocialPausedLeaf(player: player, item: item)
                     .position(x: geometry.size.width / 2, y: max(safe.top + 50, videoFrame.midY))
-                    .opacity(current ? 1 : 0)
+                    .opacity(current && state.sheetPosition != .expanded ? 1 : 0)
                 if player.isFullscreen {
                     HMSocialFullscreenControls(player: player, item: item, showsMute: options.showsMute)
                         .padding(.bottom, nav + 12).opacity(adActive ? 0 : 1).allowsHitTesting(!adActive)
@@ -107,6 +107,13 @@ private struct HMSocialChrome: View {
                         .accessibilityHidden(!current || adActive || state.isSheetOpen)
                 }
                 if state.isSheetOpen && current && !adActive && !player.isFullscreen { sheet }
+                if options.showsPlaybackStatus, state.sheetPosition != .expanded {
+                    // Sized to the visible video so the status stays legible and tappable while squeezed.
+                    let frame = videoFrame.isEmpty ? CGRect(origin: .zero, size: geometry.size) : videoFrame
+                    HMSocialStatusLeaf(player: player, item: item)
+                        .frame(width: frame.width, height: frame.height).position(x: frame.midX, y: frame.midY)
+                        .opacity(current ? 1 : 0).allowsHitTesting(current).accessibilityHidden(!current)
+                }
                 HMFireBurst(event: state.fireItemID == item.id ? state.fireID : 0,
                     origin: state.fireOrigin ?? state.fireTarget, target: state.fireTarget,
                     isEnabled: current && state.fireIsPositive && !adActive && !state.isSheetOpen && !player.isFullscreen)
@@ -195,13 +202,23 @@ private struct HMSocialChrome: View {
                         if dragStart == nil { dragStart = state.sheetHeight }
                         state.dragComments(to: max(60, (dragStart ?? options.sheetHeight) - value.translation.height))
                     }.onEnded { value in
+                        let start = dragStart ?? state.sheetHeight
                         dragStart = nil
-                        if state.sheetHeight < 140 || value.predictedEndTranslation.height > 200 { closeComments() }
+                        if state.squeezedSheetHeight != nil {
+                            // The predicted rest height carries the flick, so the last gesture decides the end state.
+                            if let target = state.snapTarget(forPredictedHeight: start - value.predictedEndTranslation.height) {
+                                withAnimation(reduceMotion ? nil : .easeInOut(duration: theme.sheetAnimationDuration)) { state.snapComments(to: target) }
+                            } else { closeComments() }
+                        } else if state.sheetHeight < 140 || value.predictedEndTranslation.height > 200 { closeComments() }
                     })
                     .accessibilityElement().accessibilityLabel("Resize comments")
                     .accessibilityValue(Text("\(Int(state.sheetHeight)) points")).accessibilityAddTraits(.isButton)
-                    .accessibilityAction(named: Text("Expand comments")) { state.dragComments(to: state.sheetHeight + 60) }
-                    .accessibilityAction(named: Text("Shrink comments")) { state.dragComments(to: max(140, state.sheetHeight - 60)) }
+                    .accessibilityAction(named: Text("Expand comments")) {
+                        if state.squeezedSheetHeight != nil { state.snapComments(to: .expanded) } else { state.dragComments(to: state.sheetHeight + 60) }
+                    }
+                    .accessibilityAction(named: Text("Shrink comments")) {
+                        if state.squeezedSheetHeight != nil { state.snapComments(to: .squeezed) } else { state.dragComments(to: max(140, state.sheetHeight - 60)) }
+                    }
                     .accessibilityIdentifier("hm-comment-handle")
                 Button(action: closeComments) { theme.image(for: .close).font(.system(size: 22)).frame(width: 44, height: 44) }
                     .accessibilityLabel("Close comments").accessibilityIdentifier("hm-close-comments")
@@ -232,6 +249,14 @@ private struct HMSocialPausedLeaf: View {
     let player: HMPlayer
     let item: HMMediaItem
     var body: some View { HMPlayPauseAffordance(isPaused: player.snapshot(for: item).state == .paused) }
+}
+private struct HMSocialStatusLeaf: View {
+    let player: HMPlayer
+    let item: HMMediaItem
+    var body: some View {
+        // Explicit navigation to the same entry retries its remembered failures through the player.
+        HMPlaybackStatusView(snapshot: player.snapshot(for: item), onRetry: { player.jump(toID: item.id) })
+    }
 }
 private struct HMSocialAuxiliaryControls: View {
     let player: HMPlayer

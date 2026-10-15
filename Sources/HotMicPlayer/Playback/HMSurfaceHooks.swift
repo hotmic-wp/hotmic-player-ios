@@ -32,6 +32,7 @@ enum HMVideoAccessibility {
 private struct HMSurfaceHooksKey: EnvironmentKey { static let defaultValue = HMSurfaceHooks() }
 private struct HMHitSpaceKey: EnvironmentKey { static let defaultValue: UUID? = nil }
 private struct HMReservedRegionsKey: EnvironmentKey { static let defaultValue: [CGRect] = [] }
+private struct HMFeedPagingDisabledKey: EnvironmentKey { static let defaultValue = false }
 struct HMHitAreaPreference: PreferenceKey {
     static var defaultValue: [CGRect] = []
     static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }
@@ -44,6 +45,10 @@ extension EnvironmentValues {
     var hmHitSpace: UUID? {
         get { self[HMHitSpaceKey.self] }
         set { self[HMHitSpaceKey.self] = newValue }
+    }
+    var hmFeedPagingDisabled: Bool {
+        get { self[HMFeedPagingDisabledKey.self] }
+        set { self[HMFeedPagingDisabledKey.self] = newValue }
     }
 }
 public extension EnvironmentValues {
@@ -75,6 +80,11 @@ public extension View {
             $0.isAdPlaying = isAdPlaying; $0.accessibilityLabel = accessibilityLabel ?? HMVideoAccessibility.text("Video")
             $0.onTap = onTap; $0.onDoubleTap = onDoubleTap
         }
+    }
+    /// Blocks swipe paging in descendant feeds while true, alongside fullscreen and ad blocking.
+    /// Programmatic navigation, inline surfaces and nested scroll views are unaffected.
+    func hmFeedPagingDisabled(_ disabled: Bool) -> some View {
+        environment(\.hmFeedPagingDisabled, disabled)
     }
     /// Registers rectangles in surface coordinates (also available via hmReservedRegions).
     func hmExcludedHitAreas(_ regions: [CGRect]) -> some View {

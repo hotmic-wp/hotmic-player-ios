@@ -20,6 +20,11 @@ struct BRFeedScreen: View {
         var options = HMSocialOptions()
         options.hostNavigationHeight = 0; options.showsMute = muteControl; options.allowsScrubbing = scrubbing
         options.previewDuration = 3; options.previewRotationInterval = previewOnce ? nil : 5
+        // Squeezeback per BR's spec: three fixed sheet states, no paging while open, tap-to-minimise, retry in place.
+        options.sheetMode = .snapped(squeezeFraction: 1.0 / 3)
+        options.allowsPagingWhileSheetOpen = false
+        options.closesSheetOnVideoTap = true
+        options.showsPlaybackStatus = true
         return options
     }
     private var callbacks: HMSocialCallbacks {
@@ -80,7 +85,12 @@ struct BRFeedScreen: View {
     private var started = false
     @ObservationIgnored private var adapters: [String: HMEngagementSocialAdapter] = [:]
     var error: String?
-    init() { player = HMPlayer(interactions: CustomEngagementBackend()) }
+    init() {
+        // Failed clips stay current so the retry control in the squeezed frame can be exercised.
+        var configuration = HMPlayerConfiguration.default
+        configuration.failedItemPolicy = .stay
+        player = HMPlayer(configuration: configuration, interactions: CustomEngagementBackend())
+    }
     deinit { MainActor.assumeIsolated { player.teardown() } }
     func refreshRanking() {
         guard let current = player.currentItem else { return }

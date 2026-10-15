@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 import Observation
 import HotMicPlayer
 
@@ -22,6 +23,17 @@ import HotMicPlayer
     public private(set) var maximumSheetHeight: CGFloat = .greatestFiniteMagnitude
     /// Distance from the surface bottom to the sheet, including host navigation or keyboard.
     public private(set) var sheetBottomInset: CGFloat = 0
+    /// Rest positions of a snapped sheet. A continuous sheet reports `squeezed` whenever it is open.
+    public enum SheetPosition: String, Sendable {
+        /// The sheet rests at its squeezed height and video plays above it.
+        case squeezed
+        /// The sheet covers the viewport below the top safe area; the kit pauses playback here.
+        case expanded
+    }
+    /// Where the open sheet rests; nil while closed. A drag keeps the previous rest position until it is released.
+    public private(set) var sheetPosition: SheetPosition?
+    /// Snapped rest height of the squeezed position; nil keeps continuous dragging.
+    public private(set) var squeezedSheetHeight: CGFloat?
     @ObservationIgnored private var previewedItems: Set<String> = []
     @ObservationIgnored private var fireTargets: [String: CGPoint] = [:]
     func recordFireTarget(_ point: CGPoint, for itemID: String) { fireTargets[itemID] = point }
@@ -34,7 +46,8 @@ import HotMicPlayer
     public func openComments(item: HMMediaItem, height: CGFloat, isAdActive: Bool,
                              onChange: @escaping (HMMediaItem, Bool) -> Void = { _, _ in }) {
         guard !isAdActive, sheetItem == nil else { return }
-        sheetItem = item; sheetCallback = onChange; sheetHeight = min(maximumSheetHeight, max(1, height))
+        sheetItem = item; sheetCallback = onChange
+        sheetHeight = min(maximumSheetHeight, max(1, squeezedSheetHeight ?? height)); sheetPosition = .squeezed
         onChange(item, true)
     }
     /// Updates the public squeeze target continuously while the sheet handle is dragged.
@@ -43,13 +56,42 @@ import HotMicPlayer
     public func updateSheetLayout(maximumHeight: CGFloat, bottomInset: CGFloat) {
         maximumSheetHeight = max(1, maximumHeight)
         sheetBottomInset = max(0, bottomInset)
-        if isSheetOpen { sheetHeight = min(sheetHeight, maximumSheetHeight) }
+        if isSheetOpen { sheetHeight = min(sheetHeight, maximumSheetHeight); applyRestPosition() }
+    }
+    /// Sets the squeezed rest height for snapped sheets; nil restores continuous dragging. The kit calls this on every layout pass.
+    public func updateSheetSnapping(squeezedHeight: CGFloat?) {
+        squeezedSheetHeight = squeezedHeight.flatMap { $0.isFinite ? max(1, $0) : nil }
+        applyRestPosition()
+    }
+    /// Moves an open snapped sheet to a rest position; animate at the call site. A closed sheet ignores this.
+    public func snapComments(to position: SheetPosition) {
+        guard isSheetOpen else { return }
+        sheetPosition = position; applyRestPosition()
+    }
+    private func applyRestPosition() {
+        guard let squeezed = squeezedSheetHeight, let position = sheetPosition else { return }
+        switch position {
+        case .squeezed: sheetHeight = min(maximumSheetHeight, squeezed)
+        case .expanded: sheetHeight = maximumSheetHeight
+        }
+    }
+    /// The rest position a released drag settles at, or nil when it closes. Continuous sheets return nil.
+    func snapTarget(forPredictedHeight height: CGFloat) -> SheetPosition? {
+        guard let squeezed = squeezedSheetHeight, height >= squeezed / 2 else { return nil }
+        let expanded = maximumSheetHeight
+        return expanded > squeezed && height >= (squeezed + expanded) / 2 ? .expanded : .squeezed
+    }
+    /// Sheet height of the squeezed rest position for a mode, or nil for continuous sheets.
+    static func squeezedRestHeight(viewportHeight: CGFloat, mode: HMSocialOptions.SheetMode) -> CGFloat? {
+        guard case .snapped(let fraction) = mode else { return nil }
+        let video = fraction.isFinite ? min(0.9, max(0.1, fraction)) : 1.0 / 3
+        return max(1, viewportHeight) * CGFloat(1 - video)
     }
     func claimPreview(for itemID: String) -> Bool { previewedItems.insert(itemID).inserted }
     /// Closes the sheet and balances its originating item callback, including cancellation.
     public func closeComments() {
         guard let item = sheetItem else { return }
-        sheetHeight = 0; sheetItem = nil
+        sheetHeight = 0; sheetItem = nil; sheetPosition = nil
         let callback = sheetCallback; sheetCallback = nil; callback?(item, false)
     }
     /// Whether the sheet lifetime is active, including while resizing.
@@ -90,6 +132,9 @@ public extension View {
     @ObservationIgnored var data: ((HMMediaItem) -> any HMSocialDataSource)?
     @ObservationIgnored var callbacks = HMSocialCallbacks()
     private(set) var canFire = true
+    @ObservationIgnored var closesSheetOnTap = false
+    @ObservationIgnored var sheetAnimation: Animation?
+    @ObservationIgnored var resumesAfterExpandedSheet = false
     @ObservationIgnored private var observing = false
     @ObservationIgnored private var generation = 0
     func start() { observing = true; generation += 1; observeCapabilities(generation: generation) }
@@ -105,7 +150,14 @@ public extension View {
         if canFire != available { canFire = available }
     }
     @ObservationIgnored lazy var tap: () -> Void = { [weak self] in
-        guard let self, self.state?.isSheetOpen == false else { return }
+        guard let self else { return }
+        if let state = self.state, state.isSheetOpen {
+            // The sheet is reserved from video taps, so this is a tap on the squeezed video itself.
+            guard self.closesSheetOnTap else { return }
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            withAnimation(self.sheetAnimation) { state.closeComments() }
+            return
+        }
         self.player?.togglePlayPause()
     }
     @ObservationIgnored lazy var fire: (CGPoint) -> Void = { [weak self] point in
@@ -125,20 +177,28 @@ private struct HMSocialPlaybackModifier: ViewModifier {
     let callbacks: HMSocialCallbacks
     @State private var actions = HMSocialPlaybackActions()
     @State private var keyboardTop: CGFloat?
+    @Environment(\.hmTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         actions.player = player; actions.state = state; actions.data = data; actions.callbacks = callbacks
+        actions.closesSheetOnTap = options.closesSheetOnVideoTap
+        actions.sheetAnimation = reduceMotion ? nil : .easeInOut(duration: theme.sheetAnimationDuration)
         return GeometryReader { geometry in
             let safe = extendsUnderSafeArea ? geometry.safeAreaInsets : EdgeInsets()
             let bottom = max(0, options.hostNavigationHeight) + safe.bottom
             let fullHeight = geometry.size.height + safe.top + safe.bottom
             let keyboard = keyboardTop.map { max(0, geometry.frame(in: .global).maxY + safe.bottom - $0) } ?? 0
             let sheetBottom = max(bottom, keyboard)
-            let maximum = max(1, fullHeight - safe.top - sheetBottom - 24)
+            // Snapped rest heights follow host navigation, not the keyboard, so the squeezed video holds its size.
+            let squeezed = HMSocialState.squeezedRestHeight(viewportHeight: fullHeight - bottom, mode: options.sheetMode)
+            // An expanded snapped sheet reaches the top safe area; continuous sheets keep a handle gap.
+            let maximum = max(1, fullHeight - safe.top - sheetBottom - (squeezed == nil ? 24 : 0))
             let height = max(0, fullHeight - max(bottom, state.sheetBottomInset) - state.sheetHeight)
             content
                 .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: bottom),
                     squeezeTarget: state.isSheetOpen ? CGRect(x: 0, y: 0, width: geometry.size.width, height: height) : nil))
                 .hmFullscreenVideoLayout(HMVideoLayout())
+                .hmFeedPagingDisabled(!options.allowsPagingWhileSheetOpen && state.isSheetOpen)
                 .hmVideoGestures(isAdPlaying: player.adState.isActive,
                     onTap: actions.tap, onDoubleTap: !player.isFullscreen && !state.isSheetOpen && actions.canFire ? actions.fire : nil)
                 .onChange(of: maximum, initial: true) { _, value in
@@ -147,9 +207,22 @@ private struct HMSocialPlaybackModifier: ViewModifier {
                 .onChange(of: sheetBottom) { _, value in
                     state.updateSheetLayout(maximumHeight: maximum, bottomInset: value)
                 }
+                .onChange(of: squeezed, initial: true) { _, value in
+                    state.updateSheetSnapping(squeezedHeight: value)
+                }
         }
         .ignoresSafeArea(.keyboard)
         .onAppear { actions.start() }
+        // Pause and resume go through the player; the expanded sheet never stores a position itself.
+        .onChange(of: state.sheetPosition == .expanded) { _, expanded in
+            if expanded {
+                guard player.snapshot.state != .paused else { return }
+                actions.resumesAfterExpandedSheet = true; player.pause()
+            } else if actions.resumesAfterExpandedSheet {
+                actions.resumesAfterExpandedSheet = false
+                if player.isFeedVisible { player.play() }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
             keyboardTop = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY
         }

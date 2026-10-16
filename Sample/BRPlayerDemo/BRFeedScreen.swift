@@ -118,6 +118,7 @@ struct BRFeedScreen: View {
     private var kit: HMSocialPlayerView {
         HMSocialPlayerView(player: model.player, options: options, callbacks: callbacks, data: model.data)
             .actionRail { item, context in BRActionRail(item: item, context: context) }
+            .metadata { _, context in BRMetadata(context: context) }
     }
 }
 

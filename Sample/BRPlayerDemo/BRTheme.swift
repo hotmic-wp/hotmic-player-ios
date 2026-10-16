@@ -44,7 +44,7 @@ enum BRTheme {
             reactionPalette: ["🔥", "😂", "😮", "👏", "🏆"],
             messageReaction: "🔥"
         )
-        theme.railSpacing = 18
+        theme.railSpacing = 12
         theme.audienceSymbol = "eye"
         return theme
     }

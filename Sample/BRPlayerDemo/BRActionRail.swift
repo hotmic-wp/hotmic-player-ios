@@ -10,7 +10,7 @@ struct BRActionRail: View {
     let item: HMMediaItem
     let context: HMSocialRailContext
     @Environment(\.hmTheme) private var theme
-    @ScaledMetric(relativeTo: .title2) private var iconSize: CGFloat = 28
+    @ScaledMetric(relativeTo: .title2) private var iconSize: CGFloat = 26
 
     var body: some View {
         VStack(spacing: theme.railSpacing) {
@@ -35,10 +35,10 @@ struct BRActionRail: View {
 
     private func button(_ icon: HMTheme.Icon, label: String, count: Int?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: 2) {
                 theme.image(for: icon)
                     .symbolVariant(icon == .fire && context.content.isReacted ? .fill : .none)
-                    .font(.system(size: min(40, iconSize), weight: .regular))
+                    .font(.system(size: min(36, iconSize), weight: .regular))
                     .background(GeometryReader { geometry in
                         if icon == .fire {
                             // The kit's burst flies to this frame, in the overlay's named space.

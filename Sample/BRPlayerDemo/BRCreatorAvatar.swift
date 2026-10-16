@@ -9,10 +9,10 @@ struct BRCreatorAvatar: View {
     let name: String
     @State private var following = false
     @Environment(\.hmTheme) private var theme
-    @ScaledMetric(relativeTo: .title2) private var size: CGFloat = 44
+    @ScaledMetric(relativeTo: .title2) private var size: CGFloat = 40
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             Button { following.toggle() } label: {
                 Text(monogram)
                     .font(.system(size: size * 0.38, weight: .heavy).width(.condensed))
@@ -24,9 +24,9 @@ struct BRCreatorAvatar: View {
                         Image(systemName: following ? "checkmark" : "plus")
                             .font(.system(size: 10, weight: .black))
                             .foregroundStyle(.white)
-                            .frame(width: 18, height: 18)
+                            .frame(width: 16, height: 16)
                             .background(following ? Color.white.opacity(0.25) : theme.colors.accent, in: Circle())
-                            .offset(y: 9)
+                            .offset(y: 8)
                     }
                     .frame(minWidth: 52, minHeight: 52)
                     .contentShape(.rect)

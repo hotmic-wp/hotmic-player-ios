@@ -25,6 +25,9 @@ struct BRFeedScreen: View {
         var options = HMSocialOptions()
         options.hostNavigationHeight = BRNavBar.height; options.showsMute = muteControl; options.allowsScrubbing = scrubbing
         options.previewDuration = 3; options.previewRotationInterval = previewOnce ? nil : 5
+        // The two asks beyond the documents: recent comments on the video, and the live audience under the title.
+        options.commentSelection = .recent(limit: 2)
+        options.audienceBadgePlacement = .belowTitle
         // Squeezeback per BR's spec: three fixed sheet states, no paging while open, tap-to-minimise, retry in place.
         options.sheetMode = .snapped(squeezeFraction: 1.0 / 3)
         options.allowsPagingWhileSheetOpen = false

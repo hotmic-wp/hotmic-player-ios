@@ -25,6 +25,8 @@ public struct HMMetadataView: View {
         VStack(alignment: .leading, spacing: 6) {
             if !dynamicType.isAccessibilitySize || expanded, let community = content.community { Text(community).font(theme.fonts.caption) }
             Text(content.title).font(theme.fonts.headline).lineLimit(dynamicType.isAccessibilitySize && !expanded ? 1 : 2)
+            // Nil counts render nothing, so content without an audience keeps today's layout.
+            HMAudienceBadge(audienceCount: content.audienceCount, viewCount: content.viewCount)
             if (!content.description.isEmpty && !dynamicType.isAccessibilitySize) ||
                 (dynamicType.isAccessibilitySize && onExpand != nil &&
                  (!content.description.isEmpty || content.community != nil || !content.hashtags.isEmpty)) {

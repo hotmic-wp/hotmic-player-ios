@@ -72,6 +72,18 @@ import Observation
     }
     private var commentCountValue: Int?
     private var commentCountVersion = 0
+    /// People watching now, pushed by the source with `updateAudienceCount(_:)`. Nil when unknown
+    /// or when the item has no live audience, which hides it. Never placed on the timeline.
+    ///
+    /// Access on the main actor.
+    public var audienceCount: Int? { _ = revision; return audienceCountValue }
+    private var audienceCountValue: Int?
+    /// The chat message the stream has pinned, pushed by the source with `updatePinnedComment(_:)`.
+    /// Nil when nothing is pinned. Never placed on the timeline.
+    ///
+    /// Access on the main actor.
+    public var pinnedComment: HMTimelineEvent? { _ = revision; return pinnedCommentValue }
+    private var pinnedCommentValue: HMTimelineEvent?
 
     /// Longest chat message accepted, in characters.
     ///
@@ -321,6 +333,20 @@ import Observation
     /// Publishes an authoritative item count; nil clears an unavailable count.
     public func updateCommentCount(_ count: Int?) {
         commentCountValue = count.map { max(0, $0) }; commentCountVersion += 1; changed()
+    }
+
+    /// Publishes the latest audience count; negatives clamp to zero and nil clears it. The value is
+    /// rendered as pushed and never placed on the timeline. The source owns refresh: push a live
+    /// audience at least every ten seconds so the badge is never staler than that.
+    public func updateAudienceCount(_ count: Int?) {
+        audienceCountValue = count.map { max(0, $0) }; changed()
+    }
+
+    /// Pins a chat message, or unpins with nil. Non-chat events and deleted messages are ignored, and
+    /// deleting the pinned message unpins it. Rendered as pushed; never placed on the timeline.
+    public func updatePinnedComment(_ event: HMTimelineEvent?) {
+        if let event { guard event.kind == .chat, !moderation.removesEvent(event.id) else { return } }
+        pinnedCommentValue = event; changed()
     }
 
     /// Loads the newest page initially, then older pages. Refresh replaces loaded history only
@@ -623,7 +649,8 @@ import Observation
         let localID = clientIDs[serverID]
         removeEvent(id: serverID)
         if let localID { removeEvent(id: localID) }
-        for key in Set([id, serverID] + (localID.map { [$0] } ?? [])) {
+        let keys = Set([id, serverID] + (localID.map { [$0] } ?? []))
+        for key in keys {
             pendingMessages.removeAll { $0.id == key }
             ownMessageIDs.remove(key)
             clientIDs[key] = nil
@@ -631,6 +658,7 @@ import Observation
             ownMessageReactions[key] = nil
             messageReactionVersions[key] = nil
         }
+        if let pinned = pinnedCommentValue, keys.contains(pinned.id) { pinnedCommentValue = nil; changed() }
     }
 
     /// Subtracts message-reaction counts, clamped at zero. Pass `isOwn` when the deleted

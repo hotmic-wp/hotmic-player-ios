@@ -106,6 +106,14 @@ private struct HMSocialChrome: View {
                         .opacity(adActive || state.isSheetOpen ? 0 : 1).allowsHitTesting(!adActive && !state.isSheetOpen)
                         .accessibilityHidden(!current || adActive || state.isSheetOpen)
                 }
+                if options.audienceBadgePlacement == .topLeading, !player.isFullscreen {
+                    // A pushed latest value in its own corner; the sidecar placement avoids its registered bounds.
+                    HMHitArea { HMAudienceBadge(audienceCount: data.content.audienceCount, viewCount: data.content.viewCount) }
+                        .padding(.leading, safe.leading + 16).padding(.top, safe.top + 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .opacity(state.isSheetOpen || adActive ? 0 : 1).allowsHitTesting(false)
+                        .accessibilityHidden(!current || state.isSheetOpen || adActive)
+                }
                 if state.isSheetOpen && current && !adActive && !player.isFullscreen { sheet }
                 if options.showsPlaybackStatus, state.sheetPosition != .expanded {
                     // Sized to the visible video so the status stays legible and tappable while squeezed.
@@ -162,7 +170,9 @@ private struct HMSocialChrome: View {
                     eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen, onOpen: openComments)
             }
             HMHitArea {
-                let context = HMSocialMetadataContext(content: data.content, hashtagTapped: callbacks.hashtagTapped, expand: { expandedMetadata = true })
+                // Metadata shows the badge under the title only for that placement; other placements strip the counts.
+                let content = options.audienceBadgePlacement == .belowTitle ? data.content : Self.withoutAudience(data.content)
+                let context = HMSocialMetadataContext(content: content, hashtagTapped: callbacks.hashtagTapped, expand: { expandedMetadata = true })
                 if let replacementMetadata { replacementMetadata(context) }
                 else { HMMetadataView(content: context.content, onExpand: context.expand, onHashtag: context.hashtagTapped) }
             }.accessibilityHidden(!current || state.isSheetOpen || (adActive && options.hidesMetadataDuringAds))
@@ -182,6 +192,9 @@ private struct HMSocialChrome: View {
         if let replacementRail { replacementRail(context) }
         else { HMActionRail(content: context.content, canFire: context.canFire, fireEvent: state.fireID,
             onFire: context.fire, onComment: context.openComments, onShare: context.share, onFireFrame: context.fireFrameChanged) }
+    }
+    private static func withoutAudience(_ content: HMSocialContent) -> HMSocialContent {
+        var copy = content; copy.audienceCount = nil; copy.viewCount = nil; return copy
     }
     private func openComments() {
         guard current, !adActive else { return }
@@ -326,7 +339,7 @@ private struct HMSocialPreviewSlot: View {
         let rotation: TimeInterval?
     }
     var body: some View {
-        let comments = data.content.previewComments
+        let comments = options.previewCandidates(for: data.content)
         let schedule = Schedule(eligible: eligible, ready: player.snapshot(for: item).timeToFirstFrame != nil,
             comments: comments.map(\.id), duration: options.previewDuration, rotation: options.previewRotationInterval)
         HMCommentPreview(comment: comments.isEmpty ? HMSocialComment(id: "", author: "", text: "") : comments[index % comments.count], onOpen: onOpen)

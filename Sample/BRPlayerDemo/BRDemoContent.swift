@@ -16,11 +16,11 @@ enum BRDemoContent {
     static var horizontalItems: [HMMediaItem] { catalog.horizontal.map { $0.mediaItem(section: .horizontal) } }
     /// Slot 8, the 16:9 clip in the vertical feed.
     static var landscapeID: String { catalog.feed.first { $0.key == "s08" }?.clipID ?? "" }
-    /// Title, description, community, hashtags and share count; the source fills Fire and comments.
+    /// Title, description, community, hashtags, share and view counts; the source fills Fire, comments and the audience.
     static func metadata(for item: HMMediaItem) -> HMSocialContent {
         guard let clip = catalog.clip(forItemID: item.id) else { return HMSocialContent(title: item.title ?? "") }
         return HMSocialContent(title: clip.title, description: clip.description, hashtags: clip.hashtags,
-                               community: clip.community, shareCount: clip.counts.shares)
+                               community: clip.community, shareCount: clip.counts.shares, viewCount: clip.counts.views)
     }
 }
 

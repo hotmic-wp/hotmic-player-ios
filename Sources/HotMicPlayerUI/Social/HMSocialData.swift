@@ -17,6 +17,8 @@ public struct HMSocialComment: Identifiable, Equatable, Sendable {
     }
 }
 
+extension HMSocialComment: HMSelectableComment {}
+
 /// Data in: nil counts stay hidden. Supply preview candidates in the host's preferred order.
 public struct HMSocialContent: Equatable, Sendable {
     /// Primary media title.
@@ -39,13 +41,19 @@ public struct HMSocialContent: Equatable, Sendable {
     public var previewComments: [HMSocialComment]
     /// Loaded comment rows, in display order.
     public var comments: [HMSocialComment]
+    /// People watching now, pushed by the source; nil hides the badge's live form.
+    public var audienceCount: Int?
+    /// Total views for recorded media, shown by the badge only without an audience count; nil hides it.
+    public var viewCount: Int?
     /// Creates this component with host-supplied data and actions.
     public init(title: String, description: String = "", hashtags: [String] = [], community: String? = nil,
                 fireCount: Int? = nil, commentCount: Int? = nil, shareCount: Int? = nil, isReacted: Bool = false,
-                previewComments: [HMSocialComment] = [], comments: [HMSocialComment] = []) {
+                previewComments: [HMSocialComment] = [], comments: [HMSocialComment] = [],
+                audienceCount: Int? = nil, viewCount: Int? = nil) {
         self.title = title; self.description = description; self.hashtags = hashtags; self.community = community
         self.fireCount = fireCount; self.commentCount = commentCount; self.shareCount = shareCount
         self.isReacted = isReacted; self.previewComments = previewComments; self.comments = comments
+        self.audienceCount = audienceCount; self.viewCount = viewCount
     }
 }
 
@@ -132,9 +140,9 @@ public struct HMSocialContent: Equatable, Sendable {
         var reaction: String
         var selection: Int
     }
-    /// Creates this component with host-supplied data and actions.
+    /// Creates this component with host-supplied data and actions. The default preview selection is `HMCommentSelection.recent`.
     public init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default,
-                previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) }) {
+                previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { HMCommentSelection.recent.apply(to: $0) }) {
         self.engagement = engagement; self.metadata = metadata; self.theme = theme; self.previewSelection = previewSelection
     }
     /// Lazily maps observable backend state. Playback snapshots are never dependencies of this getter.
@@ -146,6 +154,8 @@ public struct HMSocialContent: Equatable, Sendable {
         let summary = engagement.reactionSummary(for: theme.primaryReaction)
         value.fireCount = summary?.count; value.isReacted = summary?.reactedByViewer ?? false
         value.commentCount = engagement.commentCount
+        // A pushed audience wins over host metadata; recorded views stay with the metadata.
+        value.audienceCount = engagement.audienceCount ?? metadata.audienceCount
         value.comments = engagement.comments(near: replayTime).map { HMSocialComment(id: $0.rowID, author: $0.author, text: $0.text) }
         value.previewComments = previewSelection(value.comments)
         mappedKey = key; mappedContent = value
@@ -278,6 +288,15 @@ public struct HMSocialOptions: Equatable {
         /// A release snaps to squeezed, expanded or closed. The squeezed video keeps this fraction of the viewport height.
         case snapped(squeezeFraction: Double)
     }
+    /// Where the kit shows the audience or view count when the content supplies one.
+    public enum AudienceBadgePlacement: Equatable, Sendable {
+        /// Inside the metadata block, directly under the title.
+        case belowTitle
+        /// In the top-leading corner of the visible video, under the safe area.
+        case topLeading
+        /// Never shown, even when a count is supplied.
+        case hidden
+    }
     /// Height of persistent host navigation, excluding the system bottom safe area.
     public var hostNavigationHeight: CGFloat = 0
     /// Shows a mute button when true; defaults to false.
@@ -300,7 +319,16 @@ public struct HMSocialOptions: Equatable {
     public var closesSheetOnVideoTap = false
     /// Shows buffering and failure status with tap-to-retry inside the visible video frame; defaults to false.
     public var showsPlaybackStatus = false
+    /// The rule that picks preview candidates from `content.comments`. Nil (the default) shows the data
+    /// source's own `previewComments`, for example a list the server chose under the same rule.
+    public var commentSelection: HMCommentSelection?
+    /// Where the audience or view count appears when the content supplies one; defaults to under the title.
+    public var audienceBadgePlacement: AudienceBadgePlacement = .belowTitle
     /// Creates this component with host-supplied data and actions.
     public init() {}
+    /// The preview candidates these options give for content: the rule applied to the loaded comments, or the source's pick.
+    func previewCandidates(for content: HMSocialContent) -> [HMSocialComment] {
+        commentSelection.map { $0.apply(to: content.comments) } ?? content.previewComments
+    }
 }
 #endif

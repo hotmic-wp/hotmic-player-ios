@@ -2,7 +2,15 @@
 
 ## Unreleased
 
+### Engagement data layer
+
+- `HMCommentSelection`: a serializable comment-preview rule (`rule` + `limit`, JSON or query items) shared with backends and other clients. `.recent` is the rule today; `topReactions`, `verifiedOnly` and `pinnedFirst` are reserved names and unknown rules preview as recent. `apply(to:)` is a pure, order-preserving function over any `HMSelectableComment` list; `HMChatMessage` and `HMSocialComment` conform.
+- `HMEngagement.audienceCount` / `updateAudienceCount(_:)` and `pinnedComment` / `updatePinnedComment(_:)`: pushed latest values, observable through `revision`, never placed on the timeline. Deleting the pinned message unpins it.
+
 ### Ready-made social overlay
+
+- `HMAudienceBadge` ("1.2K watching", or "1.2K views" without an audience) built on `HMCountFormatter`, with rolling digits and a Reduce Motion fallback; `HMSocialContent.audienceCount`/`viewCount` feed it (nil hides), `HMEngagementSocialAdapter` mirrors the engagement's pushed audience, and `HMSocialOptions.audienceBadgePlacement` places it under the title (default), top-leading, or hides it. `HMTheme.Icon.audience` and `audienceSymbol` theme it.
+- `HMSocialOptions.commentSelection` applies an `HMCommentSelection` to the loaded comments for any data source; nil (the default) keeps the data source's own preview candidates. The adapter's default preview is now `.recent` (the two newest comments) instead of the newest three.
 
 - `HMSocialOptions.sheetMode` adds `.snapped(squeezeFraction:)`: the comment sheet rests only at squeezed, expanded or closed, snapping on release by the predicted end of the drag. The expanded sheet pauses playback through the player and resumes on leaving unless the viewer had paused. `HMSocialState` exposes `sheetPosition`, `squeezedSheetHeight`, `snapComments(to:)` and `updateSheetSnapping(squeezedHeight:)`. The default `.continuous` mode is unchanged.
 - `allowsPagingWhileSheetOpen` (default true) and the new `hmFeedPagingDisabled` view modifier block feed swipes while the sheet is open. `closesSheetOnVideoTap` (default false) closes the sheet from a tap on the squeezed video instead of ignoring it.

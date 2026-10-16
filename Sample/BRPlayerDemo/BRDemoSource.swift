@@ -64,6 +64,7 @@ import HotMicPlayer
         guard catalog.clip(forItemID: id) != nil else { return }
         engagement.updateReactionSummary(fire(for: id), for: "🔥")
         engagement.updateCommentCount(commentCount(for: id))
+        if let viewers = audience[id] { engagement.updateAudienceCount(viewers) }
     }
     func didBecomeCurrent(_ item: HMMediaItem) { startTicker(for: item.id) }
     func didLeave(_ item: HMMediaItem) {
@@ -182,8 +183,10 @@ import HotMicPlayer
         }
         return true
     }
+    // The badge reads the engagement; the source pushes the latest value and owns the cadence (1–10 s ticks).
     private func publishAudience(_ viewers: Int, for itemID: String) {
         audience[itemID] = viewers
+        engagements[itemID]?.value?.updateAudienceCount(viewers)
         audienceChanged(itemID, viewers)
     }
 

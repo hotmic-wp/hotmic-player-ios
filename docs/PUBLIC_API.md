@@ -177,6 +177,20 @@ let totalCount: Int?
 struct HMCommentPage
 ```
 
+## HMCommentSelection
+
+```swift
+func apply<Comment>(to comments: [Comment]) -> [Comment] where Comment : HMSelectableComment
+init(queryItems: [URLQueryItem])
+let limit: Int
+let rule: String
+static func recent(limit: Int) -> HMCommentSelection
+static let maximumLimit: Int
+static let recent: HMCommentSelection
+struct HMCommentSelection
+var queryItems: [URLQueryItem] { get }
+```
+
 ## HMConsoleSink
 
 ```swift
@@ -248,7 +262,9 @@ var id: Int { get }
 @MainActor func timelineOffset(forMediaTime time: TimeInterval) -> TimeInterval
 @MainActor func toggleReaction(_ emoji: String) async throws
 @MainActor func update(_ poll: HMPoll)
+@MainActor func updateAudienceCount(_ count: Int?)
 @MainActor func updateCommentCount(_ count: Int?)
+@MainActor func updatePinnedComment(_ event: HMTimelineEvent?)
 @MainActor func updateReactionSummary(_ summary: HMItemReactionSummary, for emoji: String)
 @MainActor func updateReactions(_ counts: [String : Int], forMessage messageID: String)
 @MainActor func upsertComment(_ event: HMTimelineEvent)
@@ -259,6 +275,7 @@ var id: Int { get }
 @MainActor static let maximumLoadedComments: Int
 @MainActor static let maximumMessageLength: Int
 @MainActor static let viewerReactionWeight: Int
+@MainActor var audienceCount: Int? { get }
 @MainActor var authoredMoments: [HMTimelineEvent] { get }
 @MainActor var commentCount: Int? { get }
 @MainActor var commentReplayOffsets: [TimeInterval]? { get }
@@ -272,6 +289,7 @@ var id: Int { get }
 @MainActor var lastReactionEcho: HMReactionEcho? { get set }
 @MainActor var markers: [HMTimelineMarker] { get }
 @MainActor var olderCommentsCursor: String? { get set }
+@MainActor var pinnedComment: HMTimelineEvent? { get }
 @MainActor var polls: [HMPoll] { get }
 @MainActor var reactionTotals: [String : Int] { get }
 @MainActor var revision: Int { get }
@@ -944,6 +962,13 @@ let url: URL
 struct HMResolvedItem
 ```
 
+## HMSelectableComment
+
+```swift
+protocol HMSelectableComment
+var id: String { get }
+```
+
 ## HMStaticPlaylistSource
 
 ```swift
@@ -1123,6 +1148,16 @@ case share
 enum Action
 ```
 
+## HMAudienceBadge
+
+```swift
+@MainActor init(audienceCount: Int?, viewCount: Int? = nil)
+@MainActor struct HMAudienceBadge
+@MainActor var audienceCount: Int?
+@MainActor var body: some View { get }
+@MainActor var viewCount: Int?
+```
+
 ## HMChatRail
 
 ```swift
@@ -1196,7 +1231,7 @@ enum Action
 @MainActor func postComment(_ text: String) async throws
 @MainActor func setReacted(_ reacted: Bool) async throws
 @MainActor func setReplayActive(_ active: Bool, for owner: UUID)
-@MainActor init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default, previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { Array($0.suffix(3)) })
+@MainActor init(engagement: HMEngagement, metadata: HMSocialContent, theme: HMTheme = .default, previewSelection: @escaping ([HMSocialComment]) -> [HMSocialComment] = { HMCommentSelection.recent.apply(to: $0) })
 @MainActor let engagement: HMEngagement
 @MainActor var canFire: Bool { get }
 @MainActor var canLoadMore: Bool { get }
@@ -1341,8 +1376,9 @@ var text: String
 ## HMSocialContent
 
 ```swift
-init(title: String, description: String = "", hashtags: [String] = [], community: String? = nil, fireCount: Int? = nil, commentCount: Int? = nil, shareCount: Int? = nil, isReacted: Bool = false, previewComments: [HMSocialComment] = [], comments: [HMSocialComment] = [])
+init(title: String, description: String = "", hashtags: [String] = [], community: String? = nil, fireCount: Int? = nil, commentCount: Int? = nil, shareCount: Int? = nil, isReacted: Bool = false, previewComments: [HMSocialComment] = [], comments: [HMSocialComment] = [], audienceCount: Int? = nil, viewCount: Int? = nil)
 struct HMSocialContent
+var audienceCount: Int?
 var commentCount: Int?
 var comments: [HMSocialComment]
 var community: String?
@@ -1353,6 +1389,7 @@ var isReacted: Bool
 var previewComments: [HMSocialComment]
 var shareCount: Int?
 var title: String
+var viewCount: Int?
 ```
 
 ## HMSocialDataSource
@@ -1401,7 +1438,9 @@ init()
 struct HMSocialOptions
 var allowsPagingWhileSheetOpen: Bool
 var allowsScrubbing: Bool
+var audienceBadgePlacement: HMSocialOptions.AudienceBadgePlacement
 var closesSheetOnVideoTap: Bool
+var commentSelection: HMCommentSelection?
 var hidesMetadataDuringAds: Bool
 var hostNavigationHeight: CGFloat
 var previewDuration: TimeInterval
@@ -1410,6 +1449,15 @@ var sheetHeight: CGFloat
 var sheetMode: HMSocialOptions.SheetMode
 var showsMute: Bool
 var showsPlaybackStatus: Bool
+```
+
+## HMSocialOptions.AudienceBadgePlacement
+
+```swift
+case belowTitle
+case hidden
+case topLeading
+enum AudienceBadgePlacement
 ```
 
 ## HMSocialOptions.SheetMode
@@ -1521,6 +1569,7 @@ func image(for icon: HMTheme.Icon) -> Image
 init(colors: HMTheme.Colors, fonts: HMTheme.Fonts, icons: HMTheme.Icons, cornerRadius: CGFloat, reactionPalette: [String], messageReaction: String)
 static let `default`: HMTheme
 struct HMTheme
+var audienceSymbol: String
 var captionsSymbol: String
 var closeSymbol: String
 var colors: HMTheme.Colors
@@ -1570,6 +1619,7 @@ var metric: Font
 ## HMTheme.Icon
 
 ```swift
+case audience
 case captions
 case close
 case comment

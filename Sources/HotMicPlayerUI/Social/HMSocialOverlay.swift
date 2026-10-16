@@ -53,6 +53,7 @@ import HotMicPlayer
     /// Only geometry enters chrome. Continuous playback observation belongs to the progress/status leaves.
     public var body: some View {
         HMSocialChrome(player: player, item: item, videoFrame: snapshot.videoFrame, aspectRatio: snapshot.aspectRatio,
+            companionBand: snapshot.companionFrame?.height ?? 0,
             data: data, state: state, options: options, callbacks: callbacks, sidecar: sidecar, sidecarSize: sidecarSize,
             replacementSheet: replacementSheet, replacementRail: replacementRail, replacementMetadata: replacementMetadata)
     }
@@ -63,6 +64,7 @@ private struct HMSocialChrome: View {
     let item: HMMediaItem
     let videoFrame: CGRect
     let aspectRatio: Double?
+    let companionBand: CGFloat
     let data: any HMSocialDataSource
     let state: HMSocialState
     let options: HMSocialOptions
@@ -87,7 +89,8 @@ private struct HMSocialChrome: View {
             let safe = player.isFullscreen ? geometry.safeAreaInsets : EdgeInsets(
                 top: max(feedSafeArea.top, geometry.safeAreaInsets.top), leading: max(feedSafeArea.leading, geometry.safeAreaInsets.leading),
                 bottom: max(feedSafeArea.bottom, geometry.safeAreaInsets.bottom), trailing: max(feedSafeArea.trailing, geometry.safeAreaInsets.trailing))
-            let nav = player.isFullscreen ? safe.bottom : safe.bottom + max(0, options.hostNavigationHeight)
+            // A presented companion band lifts the resting chrome, preview, sidecar and sheet above it.
+            let nav = player.isFullscreen ? safe.bottom : safe.bottom + max(0, options.hostNavigationHeight) + state.companionBandHeight
             ZStack(alignment: .bottom) {
                 LinearGradient(colors: [.clear, theme.colors.scrim.opacity(0.85)], startPoint: .top, endPoint: .bottom)
                     .allowsHitTesting(false).accessibilityHidden(true)
@@ -134,6 +137,11 @@ private struct HMSocialChrome: View {
         // Keep one visual hierarchy. Gate sections individually so an outer false value cannot expose hidden controls.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(current ? "hm-current-social-overlay" : "hm-warm-social-overlay")
+        // The current page reports the band so the shared state lifts every page's chrome with the slide.
+        .onChange(of: current ? companionBand : -1, initial: true) { _, height in
+            guard height >= 0 else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { state.updateCompanionBand(height: height) }
+        }
         .task(id: current && player.isFeedVisible && !player.isFullscreen) { (data as? HMEngagementSocialAdapter)?.setReplayActive(current && player.isFeedVisible && !player.isFullscreen, for: replayOwner) }
         .onDisappear { (data as? HMEngagementSocialAdapter)?.setReplayActive(false, for: replayOwner) }
         .sheet(isPresented: $expandedMetadata) {
@@ -166,8 +174,9 @@ private struct HMSocialChrome: View {
                 }.opacity(adActive ? 0 : 1).allowsHitTesting(!adActive).accessibilityHidden(!current || state.isSheetOpen || adActive)
             }
             if !dynamicType.isAccessibilitySize {
+                // The preview yields while the companion countdown pill shows above the progress bar.
                 HMSocialPreviewSlot(player: player, item: item, data: data, state: state, options: options,
-                    eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen, onOpen: openComments)
+                    eligible: current && !adActive && !state.isSheetOpen && !player.isFullscreen && player.companionState != .countdown, onOpen: openComments)
             }
             HMHitArea {
                 // Metadata shows the badge under the title only for that placement; other placements strip the counts.
@@ -176,7 +185,16 @@ private struct HMSocialChrome: View {
                 if let replacementMetadata { replacementMetadata(context) }
                 else { HMMetadataView(content: context.content, onExpand: context.expand, onHashtag: context.hashtagTapped) }
             }.accessibilityHidden(!current || state.isSheetOpen || (adActive && options.hidesMetadataDuringAds))
+            if player.companionState == .countdown {
+                // Room for the countdown pill, which the kit draws above the pager just over this progress bar.
+                Color.clear.frame(height: 28).allowsHitTesting(false).accessibilityHidden(true)
+            }
             HMHitArea { HMSocialProgressLeaf(player: player, item: item, scrubbing: options.allowsScrubbing) }
+                .background(GeometryReader { geometry in
+                    Color.clear.onChange(of: geometry.frame(in: .named("hm-social-overlay")), initial: true) { _, frame in
+                        state.recordProgressBarFrame(frame, for: item.id)
+                    }
+                }.allowsHitTesting(false))
                 .accessibilityHidden(!current || state.isSheetOpen || (adActive && options.hidesMetadataDuringAds))
         }
         .padding(.leading, safe.leading + 16).padding(.trailing, safe.trailing + 12)
@@ -449,6 +467,7 @@ private struct HMSocialSidecar: View {
     private var sheet: ((HMMediaItem) -> AnyView)?
     private var rail: ((HMMediaItem, HMSocialRailContext) -> AnyView)?
     private var metadataSlot: ((HMMediaItem, HMSocialMetadataContext) -> AnyView)?
+    private var companionSlot: ((HMCompanionOverlayContext) -> AnyView)?
     @State private var state = HMSocialState()
     /// Creates this component with host-supplied data and actions.
     public init(player: HMPlayer, surface: Surface = .feed, options: HMSocialOptions = .init(),
@@ -471,6 +490,10 @@ private struct HMSocialSidecar: View {
     public func metadata<Content: View>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialMetadataContext) -> Content) -> Self {
         var copy = self; copy.metadataSlot = { AnyView(content($0, $1)) }; return copy
     }
+    /// Replaces the ready-made companion countdown and band strip.
+    public func companionChrome<Content: View>(@ViewBuilder content: @escaping (HMCompanionOverlayContext) -> Content) -> Self {
+        var copy = self; copy.companionSlot = { AnyView(content($0)) }; return copy
+    }
     private var extendsUnderSafeArea: Bool {
         switch surface { case .feed: return true; case .inline: return false }
     }
@@ -481,7 +504,13 @@ private struct HMSocialSidecar: View {
             case .feed: HMVerticalFeedView(player: player) { item, snapshot in overlay(item, snapshot) }
             case .inline: HMPlayerView(player: player, aspectRatio: nil) { item, snapshot in overlay(item, snapshot) }
             }
-        }.hmSocialPlayback(player: player, state: state, options: options, extendsUnderSafeArea: extendsUnderSafeArea, data: data, callbacks: callbacks)
+        }
+        .hmCompanionOverlay { context in companionOverlay(context) }
+        .hmSocialPlayback(player: player, state: state, options: options, extendsUnderSafeArea: extendsUnderSafeArea, data: data, callbacks: callbacks)
+    }
+    @ViewBuilder private func companionOverlay(_ context: HMCompanionOverlayContext) -> some View {
+        if let companionSlot { companionSlot(context) }
+        else if options.showsCompanionChrome { HMCompanionChrome(context: context, callbacks: callbacks) }
     }
     private func overlay(_ item: HMMediaItem, _ snapshot: HMPlaybackSnapshot) -> HMSocialOverlay {
         var overlay = HMSocialOverlay(player: player, item: item, snapshot: snapshot, data: data(item), state: state, options: options, callbacks: callbacks)

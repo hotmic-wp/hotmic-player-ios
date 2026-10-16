@@ -19,6 +19,8 @@ public struct HMVerticalFeedView<Overlay: View>: View {
 
     @GestureState private var isTouching = false
     @Environment(\.hmFeedPagingDisabled) private var pagingDisabled
+    @Environment(\.hmSurfaceHooks) private var hooks
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scrollReference = HMScrollViewReference()
     @State private var fallbackCommit: Task<Void, Never>?
     @State private var scrolledID: HMMediaItem.ID?
@@ -54,58 +56,85 @@ public struct HMVerticalFeedView<Overlay: View>: View {
                 let pageHeight = proxy.size.height
                 let itemIDs = controller.items.map(\.id)
                 let currentID = controller.currentItem?.id
+                // The companion band is one layer above the pager, outside the cells: pages squeeze
+                // above it through the squeeze target and reserve it, and swipes never move it.
+                let band = HMCompanionBandMetrics(bounds: CGRect(origin: .zero, size: proxy.size),
+                    bottomInset: hooks.layout.contentInsets.bottom + insets.bottom, aspectRatio: controller.companionAspectRatio)
+                let presented = controller.companionState.isPresented
+                let bandArea = max(0, proxy.size.height - band.dock)
 
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(controller.items) { item in
-                            cell(for: item, pageHeight: pageHeight)
-                                .frame(width: proxy.size.width, height: pageHeight)
-                                .id(item.id)
+                ZStack {
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(controller.items) { item in
+                                cell(for: item, pageHeight: pageHeight)
+                                    .frame(width: proxy.size.width, height: pageHeight)
+                                    .id(item.id)
+                            }
+                            if controller.isLoadingPage {
+                                loadingFooter.frame(width: proxy.size.width, height: 80)
+                            }
                         }
-                        if controller.isLoadingPage {
-                            loadingFooter.frame(width: proxy.size.width, height: 80)
-                        }
+                        .scrollTargetLayout()
+                        .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, isSuspended: controller.isFullscreen, requestID: controller.pageRequestID, reference: scrollReference, trigger: controller.configuration.activationTrigger, interaction: { controller.setPageMoving($0) }) { id, commit in
+                            fallbackCommit?.cancel()
+                            controller.commitPage(toID: id, commit: commit)
+                        })
                     }
-                    .scrollTargetLayout()
-                    .background(HMPageCommitProbe(itemIDs: itemIDs, currentID: controller.currentItem?.id, targetIndex: controller.requestedPageIndex, isSuspended: controller.isFullscreen, requestID: controller.pageRequestID, reference: scrollReference, trigger: controller.configuration.activationTrigger, interaction: { controller.setPageMoving($0) }) { id, commit in
+                    .onChange(of: controller.isFullscreen) { _, _ in
+                        fallbackCommit?.cancel(); scrolledID = controller.currentItem?.id
+                    }
+                    .scrollDisabled(controller.isFullscreen || controller.isAdSwipeBlocked || pagingDisabled)
+                    .scrollTargetBehavior(.paging)
+                    .scrollIndicators(.hidden)
+                    .scrollPosition(id: $scrolledID)
+                    .background(.black)
+                    .onChange(of: scrolledID) { _, id in
                         fallbackCommit?.cancel()
-                        controller.commitPage(toID: id, commit: commit)
-                    })
-                }
-                .onChange(of: controller.isFullscreen) { _, _ in
-                    fallbackCommit?.cancel(); scrolledID = controller.currentItem?.id
-                }
-                .scrollDisabled(controller.isFullscreen || controller.isAdSwipeBlocked || pagingDisabled)
-                .scrollTargetBehavior(.paging)
-                .scrollIndicators(.hidden)
-                .scrollPosition(id: $scrolledID)
-                .background(.black)
-                .onChange(of: scrolledID) { _, id in
-                    fallbackCommit?.cancel()
-                    guard !controller.isFullscreen else { return }
-                    guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
-                    fallbackCommit = Task { @MainActor in
-                        do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
-                        guard !controller.isFullscreen, !scrollReference.isRestoringFullscreen, controller.currentItem?.id == currentID, HMPagePosition.survives(old: itemIDs, new: controller.items.map(\.id), current: currentID, destination: id), scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
-                        let now = ProcessInfo.processInfo.systemUptime
-                        if let scroll = scrollReference.scroll {
-                            guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
+                        guard !controller.isFullscreen else { return }
+                        guard let id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
+                        fallbackCommit = Task { @MainActor in
+                            do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                            guard !controller.isFullscreen, !scrollReference.isRestoringFullscreen, controller.currentItem?.id == currentID, HMPagePosition.survives(old: itemIDs, new: controller.items.map(\.id), current: currentID, destination: id), scrolledID == id, let index = controller.items.firstIndex(where: { $0.id == id }), index != controller.activeIndex else { return }
+                            let now = ProcessInfo.processInfo.systemUptime
+                            if let scroll = scrollReference.scroll {
+                                guard !scroll.isDragging, !scroll.isDecelerating, now - scrollReference.lastMotionAt >= 0.2 else { return }
+                            }
+                            controller.commitPage(toID: id, requestedAt: now)
                         }
-                        controller.commitPage(toID: id, requestedAt: now)
+                    }
+                    .simultaneousGesture(DragGesture(minimumDistance: 0).updating($isTouching) { _, touching, _ in touching = true })
+                    .onChange(of: isTouching) { _, touching in controller.setFeedTouching(touching) }
+                    .onAppear { controller.attachFeed() }
+                    .onDisappear { fallbackCommit?.cancel(); controller.detachFeed() }
+                    .onChange(of: controller.currentItem?.id) { _, id in
+                        fallbackCommit?.cancel()
+                        if scrollReference.liftedItemID != id, id != scrolledID { scrolledID = id }
+                    }
+                    .task {
+                        await controller.start()
+                        scrolledID = controller.currentItem?.id
+                    }
+                    .transformEnvironment(\.hmSurfaceHooks) { hooks in
+                        if presented { hooks.layout.squeezeTarget = band.squeeze(intersecting: hooks.layout.squeezeTarget) }
+                    }
+                    .environment(\.hmCompanionBand, presented ? band.frame : nil)
+                    Group {
+                        if presented {
+                            HMCompanionBandSurface(player: controller)
+                                .frame(width: band.frame.width, height: band.frame.height)
+                                .transition(.offset(y: band.frame.height))
+                        }
+                    }
+                    .frame(width: proxy.size.width, height: bandArea, alignment: .bottom)
+                    .clipped()
+                    .position(x: proxy.size.width / 2, y: bandArea / 2)
+                    if controller.companionState != .none, let companionOverlay = hooks.companionOverlay {
+                        companionOverlay(HMCompanionOverlayContext(player: controller, bandFrame: band.frame, clickThroughURL: controller.companionClickThroughURL))
+                            .frame(width: proxy.size.width, height: proxy.size.height)
                     }
                 }
-                .simultaneousGesture(DragGesture(minimumDistance: 0).updating($isTouching) { _, touching, _ in touching = true })
-                .onChange(of: isTouching) { _, touching in controller.setFeedTouching(touching) }
-                .onAppear { controller.attachFeed() }
-                .onDisappear { fallbackCommit?.cancel(); controller.detachFeed() }
-                .onChange(of: controller.currentItem?.id) { _, id in
-                    fallbackCommit?.cancel()
-                    if scrollReference.liftedItemID != id, id != scrolledID { scrolledID = id }
-                }
-                .task {
-                    await controller.start()
-                    scrolledID = controller.currentItem?.id
-                }
+                .animation(HMCompanionBandMetrics.slideAnimation(reduceMotion: reduceMotion), value: presented)
             }
             .ignoresSafeArea()
             .environment(\.hmFeedSafeArea, insets)

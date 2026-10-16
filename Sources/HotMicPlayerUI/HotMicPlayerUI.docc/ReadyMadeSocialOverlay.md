@@ -100,4 +100,5 @@ Kit strings currently use English localization keys in the host main bundle; the
 | Tap on the squeezed video closes the sheet | `closesSheetOnVideoTap` |
 | Buffering, failure and tap-to-retry at the squeezed size | `showsPlaybackStatus`, `HMPlaybackStatusView`, `jump(toID:)`, `failedItemPolicy` |
 | Safe sidecar, ad suppression | `.sidecar`, `hmReservedRegions`, `isFree`, `adState.isActive` |
+| Pinned companion ad: countdown pill above the progress bar, band strip with "Learn more" and mute, chrome and sheet lifted above the band, comments still live | `showsCompanionChrome`, `HMCompanionChrome`, `.companionChrome`, `companionClickThrough`, snapshot `companionFrame`, `setCompanionCovered(_:by:)` while the sheet is expanded |
 | Horizontal letterboxing and minimal fullscreen | Player automatic presentation, independent fullscreen layout and minimal controls |

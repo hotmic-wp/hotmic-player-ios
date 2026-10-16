@@ -13,14 +13,26 @@ struct HMSurfaceHooks {
     var onDoubleTap: ((CGPoint) -> Void)?
     var onFrameChange: ((HMVideoGestureView) -> Void)?
     var coordinateReference: (() -> UIView?)?
+    var companionOverlay: ((HMCompanionOverlayContext) -> AnyView)?
     var forFullscreen: Self {
         var result = self
         result.layout = fullscreenLayout ?? HMVideoLayout()
         result.excludedRegions = []
         result.onFrameChange = nil
         result.coordinateReference = nil
+        result.companionOverlay = nil
         return result
     }
+}
+
+/// What a companion overlay draws over.
+@MainActor public struct HMCompanionOverlayContext {
+    /// The player whose companion is shown. Observe its companion state, countdown and progress in small leaf views.
+    public let player: HMPlayer
+    /// The band's frame in the feed's coordinates. During the countdown, the frame the band will occupy.
+    public let bandFrame: CGRect
+    /// Destination for a "Learn more" control, from the companion break; nil when none.
+    public let clickThroughURL: URL?
 }
 enum HMVideoAccessibility {
     static func text(_ key: String) -> String { NSLocalizedString(key, bundle: .module, comment: "Video accessibility") }
@@ -92,6 +104,11 @@ public extension View {
     }
     /// Reserves this view's bounds automatically for gesture exclusion and sidecar placement.
     func hmExcludedHitArea() -> some View { modifier(HMExcludedHitAreaModifier()) }
+    /// Draws player-level content for the companion ad, above the band and the pages. Apply to
+    /// `HMVerticalFeedView`. Swipes never move it. The core draws no companion chrome of its own.
+    func hmCompanionOverlay<Content: View>(@ViewBuilder _ content: @escaping (HMCompanionOverlayContext) -> Content) -> some View {
+        transformEnvironment(\.hmSurfaceHooks) { $0.companionOverlay = { AnyView(content($0)) } }
+    }
 }
 private struct HMExcludedHitAreaModifier: ViewModifier {
     @Environment(\.hmHitSpace) private var space

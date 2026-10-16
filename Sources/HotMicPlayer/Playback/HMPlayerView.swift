@@ -163,6 +163,7 @@ struct HMItemSurface<Overlay: View>: View {
     let overlay: (HMMediaItem, HMPlaybackSnapshot) -> Overlay
     @Environment(\.hmSurfaceHooks) private var hooks
     @Environment(\.hmFeedSafeArea) private var feedSafeArea
+    @Environment(\.hmCompanionBand) private var companionBand
     @State private var hitSpace = UUID()
     @State private var overlayRegions: [CGRect] = []
 
@@ -179,7 +180,8 @@ struct HMItemSurface<Overlay: View>: View {
             let resolved = policy.resolved(aspectRatio: aspect, container: policySize, tolerance: configuration.aspectRatioTolerance)
             let effectiveGravity = gravity ?? (resolved == .fill ? .resizeAspectFill : .resizeAspect)
             let videoFrame = effectiveGravity != .resizeAspect ? viewport : HMVideoPresentation.fit.videoFrame(aspectRatio: aspect, in: viewport)
-            let regions = hooks.excludedRegions + overlayRegions
+            // The companion band is reserved like a host region, so captions and sidecars avoid it.
+            let regions = hooks.excludedRegions + overlayRegions + (companionBand.map { [$0] } ?? [])
             let color = resolved == .fitWithColor ? configuration.backdropColor : .black
             ZStack {
                 Color(red: component(color.red), green: component(color.green), blue: component(color.blue), opacity: component(color.alpha))
@@ -241,7 +243,7 @@ struct HMItemSurface<Overlay: View>: View {
         }
     }
     private func overlaySnapshot(_ frame: CGRect) -> HMPlaybackSnapshot {
-        var snapshot = player.snapshot(for: item); snapshot.videoFrame = frame; return snapshot
+        var snapshot = player.snapshot(for: item); snapshot.videoFrame = frame; snapshot.companionFrame = companionBand; return snapshot
     }
     private func component(_ value: Double) -> Double { value.isFinite ? min(1, max(0, value)) : 0 }
 }

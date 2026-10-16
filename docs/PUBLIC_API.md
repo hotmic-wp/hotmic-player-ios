@@ -45,6 +45,7 @@ enum HMActivationTrigger
 
 ```swift
 @MainActor enum HMAdBreak
+case companion(HMCompanionBreak)
 case hostPlayed(HMHostAdBreak)
 case none
 case preRoll(HMMediaItem)
@@ -69,6 +70,7 @@ enum HMAdKind
 
 ```swift
 case cancelled
+case companion
 case completed
 case failed
 case noFill
@@ -189,6 +191,59 @@ static let maximumLimit: Int
 static let recent: HMCommentSelection
 struct HMCommentSelection
 var queryItems: [URLQueryItem] { get }
+```
+
+## HMCompanionBreak
+
+```swift
+@MainActor static func hostRendered(_ adapter: HMHostAdBreak, aspectRatio: Double = 16 / 9, trigger: HMCompanionTrigger? = nil) -> HMCompanionBreak
+@MainActor static func media(_ item: HMMediaItem, clickThroughURL: URL? = nil, aspectRatio: Double = 16 / 9, trigger: HMCompanionTrigger? = nil) -> HMCompanionBreak
+@MainActor struct HMCompanionBreak
+@MainActor var aspectRatio: Double
+@MainActor var clickThroughURL: URL?
+@MainActor var kind: HMAdKind { get }
+@MainActor var trigger: HMCompanionTrigger?
+```
+
+## HMCompanionCountdown
+
+```swift
+func estimatedRemaining(at uptime: TimeInterval) -> TimeInterval
+let countdownLength: TimeInterval
+let rate: Double
+let remaining: TimeInterval
+let sampledAt: TimeInterval
+struct HMCompanionCountdown
+```
+
+## HMCompanionOverlayContext
+
+```swift
+@MainActor let bandFrame: CGRect
+@MainActor let clickThroughURL: URL?
+@MainActor let player: HMPlayer
+@MainActor struct HMCompanionOverlayContext
+```
+
+## HMCompanionState
+
+```swift
+case armed
+case countdown
+case none
+case playing(kind: HMAdKind)
+enum HMCompanionState
+var isPresented: Bool { get }
+```
+
+## HMCompanionTrigger
+
+```swift
+init(watchedTime: TimeInterval = 10, countdown: TimeInterval = 5, scope: HMWatchedTimeScope = .session)
+struct HMCompanionTrigger
+var countdown: TimeInterval
+var scope: HMWatchedTimeScope
+var watchedTime: TimeInterval
 ```
 
 ## HMConsoleSink
@@ -355,10 +410,13 @@ enum HMFailedItemPolicy
 @MainActor final class HMHostAdContext
 @MainActor func complete()
 @MainActor func fail()
+@MainActor func reportMuted(_ muted: Bool)
 @MainActor func skip()
 @MainActor func updateProgress(_ value: HMAdProgress)
 @MainActor let container: UIView
+@MainActor var isMuted: Bool { get set }
 @MainActor var isPlaybackAllowed: Bool { get set }
+@MainActor var onMutedChange: ((Bool) -> Void)?
 @MainActor var onPlaybackAllowedChange: ((Bool) -> Void)?
 ```
 
@@ -571,6 +629,8 @@ var description: String { get }
 case adBreakEnded
 case adPrefetchChanged
 case adStateChanged
+case companionEnded
+case companionStateChanged
 case ended
 case error
 case firstFrame
@@ -600,6 +660,7 @@ init()
 struct HMPlaybackSnapshot
 var aspectRatio: Double? { get }
 var bufferedAhead: TimeInterval { get }
+var companionFrame: CGRect? { get }
 var currentTime: TimeInterval { get }
 var duration: TimeInterval { get }
 var errorDescription: String? { get }
@@ -637,6 +698,7 @@ enum HMPlaybackState
 @MainActor convenience init(configuration: HMPlayerConfiguration = .default, resolver: (any HMItemResolver)? = nil, interactions: (any HMInteractionSource)? = nil, analytics: HMAnalyticsHub? = nil, diagnostics: HMPlayerDiagnosticsConfiguration?)
 @MainActor final class HMPlayer
 @MainActor func beginInteraction()
+@MainActor func dismissCompanion()
 @MainActor func endInteraction()
 @MainActor func engagement(for item: HMMediaItem) -> HMEngagement
 @MainActor func enterFullscreen()
@@ -650,8 +712,10 @@ enum HMPlaybackState
 @MainActor func seek(to seconds: TimeInterval)
 @MainActor func seek(toProgress progress: Double)
 @MainActor func selectCaption(_ language: String?)
+@MainActor func setCompanionCovered(_ covered: Bool, by surface: String)
 @MainActor func setDiagnostics(_ options: HMPlayerDiagnosticsConfiguration?)
 @MainActor func skipAd()
+@MainActor func skipCompanion()
 @MainActor func snapshot(for item: HMMediaItem) -> HMPlaybackSnapshot
 @MainActor func start() async
 @MainActor func teardown()
@@ -668,12 +732,17 @@ enum HMPlaybackState
 @MainActor var availableCaptionLanguages: [String] { get }
 @MainActor var captionPreference: Bool? { get set }
 @MainActor var captionsEnabled: Bool { get set }
+@MainActor var companionCountdown: HMCompanionCountdown? { get set }
+@MainActor var companionProgress: HMAdProgress { get set }
+@MainActor var companionState: HMCompanionState { get set }
 @MainActor var configuration: HMPlayerConfiguration { get set }
 @MainActor var currentIndex: Int? { get }
 @MainActor var currentItem: HMMediaItem? { get }
 @MainActor var events: AsyncStream<HMPlayerEvent> { get }
 @MainActor var hasMoreContent: Bool { get set }
 @MainActor var isAdSwipeBlocked: Bool { get }
+@MainActor var isCompanionCovered: Bool { get }
+@MainActor var isCompanionMuted: Bool { get set }
 @MainActor var isExternalPlaybackActive: Bool { get set }
 @MainActor var isFeedVisible: Bool { get set }
 @MainActor var isFullscreen: Bool { get set }
@@ -719,6 +788,7 @@ var allowsSwipeDuringAds: Bool
 var aspectRatioTolerance: Double
 var backdropColor: HMVideoBackdropColor
 var cacheCapacityBytes: Int
+var companionTrigger: HMCompanionTrigger
 var failedItemPolicy: HMFailedItemPolicy
 var followsDeviceRotation: Bool
 var loops: Bool
@@ -768,6 +838,8 @@ case adPrefetchChanged(paused: Bool)
 case adStateChanged(item: HMMediaItem, state: HMAdState)
 case audioSession(HMAudioSessionEvent)
 case captionsChanged(enabled: Bool, language: String?)
+case companionEnded(item: HMMediaItem, outcome: HMAdOutcome)
+case companionStateChanged(item: HMMediaItem, state: HMCompanionState)
 case currentItemChanged(HMMediaItem?)
 case error(item: HMMediaItem?, kind: HMPlayerError)
 case externalPresentationChanged(pictureInPicture: Bool, externalPlayback: Bool)
@@ -1096,6 +1168,14 @@ func resolved(aspectRatio: Double?, container: CGSize, tolerance: Double = 0.25)
 func videoFrame(aspectRatio: Double?, in bounds: CGRect, tolerance: Double = 0.25) -> CGRect
 ```
 
+## HMWatchedTimeScope
+
+```swift
+case item
+case session
+enum HMWatchedTimeScope
+```
+
 ## HotMicPlayer
 
 ```swift
@@ -1107,6 +1187,8 @@ static let version: String
 
 ```swift
 @MainActor func hmCaptionInsets(_ insets: HMVideoInsets) -> some View
+
+@MainActor func hmCompanionOverlay<Content>(@ViewBuilder _ content: @escaping (HMCompanionOverlayContext) -> Content) -> some View where Content : View
 
 @MainActor func hmExcludedHitArea() -> some View
 
@@ -1188,6 +1270,14 @@ enum Action
 @MainActor struct HMCommentSheet
 @MainActor var body: some View { get }
 @MainActor var onPosted: (String) -> Void
+```
+
+## HMCompanionChrome
+
+```swift
+@MainActor init(context: HMCompanionOverlayContext, callbacks: HMSocialCallbacks = .init())
+@MainActor struct HMCompanionChrome
+@MainActor var body: some View { get }
 ```
 
 ## HMComposer
@@ -1361,6 +1451,7 @@ var showsScrubber: Bool
 init()
 struct HMSocialCallbacks
 var commentPosted: (HMMediaItem, String) -> Void
+var companionClickThrough: ((URL) -> Void)?
 var fireToggled: (HMMediaItem, Bool) -> Void
 var hashtagTapped: (String) -> Void
 var share: (HMMediaItem) -> Void
@@ -1451,6 +1542,7 @@ var previewDuration: TimeInterval
 var previewRotationInterval: TimeInterval?
 var sheetHeight: CGFloat
 var sheetMode: HMSocialOptions.SheetMode
+var showsCompanionChrome: Bool
 var showsMute: Bool
 var showsPlaybackStatus: Bool
 ```
@@ -1496,6 +1588,7 @@ enum SheetMode
 ```swift
 @MainActor func actionRail<Content>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialRailContext) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor func commentSheet<Content>(@ViewBuilder content: @escaping (HMMediaItem) -> Content) -> HMSocialPlayerView where Content : View
+@MainActor func companionChrome<Content>(@ViewBuilder content: @escaping (HMCompanionOverlayContext) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor func metadata<Content>(@ViewBuilder content: @escaping (HMMediaItem, HMSocialMetadataContext) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor func sidecar<Content>(size: CGSize, @ViewBuilder content: @escaping (HMMediaItem) -> Content) -> HMSocialPlayerView where Content : View
 @MainActor init(player: HMPlayer, surface: HMSocialPlayerView.Surface = .feed, options: HMSocialOptions = .init(), callbacks: HMSocialCallbacks = .init(), data: @escaping (HMMediaItem) -> any HMSocialDataSource)

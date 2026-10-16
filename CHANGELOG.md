@@ -4,6 +4,7 @@
 
 ### Ads
 
+- Companion ads: `HMAdBreak.companion(HMCompanionBreak)` arms a video ad in the pre-roll slot that appears in a band above host chrome after the trigger's watched time (`HMCompanionTrigger`, `HMWatchedTimeScope`, `HMPlayerConfiguration.companionTrigger`), stays pinned across swipes, navigation and playlist edits, and never gates comments or the sheet. `HMPlayer` gains `companionState`, `companionCountdown`, `companionProgress`, `isCompanionMuted` (unmuting holds content paused), `skipCompanion()`, `dismissCompanion()`, `setCompanionCovered(_:by:)` and `isCompanionCovered`; snapshots carry `companionFrame`; `hmCompanionOverlay` draws player-level chrome over the feed through `HMCompanionOverlayContext`. `HMHostAdContext` gains `isMuted`, `onMutedChange` and `reportMuted(_:)`. New cases: `HMAdOutcome.companion`, `HMPlayerEvent.companionStateChanged` / `companionEnded`, `HMPlaybackEvent.Kind.companionStateChanged` / `companionEnded`; update exhaustive switches.
 - `HMPlayer.isPictureInPictureActive` (host-set), `isExternalPlaybackActive` (follows the external route of the engine playing current content) and `suppressesCompanionAds` report when companion ads must not appear. `HMPlayerEvent.externalPresentationChanged(pictureInPicture:externalPlayback:)` reports each change; update exhaustive switches over `HMPlayerEvent`.
 
 ### Engagement data layer
@@ -13,6 +14,7 @@
 
 ### Ready-made social overlay
 
+- Companion chrome: `HMSocialOptions.showsCompanionChrome` (default true) draws a countdown pill above the current page's progress bar and, for player-played creatives, a band strip with the remaining time, a "Learn more" control (`HMSocialCallbacks.companionClickThrough`, or the environment's `openURL`) and a mute toggle bound to `isCompanionMuted`. `HMSocialPlayerView.companionChrome` replaces it, and `HMCompanionChrome` is the ready-made view for custom compositions. Resting chrome, the comment preview, the sidecar and the sheet lift above the band; an expanded sheet reports itself as covering the band.
 - `HMAudienceBadge` ("1.2K watching", or "1.2K views" without an audience) built on `HMCountFormatter`, with rolling digits and a Reduce Motion fallback; `HMSocialContent.audienceCount`/`viewCount` feed it (nil hides), `HMEngagementSocialAdapter` mirrors the engagement's pushed audience, and `HMSocialOptions.audienceBadgePlacement` places it under the title (default), top-leading, or hides it. `HMTheme.Icon.audience` and `audienceSymbol` theme it.
 - `HMSocialOptions.commentSelection` applies an `HMCommentSelection` to the loaded comments for any data source; nil (the default) keeps the data source's own preview candidates. The adapter's default preview is now `.recent` (the two newest comments) instead of the newest three.
 

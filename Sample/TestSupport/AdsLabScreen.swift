@@ -33,13 +33,16 @@ struct AdsLabScreen: View {
             do {
                 let ad = try await socialVideoFixture(landscape: true, name: "ads-preroll", seconds: 6)
                 let content = try await socialVideoFixture(landscape: false, name: "ads-content")
-                player.adBreakProvider = DemoAdProvider(preRollURL: ad)
+                let provider = DemoAdProvider(preRollURL: ad)
+                if let watched = Double(DemoOptions().values["ads-companion-watched"] ?? "") { provider.companionTrigger.watchedTime = watched }
+                if let countdown = Double(DemoOptions().values["ads-companion-countdown"] ?? "") { provider.companionTrigger.countdown = countdown }
+                player.adBreakProvider = provider
                 if DemoOptions().values["ads-block-swipe"] == "1" { player.configuration.allowsSwipeDuringAds = false }
                 if let duration = Double(DemoOptions().values["ads-max-duration"] ?? "") { player.configuration.adBreakMaxDuration = duration }
                 if let timeout = Double(DemoOptions().values["ads-no-progress"] ?? "") { player.configuration.adNoProgressTimeout = timeout }
                 let start = Int(DemoOptions().values["start-index"] ?? "0") ?? 0
                 let events = player.events
-                player.replaceAll(["url-ad", "host-ad", "slow-ad", "content", "hung-ad", "endless-ad"].map {
+                player.replaceAll(["url-ad", "host-ad", "slow-ad", "content", "hung-ad", "endless-ad", "companion-ad", "after-companion"].map {
                     HMMediaItem(id: $0, url: content, title: $0, aspectRatio: 9.0 / 16)
                 }, startAt: start)
                 await player.start()
@@ -52,6 +55,14 @@ struct AdsLabScreen: View {
     private var chrome: some View {
         VStack {
             Spacer()
+            if player.companionState == .countdown, let countdown = player.companionCountdown {
+                Text("Ad in \(Int(countdown.estimatedRemaining(at: ProcessInfo.processInfo.systemUptime).rounded(.up)))").accessibilityIdentifier("ads-companion-countdown")
+            }
+            if player.companionState.isPresented {
+                Text("Companion ad").accessibilityIdentifier("ads-companion")
+                Button(player.isCompanionMuted ? "Unmute companion" : "Mute companion") { player.isCompanionMuted.toggle() }
+                    .accessibilityIdentifier("ads-companion-mute").hmExcludedHitArea()
+            }
             if player.adState.isActive {
                 Text("Advertisement").accessibilityIdentifier("ads-active")
                 if case .playing = player.adState {
@@ -88,7 +99,8 @@ struct AdsLabScreen: View {
                 "ttff": player.snapshot.timeToFirstFrame ?? -1, "ready": player.snapshot.readinessTier.rawValue,
                 "prepared": player.preparedItemIdentities, "swipeBlocked": player.isAdSwipeBlocked,
                 "contentRate": player.snapshot.state.rawValue, "progress": player.adProgress.elapsed,
-                "feedVisible": player.isFeedVisible]
+                "feedVisible": player.isFeedVisible, "companion": String(describing: player.companionState),
+                "companionRemaining": player.companionCountdown?.remaining ?? -1, "companionMuted": player.isCompanionMuted]
             if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) { try? data.write(to: documents.appendingPathComponent("ads-state.json"), options: .atomic) }
             if let command = try? String(contentsOf: documents.appendingPathComponent("ads-command.txt")), command != lastCommand {
                 lastCommand = command
@@ -106,6 +118,10 @@ struct AdsLabScreen: View {
                     if let id = player.currentItem?.id { player.remove(ids: [id]) }
                 case "standalone": inline = true
                 case "feed": inline = false
+                case "companion-skip": player.skipCompanion()
+                case "companion-dismiss": player.dismissCompanion()
+                case "companion-unmute": player.isCompanionMuted = false
+                case "companion-mute": player.isCompanionMuted = true
                 default: break
                 }
             }

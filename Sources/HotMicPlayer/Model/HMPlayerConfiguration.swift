@@ -131,6 +131,9 @@ public struct HMPlayerConfiguration: Sendable {
     /// Allowed playing time without media progress, default 10 seconds; finite values clamped to 0.1...120.
     /// Suspended while playback is disallowed. Nonfinite values use the default.
     public var adNoProgressTimeout: TimeInterval = 10
+    /// Default companion trigger: 10 watched seconds after arming, a 5-second countdown, across items.
+    /// A companion break may override it.
+    public var companionTrigger = HMCompanionTrigger()
     /// Allow vertical paging to cancel a pre-roll. Companion units never change this flag.
     public var allowsSwipeDuringAds = true
     /// Rendering default. Automatic preserves fill for matching vertical media and fits landscape media.
@@ -293,6 +296,9 @@ public struct HMPlayerConfiguration: Sendable {
         private let adBreakMaxDuration: TimeInterval?
         private let adNoProgressTimeout: TimeInterval?
         private let allowsSwipeDuringAds: Bool?
+        private let companionWatchedTime: TimeInterval?
+        private let companionCountdown: TimeInterval?
+        private let companionScope: HMWatchedTimeScope?
         private let presentation: HMVideoPresentation?
         private let aspectRatioTolerance: Double?
         private let backdropColor: HMVideoBackdropColor?
@@ -324,6 +330,8 @@ public struct HMPlayerConfiguration: Sendable {
         fileprivate init(_ c: HMPlayerConfiguration) {
             adBreakMaxDuration = c.adBreakMaxDuration; adNoProgressTimeout = c.adNoProgressTimeout
             adDecisionTimeout = c.adDecisionTimeout; adLoadTimeout = c.adLoadTimeout; allowsSwipeDuringAds = c.allowsSwipeDuringAds
+            companionWatchedTime = c.companionTrigger.watchedTime; companionCountdown = c.companionTrigger.countdown
+            companionScope = c.companionTrigger.scope
             presentation = c.presentation; aspectRatioTolerance = c.aspectRatioTolerance
             backdropColor = c.backdropColor; followsDeviceRotation = c.followsDeviceRotation
             failedItemPolicy = c.failedItemPolicy == .skip ? .skip : .stay
@@ -351,6 +359,7 @@ public struct HMPlayerConfiguration: Sendable {
             c.allowsBackgroundAudio = allowsBackgroundAudio ?? false
             c.adBreakMaxDuration = adBreakMaxDuration ?? 120; c.adNoProgressTimeout = adNoProgressTimeout ?? 10
             c.adDecisionTimeout = adDecisionTimeout ?? 1; c.adLoadTimeout = adLoadTimeout ?? 5; c.allowsSwipeDuringAds = allowsSwipeDuringAds ?? true
+            c.companionTrigger = HMCompanionTrigger(watchedTime: companionWatchedTime ?? 10, countdown: companionCountdown ?? 5, scope: companionScope ?? .session)
             c.presentation = presentation ?? .automatic; c.aspectRatioTolerance = aspectRatioTolerance ?? 0.25
             c.backdropColor = backdropColor ?? .black; c.followsDeviceRotation = followsDeviceRotation ?? false
             c.failedItemPolicy = failedItemPolicy == .stay ? .stay : .skip

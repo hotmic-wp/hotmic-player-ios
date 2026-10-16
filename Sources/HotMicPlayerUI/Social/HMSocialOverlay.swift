@@ -94,10 +94,13 @@ private struct HMSocialChrome: View {
                 HMSocialPausedLeaf(player: player, item: item)
                     .position(x: geometry.size.width / 2, y: max(safe.top + 50, videoFrame.midY))
                     .opacity(current && state.sheetPosition != .expanded ? 1 : 0)
-                if player.isFullscreen, options.fullscreenControls != .hidden {
-                    HMSocialFullscreenControls(player: player, item: item, showsMute: options.showsMute, mode: options.fullscreenControls)
-                        .padding(.bottom, nav + 12).opacity(adActive ? 0 : 1).allowsHitTesting(!adActive)
-                        .accessibilityHidden(!current || adActive)
+                if player.isFullscreen {
+                    // Fullscreen never shows the resting chrome; the pill is the only kit control, and only when the option keeps it.
+                    if options.fullscreenControls != .hidden {
+                        HMSocialFullscreenControls(player: player, item: item, showsMute: options.showsMute, mode: options.fullscreenControls)
+                            .padding(.bottom, nav + 12).opacity(adActive ? 0 : 1).allowsHitTesting(!adActive)
+                            .accessibilityHidden(!current || adActive)
+                    }
                 } else {
                     resting(safe: safe, nav: nav, width: geometry.size.width)
                         .opacity(state.isSheetOpen || (adActive && options.hidesMetadataDuringAds) ? 0 : 1)

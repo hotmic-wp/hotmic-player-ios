@@ -12,3 +12,5 @@ __pycache__/
 Sample/LocalMedia/
 # Retain ignored historical local lab output after tooling extraction.
 bench/
+# Written by the TestFlight job of the demo device build.
+Sample/TestFlight-Info.plist

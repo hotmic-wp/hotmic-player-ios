@@ -279,7 +279,8 @@ struct CompanionAdTests {
             let deadline = Date().addingTimeInterval(5)
             while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
             let port = try #require(origin.listener.port)
-            stalling = URL(string: "http://127.0.0.1:\(port.rawValue)/companion.mp4")!
+            // https: the engine opens a TLS handshake the origin never answers; a cleartext scheme can be refused before any request.
+            stalling = URL(string: "https://127.0.0.1:\(port.rawValue)/companion.mp4")!
         }
         let stalled = stalling
         // A zero countdown warms the creative only at presentation, so the startup deadline runs on a cold node.
@@ -305,8 +306,12 @@ struct CompanionAdTests {
         #expect(contexts.isEmpty) // Never before presentation.
         if mode.hasPrefix("url") {
             try await wait { player.companionState == .none }
-            #expect(sink.companionEnds.map(\.outcome) == [mode == "url-startup" ? "timedOut" : "failed"] && player.companionNode == nil)
-            #expect(sink.companionStates == ["armed", "countdown", "none"])
+            let ends = sink.companionEnds.map(\.outcome), states = sink.companionStates
+            let errors = sink.events.filter { $0.kind == .error }.map {
+                "\($0.itemID) \($0.properties["error_domain"] ?? "")/\($0.properties["error_code"] ?? ""): \($0.properties["error_message"] ?? "")"
+            }
+            #expect(ends == [mode == "url-startup" ? "timedOut" : "failed"] && player.companionNode == nil, "errors: \(errors)")
+            #expect(states == ["armed", "countdown", "none"])
             #expect(player.currentNode?.isActive == true && player.wantsPlayback) // Content was never held.
             player.teardown()
             return

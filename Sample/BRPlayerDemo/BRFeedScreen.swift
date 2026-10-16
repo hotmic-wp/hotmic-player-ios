@@ -33,6 +33,8 @@ struct BRFeedScreen: View {
         options.allowsPagingWhileSheetOpen = false
         options.closesSheetOnVideoTap = true
         options.showsPlaybackStatus = true
+        // Landscape fullscreen: nothing over the video but the player's corner exit; a tap plays and pauses.
+        options.fullscreenControls = .hidden
         return options
     }
     private var callbacks: HMSocialCallbacks {

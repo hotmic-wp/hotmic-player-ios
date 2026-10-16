@@ -57,7 +57,7 @@ Two further options change feed interaction while the sheet is open. `allowsPagi
 
 The kit observes `adState.isActive`, including decisioning, and suppresses the rail, preview, Fire and comment trigger. Metadata and progress stay visible unless the host sets `hidesMetadataDuringAds`. An open sheet closes when an ad starts. Hosts own ad SDK skip/countdown UI. Captions use `availableCaptionLanguages` and `captionsEnabled`; CC stays hidden without tracks, and registered control bounds are reserved for caption placement. Mute is off as a control by default; audio starts on with the player's default configuration and mute state belongs to the shared player across swipes. Looping stays at the player's default; the kit never advances items on completion.
 
-Landscape items use the player's automatic letterboxing policy. Fullscreen has independent zero-inset video layout, no navigation or social rail, and only playback, optional mute, CC and exit controls.
+Landscape items use the player's automatic letterboxing policy. Fullscreen has independent zero-inset video layout, no navigation or social rail, and only playback, optional mute, CC and exit controls in a pill at the bottom. `fullscreenControls` decides how long that pill stays: `.visible` (default) keeps it for the whole session; `.autoHide(after:)` shows it on entry and whenever playback is not running, hides it that many seconds into playback, and brings it back after any change it can make (play, pause, mute, captions); `.hidden` never draws it, so nothing but the player's corner exit sits over the video and a tap plays or pauses. Every value keeps a way out: the player's own corner exit button, device rotation when the host follows it, and VoiceOver's escape gesture on the fullscreen surface. Mute and captions stay reachable as VoiceOver custom actions on the video element while the pill is away.
 
 ## Theme
 
@@ -102,3 +102,4 @@ Kit strings currently use English localization keys in the host main bundle; the
 | Safe sidecar, ad suppression | `.sidecar`, `hmReservedRegions`, `isFree`, `adState.isActive` |
 | Pinned companion ad: countdown pill above the progress bar, band strip with "Learn more" and mute, chrome and sheet lifted above the band, comments still live | `showsCompanionChrome`, `HMCompanionChrome`, `.companionChrome`, `companionClickThrough`, snapshot `companionFrame`, `setCompanionCovered(_:by:)` while the sheet is expanded |
 | Horizontal letterboxing and minimal fullscreen | Player automatic presentation, independent fullscreen layout and minimal controls |
+| Fullscreen controls out of the way of the video, exit always reachable | `fullscreenControls` (`.visible`, `.autoHide(after:)`, `.hidden`), the player's corner exit, VoiceOver escape |

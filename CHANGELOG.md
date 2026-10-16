@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Ads
+
+- `HMPlayer.isPictureInPictureActive` (host-set), `isExternalPlaybackActive` (follows the external route of the engine playing current content) and `suppressesCompanionAds` report when companion ads must not appear. `HMPlayerEvent.externalPresentationChanged(pictureInPicture:externalPlayback:)` reports each change; update exhaustive switches over `HMPlayerEvent`.
+
 ### Engagement data layer
 
 - `HMCommentSelection`: a serializable comment-preview rule (`rule` + `limit`, JSON or query items) shared with backends and other clients. `.recent` is the rule today; `topReactions`, `verifiedOnly` and `pinnedFirst` are reserved names and unknown rules preview as recent. `apply(to:)` is a pure, order-preserving function over any `HMSelectableComment` list; `HMChatMessage` and `HMSocialComment` conform.

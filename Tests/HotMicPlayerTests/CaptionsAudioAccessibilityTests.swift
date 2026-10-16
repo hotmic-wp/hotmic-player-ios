@@ -389,7 +389,7 @@ extension CaptionsAudioAccessibilityTests {
         await probe.release()
         for task in tasks { _ = await task.value }
     }
-    @Test("Only declared legible tracks count as caption languages; the undeclared closed-caption placeholder never does")
+    @MainActor @Test("Only declared legible tracks count as caption languages; the undeclared closed-caption placeholder never does")
     func declaredCaptionTracks() {
         // A multivariant playlist without CLOSED-CAPTIONS makes AVFoundation offer one closed-caption option with
         // no language, no locale and the display name "CC" (seen on an iPhone); CLOSED-CAPTIONS=NONE removes it.

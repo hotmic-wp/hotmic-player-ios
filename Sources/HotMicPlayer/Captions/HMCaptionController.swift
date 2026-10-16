@@ -48,6 +48,31 @@ actor HMCaptionCache {
     }
 }
 
+/// The properties of a legible `AVMediaSelectionOption` that decide whether it is a caption track a viewer can turn on.
+struct HMLegibleOption {
+    var mediaType: AVMediaType
+    var languageTag: String?
+    var localeIdentifier: String?
+    var forcedOnly: Bool
+    init(mediaType: AVMediaType, languageTag: String?, localeIdentifier: String?, forcedOnly: Bool) {
+        self.mediaType = mediaType; self.languageTag = languageTag; self.localeIdentifier = localeIdentifier; self.forcedOnly = forcedOnly
+    }
+    init(_ option: AVMediaSelectionOption) {
+        self.init(mediaType: option.mediaType, languageTag: option.extendedLanguageTag, localeIdentifier: option.locale?.identifier,
+                  forcedOnly: option.hasMediaCharacteristic(.containsOnlyForcedSubtitles))
+    }
+    /// Forced-only subtitles follow the audio language and are never offered. A closed-caption option without a
+    /// language is the placeholder AVFoundation offers for every multivariant playlist that omits `CLOSED-CAPTIONS`:
+    /// CEA-608 may or may not be in the video, so it counts only once the packager declares it with a language.
+    var isCaptionTrack: Bool {
+        if forcedOnly { return false }
+        if mediaType == .closedCaption { return languageTag != nil || localeIdentifier != nil }
+        return true
+    }
+    /// BCP-47 tag, else the locale, else a stable `und-N` from the option's position in its group.
+    func language(index: Int) -> String { languageTag ?? localeIdentifier ?? "und-\(index)" }
+}
+
 @MainActor @Observable
 final class HMCaptionController: NSObject, AVPlayerItemLegibleOutputPushDelegate {
     private(set) var languages: [String] = []
@@ -82,7 +107,7 @@ final class HMCaptionController: NSObject, AVPlayerItemLegibleOutputPushDelegate
             let audioGroup = try? await item.asset.loadMediaSelectionGroup(for: .audible)
             guard !Task.isCancelled, self.item === item else { return }
             self.group = group; self.audioGroup = audioGroup
-            let languages = Array(Set(self.languages + group.options.enumerated().filter { !$0.element.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }.map { self.language($0.element, index: $0.offset) })).sorted()
+            let languages = Self.captionLanguages(sidecars: Array(self.sidecars.keys), options: group.options.map { HMLegibleOption($0) })
             let changed = self.languages != languages
             self.languages = languages
             self.applySelection()
@@ -98,8 +123,10 @@ final class HMCaptionController: NSObject, AVPlayerItemLegibleOutputPushDelegate
         guard usesOverlay != overlay else { return }
         usesOverlay = overlay; output?.suppressesPlayerRendering = overlay
     }
-    private func language(_ option: AVMediaSelectionOption, index: Int) -> String {
-        option.extendedLanguageTag ?? option.locale?.identifier ?? "und-\(index)"
+    private func language(_ option: AVMediaSelectionOption, index: Int) -> String { HMLegibleOption(option).language(index: index) }
+    /// Sidecar languages plus the group's caption tracks, named by their position in the group, sorted and unique.
+    static func captionLanguages(sidecars: [String], options: [HMLegibleOption]) -> [String] {
+        Array(Set(sidecars + options.enumerated().filter { $0.element.isCaptionTrack }.map { $0.element.language(index: $0.offset) })).sorted()
     }
     static func preferences(_ requested: String?) -> [String] {
         if let requested { return [requested] }
@@ -135,7 +162,7 @@ final class HMCaptionController: NSObject, AVPlayerItemLegibleOutputPushDelegate
                 guard !Task.isCancelled, let self, self.selectedLanguage == selectedLanguage else { return }
                 self.cues = cues
             }
-        } else if let group, let option = group.options.enumerated().first(where: { !$0.element.hasMediaCharacteristic(.containsOnlyForcedSubtitles) && language($0.element, index: $0.offset) == selectedLanguage })?.element {
+        } else if let group, let option = group.options.enumerated().first(where: { HMLegibleOption($0.element).isCaptionTrack && language($0.element, index: $0.offset) == selectedLanguage })?.element {
             item?.select(option, in: group)
         }
     }

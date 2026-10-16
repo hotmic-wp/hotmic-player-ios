@@ -2,6 +2,8 @@
 
 Expose a CC toggle when ``HMPlayer/availableCaptionLanguages`` is nonempty. HLS legible options are discovered asynchronously using AVMediaSelection; WebVTT and CEA-608 support follows AVFoundation's support for the asset. Languages are BCP-47 tags; tracks without a tag receive a stable `und-N` identifier within that item.
 
+Only declared tracks are listed. A multivariant playlist whose `EXT-X-STREAM-INF` tags omit `CLOSED-CAPTIONS` makes AVFoundation offer one closed-caption option with no language (CEA-608 may or may not be in the video); the SDK does not count it, so such a stream shows no control. Declare CEA-608 captions with an `EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS` rendition that carries `LANGUAGE`, and write `CLOSED-CAPTIONS=NONE` on every variant of a stream without captions, which also keeps other players from offering an empty option. Subtitle renditions and sidecars count with or without a language; forced-only subtitles never do.
+
 ```swift
 let clip = HMMediaItem(id: "clip", url: mp4URL,
     captionSources: ["en": englishVTT, "es": spanishVTT])

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Captions
+
+- `HMPlayer.availableCaptionLanguages` lists closed-caption tracks only when they are declared with a language. The undeclared "CC" option AVFoundation offers for every multivariant playlist that omits `CLOSED-CAPTIONS` no longer counts, so the ready-made overlay's captions control and the native "Captions on" action appear only for streams that really have captions. Subtitle renditions and sidecars are unchanged.
+
 ### Ads
 
 - `HMPlayer.isPictureInPictureActive` (host-set), `isExternalPlaybackActive` (follows the external route of the engine playing current content) and `suppressesCompanionAds` report when companion ads must not appear. `HMPlayerEvent.externalPresentationChanged(pictureInPicture:externalPlayback:)` reports each change; update exhaustive switches over `HMPlayerEvent`.

@@ -60,6 +60,9 @@ import UIKit
     }
     private var systemCaptionsEnabled = MACaptionAppearanceGetDisplayType(.user) == .alwaysOn
     /// BCP-47 languages from current HLS legible tracks and MP4 sidecars. May grow when HLS metadata loads.
+    /// Closed-caption tracks count only when declared with a language: the undeclared "CC" option AVFoundation
+    /// offers for a multivariant playlist that omits `CLOSED-CAPTIONS` is not listed, so a stream without
+    /// captions shows no control.
     public var availableCaptionLanguages: [String] { currentNode?.captions.languages ?? [] }
     /// Requested language, retained across swipes. Nil uses the system's preferred caption language.
     public private(set) var selectedCaptionLanguage: String?

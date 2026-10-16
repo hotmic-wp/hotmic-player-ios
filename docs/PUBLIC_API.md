@@ -656,11 +656,13 @@ enum HMPlaybackState
 @MainActor var events: AsyncStream<HMPlayerEvent> { get }
 @MainActor var hasMoreContent: Bool { get set }
 @MainActor var isAdSwipeBlocked: Bool { get }
+@MainActor var isExternalPlaybackActive: Bool { get set }
 @MainActor var isFeedVisible: Bool { get set }
 @MainActor var isFullscreen: Bool { get set }
 @MainActor var isInteracting: Bool { get }
 @MainActor var isLoadingPage: Bool { get set }
 @MainActor var isMuted: Bool { get set }
+@MainActor var isPictureInPictureActive: Bool { get set }
 @MainActor var items: [HMMediaItem] { get }
 @MainActor var lastEvent: HMPlayerEvent? { get set }
 @MainActor var lastPlaylistChange: HMPlaylistChange? { get set }
@@ -671,6 +673,7 @@ enum HMPlaybackState
 @MainActor var prefetchPolicy: any HMPrefetchPolicyProviding { get set }
 @MainActor var selectedCaptionLanguage: String? { get set }
 @MainActor var snapshot: HMPlaybackSnapshot { get }
+@MainActor var suppressesCompanionAds: Bool { get }
 @discardableResult @MainActor func append(_ items: [HMMediaItem]) -> Bool
 @discardableResult @MainActor func insertNext(_ items: [HMMediaItem]) -> Bool
 @discardableResult @MainActor func reconcile(_ list: [HMMediaItem]) -> Bool
@@ -749,6 +752,7 @@ case audioSession(HMAudioSessionEvent)
 case captionsChanged(enabled: Bool, language: String?)
 case currentItemChanged(HMMediaItem?)
 case error(item: HMMediaItem?, kind: HMPlayerError)
+case externalPresentationChanged(pictureInPicture: Bool, externalPlayback: Bool)
 case firstFrame(HMMediaItem, ttff: TimeInterval, readiness: HMReadinessTier)
 case itemReady(HMMediaItem)
 case nearingEnd(remaining: Int)

@@ -81,6 +81,11 @@ final class HMPlayerNode: Identifiable {
 
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     @ObservationIgnored var onBufferChanged: (() -> Void)?
+    /// Mirrors `AVPlayer.isExternalPlaybackActive`, for example while video plays over AirPlay.
+    private(set) var isExternalPlaybackActive = false
+    /// Called when the external route or this engine's assignment changes, so the owner re-reads
+    /// which engine carries current content.
+    @ObservationIgnored var onExternalPlaybackChanged: (() -> Void)?
     @ObservationIgnored private var aspectTask: Task<Void, Never>?
     @ObservationIgnored private var durationTask: Task<Void, Never>?
     @ObservationIgnored private var summaryTask: Task<Void, Never>?
@@ -223,6 +228,7 @@ final class HMPlayerNode: Identifiable {
         }
         emit(.loadStart, item: newItem)
         emit(.preloadStart, item: newItem)
+        onExternalPlaybackChanged?()
     }
 
     /// Only prepared neighbours may adopt a changed cap; activation sets the current cap once.
@@ -336,6 +342,14 @@ final class HMPlayerNode: Identifiable {
         displayRevision += 1; isSeekingFrame = false
         isActive = false
         snapshot = HMPlaybackSnapshot()
+        onExternalPlaybackChanged?()
+    }
+
+    /// Records the engine's external route; the KVO observer and tests call this.
+    func externalPlaybackChanged(_ active: Bool) {
+        guard active != isExternalPlaybackActive else { return }
+        isExternalPlaybackActive = active
+        onExternalPlaybackChanged?()
     }
 
     private func setLayerVisible(_ visible: Bool) {
@@ -488,6 +502,12 @@ final class HMPlayerNode: Identifiable {
         })
         observations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.syncTimeControlStatus() }
+        })
+        observations.append(player.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.externalPlaybackChanged(self.player.isExternalPlaybackActive)
+            }
         })
     }
 

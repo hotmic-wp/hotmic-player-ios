@@ -132,6 +132,8 @@ public enum HMPlayerEvent: Sendable, Equatable {
     ///
     /// Use from any task; mutate only an exclusively owned value.
     case nearingEnd(remaining: Int)
+    /// Picture in Picture or external playback started or stopped.
+    case externalPresentationChanged(pictureInPicture: Bool, externalPlayback: Bool)
 }
 
 /// Main-actor observations forwarded through `HMPlayer.events`.

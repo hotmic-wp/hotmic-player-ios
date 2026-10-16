@@ -36,6 +36,21 @@ import UIKit
     @ObservationIgnored private var adTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var adProgressTask: Task<Void, Never>?
 
+    /// Host-reported Picture in Picture state. The SDK owns no Picture in Picture controller; set
+    /// this from your `AVPictureInPictureControllerDelegate`.
+    public var isPictureInPictureActive = false {
+        didSet { if isPictureInPictureActive != oldValue { emitExternalPresentation() } }
+    }
+    /// True while current content plays on an external route such as AirPlay.
+    public private(set) var isExternalPlaybackActive = false
+    /// True while companion ads must not appear: Picture in Picture or external playback is active.
+    public var suppressesCompanionAds: Bool { isPictureInPictureActive || isExternalPlaybackActive }
+    /// Replaces the detected external-playback state, for labs and demos without an external display.
+    /// Nil follows the current content engine.
+    @ObservationIgnored @_spi(Benchmark) public var externalPlaybackOverride: Bool? {
+        didSet { syncExternalPlayback() }
+    }
+
     /// Nil follows the system Closed Captions + SDH preference; assigning captionsEnabled overrides it.
     public var captionPreference: Bool? { didSet { updateCaptions() } }
     /// Effective caption preference, retained across playlist changes and swipes.
@@ -464,6 +479,7 @@ import UIKit
 
     private func wire(_ node: HMPlayerNode) {
         node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
+        node.onExternalPlaybackChanged = { [weak self] in self?.syncExternalPlayback() }
         node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage)
         node.captions.onLanguagesChanged = { [weak self, weak node] in
             guard let self, let node, node.item?.id == self.currentItem?.id else { return }
@@ -1757,7 +1773,21 @@ import UIKit
             commitPage(toID: items[next].id, requestedAt: now)
         }
     }
-    private func emit(_ event: HMPlayerEvent) { lastEvent = event; for continuation in subscribers.values { continuation.yield(event) } }
+    private func emit(_ event: HMPlayerEvent) {
+        lastEvent = event; for continuation in subscribers.values { continuation.yield(event) }
+        // Every current change passes here; engine assignments and route changes arrive from the node.
+        if case .currentItemChanged(_) = event { syncExternalPlayback() }
+    }
+    /// Reads the route of the engine carrying current content; false while idle or after teardown.
+    private func syncExternalPlayback() {
+        let active = !ended && (externalPlaybackOverride ?? (currentNode?.isExternalPlaybackActive == true))
+        guard active != isExternalPlaybackActive else { return }
+        isExternalPlaybackActive = active
+        emitExternalPresentation()
+    }
+    private func emitExternalPresentation() {
+        emit(.externalPresentationChanged(pictureInPicture: isPictureInPictureActive, externalPlayback: isExternalPlaybackActive))
+    }
     private func report(_ kind: HMPlayerError, item: HMMediaItem? = nil) { loadError = kind.localizedDescription; emit(.error(item: item, kind: kind)) }
 }
 #endif

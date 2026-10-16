@@ -80,6 +80,7 @@ struct BRFeedScreen: View {
         }
         }
         .tint(.white)
+        .hmTheme(BRTheme.theme)
         .ignoresSafeArea(.keyboard)
         .preferredColorScheme(.dark).foregroundStyle(.white)
         .sheet(isPresented: $sharePresented) { if let shareURL { HMShareSheet(items: [shareURL]) } }
@@ -116,6 +117,7 @@ struct BRFeedScreen: View {
     }
     private var kit: HMSocialPlayerView {
         HMSocialPlayerView(player: model.player, options: options, callbacks: callbacks, data: model.data)
+            .actionRail { item, context in BRActionRail(item: item, context: context) }
     }
 }
 

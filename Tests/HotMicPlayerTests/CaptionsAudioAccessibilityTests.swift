@@ -389,6 +389,26 @@ extension CaptionsAudioAccessibilityTests {
         await probe.release()
         for task in tasks { _ = await task.value }
     }
+    @Test("Only declared legible tracks count as caption languages; the undeclared closed-caption placeholder never does")
+    func declaredCaptionTracks() {
+        // A multivariant playlist without CLOSED-CAPTIONS makes AVFoundation offer one closed-caption option with
+        // no language, no locale and the display name "CC" (seen on an iPhone); CLOSED-CAPTIONS=NONE removes it.
+        let placeholder = HMLegibleOption(mediaType: .closedCaption, languageTag: nil, localeIdentifier: nil, forcedOnly: false)
+        #expect(!placeholder.isCaptionTrack)
+        let declared = HMLegibleOption(mediaType: .closedCaption, languageTag: "en", localeIdentifier: "en", forcedOnly: false)
+        #expect(declared.isCaptionTrack && declared.language(index: 3) == "en")
+        let localeOnly = HMLegibleOption(mediaType: .closedCaption, languageTag: nil, localeIdentifier: "es_MX", forcedOnly: false)
+        #expect(localeOnly.isCaptionTrack && localeOnly.language(index: 0) == "es_MX")
+        let untaggedSubtitles = HMLegibleOption(mediaType: .subtitle, languageTag: nil, localeIdentifier: nil, forcedOnly: false)
+        #expect(untaggedSubtitles.isCaptionTrack && untaggedSubtitles.language(index: 2) == "und-2")
+        let forced = HMLegibleOption(mediaType: .subtitle, languageTag: "fr", localeIdentifier: "fr", forcedOnly: true)
+        #expect(!forced.isCaptionTrack)
+        #expect(HMCaptionController.captionLanguages(sidecars: [], options: [placeholder]).isEmpty)
+        #expect(HMCaptionController.captionLanguages(sidecars: ["en"], options: [placeholder]) == ["en"])
+        // Names keep the option's position in the group, so a later selection finds the same option.
+        #expect(HMCaptionController.captionLanguages(sidecars: [], options: [placeholder, untaggedSubtitles, declared]) == ["en", "und-1"])
+        #expect(HMCaptionController.captionLanguages(sidecars: ["en", "de"], options: [declared, forced]) == ["de", "en"])
+    }
     @MainActor @Test("Warm caption selection and cancelled settings callbacks survive native object lifetimes")
     func captionLifetime() async throws {
         #expect(HMCaptionController.matchLanguage(in: ["fr", "en-US"], preferences: ["en-GB"]) == "en-US")

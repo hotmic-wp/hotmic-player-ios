@@ -134,6 +134,8 @@ struct BRFeedScreen: View {
         var configuration = HMPlayerConfiguration.default
         configuration.failedItemPolicy = .stay
         player = HMPlayer(configuration: configuration, interactions: BRDemoSource())
+        // Throwaway for the companion device proof; the demo wiring ticket installs this properly.
+        player.adBreakProvider = BRDemoAdProvider()
     }
     deinit { MainActor.assumeIsolated { player.teardown() } }
     func refreshRanking() {

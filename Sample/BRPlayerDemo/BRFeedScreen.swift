@@ -18,7 +18,6 @@ struct BRFeedScreen: View {
     @State private var homeOpen = false
     @State private var hashtag: BRHashtag?
     @State private var clipFailure = BRClipFailureHook()
-    @State private var captionProbe = false // THROWAWAY (ticket 21 proof build)
     @Environment(\.scenePhase) private var scenePhase
     /// A host stand-in screen covers the feed; playback pauses until it closes.
     private var covered: Bool { homeOpen || hashtag != nil }
@@ -62,7 +61,6 @@ struct BRFeedScreen: View {
                         Toggle("Preview once per item", isOn: $previewOnce)
                         Button("Landscape item") { model.player.jump(toID: BRDemoContent.landscapeID) }
                         Button("Fail this clip") { clipFailure.fail(model.player) }
-                        Button("Caption probe") { captionProbe = true } // THROWAWAY (ticket 21 proof build)
                     } label: {
                         Image(systemName: "ellipsis.circle").font(.system(size: 22)).frame(width: 44, height: 44)
                     }.accessibilityLabel("Demo options").accessibilityIdentifier("br-demo-options")
@@ -85,7 +83,6 @@ struct BRFeedScreen: View {
         .ignoresSafeArea(.keyboard)
         .preferredColorScheme(.dark).foregroundStyle(.white)
         .sheet(isPresented: $sharePresented) { if let shareURL { HMShareSheet(items: [shareURL]) } }
-        .sheet(isPresented: $captionProbe) { BRCaptionProbeSheet(player: model.player) } // THROWAWAY (ticket 21 proof build)
         .fullScreenCover(isPresented: $homeOpen) {
             BRHomeScreen(onOpen: { entry in clipFailure.forget(); model.open(entry); homeOpen = false },
                          onClose: { homeOpen = false })

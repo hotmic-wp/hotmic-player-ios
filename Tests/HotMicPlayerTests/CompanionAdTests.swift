@@ -1,6 +1,7 @@
 #if canImport(UIKit) && !os(watchOS)
 import AVFoundation
 import Foundation
+import Network
 import SwiftUI
 import Testing
 import UIKit
@@ -268,12 +269,25 @@ struct CompanionAdTests {
         var contexts: [HMHostAdContext] = [], stops: [HMAdOutcome] = []
         let host = HMHostAdBreak(start: { contexts.append($0) }, stop: { stops.append($0) })
         let missing = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("hotmic-missing-\(UUID()).mp4")
+        // A hanging origin accepts the request and never answers, so the creative stalls at startup instead of
+        // racing the deadline: a warmed engine can show a local file's first frame inside 0.1 s.
+        let origin: PlayerNativeReviewTests.PrefixOrigin? = try mode == "url-startup" ? PlayerNativeReviewTests.PrefixOrigin() : nil
+        defer { origin?.stop() }
+        var stalling = missing
+        if let origin {
+            // NWListener can publish .any (rawValue 0) before it is ready.
+            let deadline = Date().addingTimeInterval(5)
+            while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            let port = try #require(origin.listener.port)
+            stalling = URL(string: "http://127.0.0.1:\(port.rawValue)/companion.mp4")!
+        }
+        let stalled = stalling
         // A zero countdown warms the creative only at presentation, so the startup deadline runs on a cold node.
         let trigger = HMCompanionTrigger(watchedTime: 0.3, countdown: mode == "url-startup" ? 0 : 0.1)
         let provider = Provider { item in
             guard item.id == "one" else { return .none }
             switch mode {
-            case "url-startup": return .companion(.media(HMMediaItem(id: "creative", url: url), trigger: trigger))
+            case "url-startup": return .companion(.media(HMMediaItem(id: "creative", url: stalled), trigger: trigger))
             case "url-failed": return .companion(.media(HMMediaItem(id: "creative", url: missing), trigger: trigger))
             default: return .companion(.hostRendered(host, trigger: trigger))
             }

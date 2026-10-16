@@ -297,6 +297,16 @@ public struct HMSocialOptions: Equatable {
         /// Never shown, even when a count is supplied.
         case hidden
     }
+    /// How the fullscreen control pill (play/pause, optional mute, captions and exit) behaves.
+    public enum FullscreenControls: Equatable, Sendable {
+        /// The pill stays visible for the whole fullscreen session.
+        case visible
+        /// The pill shows on entry and whenever playback is not running, and hides this many seconds into
+        /// playback. Any change it can make (play, pause, mute, captions) shows it again; infinity never hides it.
+        case autoHide(after: TimeInterval)
+        /// No pill. The player's own exit control, host rotation and the VoiceOver escape gesture leave fullscreen.
+        case hidden
+    }
     /// Height of persistent host navigation, excluding the system bottom safe area.
     public var hostNavigationHeight: CGFloat = 0
     /// Shows a mute button when true; defaults to false.
@@ -324,6 +334,8 @@ public struct HMSocialOptions: Equatable {
     public var commentSelection: HMCommentSelection?
     /// Where the audience or view count appears when the content supplies one; defaults to under the title.
     public var audienceBadgePlacement: AudienceBadgePlacement = .belowTitle
+    /// Behavior of the fullscreen control pill; defaults to always visible.
+    public var fullscreenControls: FullscreenControls = .visible
     /// Creates this component with host-supplied data and actions.
     public init() {}
     /// The preview candidates these options give for content: the rule applied to the loaded comments, or the source's pick.

@@ -1445,6 +1445,7 @@ var allowsScrubbing: Bool
 var audienceBadgePlacement: HMSocialOptions.AudienceBadgePlacement
 var closesSheetOnVideoTap: Bool
 var commentSelection: HMCommentSelection?
+var fullscreenControls: HMSocialOptions.FullscreenControls
 var hidesMetadataDuringAds: Bool
 var hostNavigationHeight: CGFloat
 var previewDuration: TimeInterval
@@ -1462,6 +1463,15 @@ case belowTitle
 case hidden
 case topLeading
 enum AudienceBadgePlacement
+```
+
+## HMSocialOptions.FullscreenControls
+
+```swift
+case autoHide(after: TimeInterval)
+case hidden
+case visible
+enum FullscreenControls
 ```
 
 ## HMSocialOptions.SheetMode

@@ -320,5 +320,37 @@ import Observation
         XCTAssertTrue(environment.hmFeedPagingDisabled)
     }
 
+    func testFullscreenControlsFollowTheOptionAndHideOnlyWhilePlaying() {
+        XCTAssertEqual(HMSocialOptions().fullscreenControls, .visible) // The pill stays for the whole session by default.
+        var snapshot = HMPlaybackSnapshot()
+        snapshot.state = .playing
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(.visible, snapshot: snapshot, idle: 600))
+        XCTAssertFalse(HMSocialFullscreenControls.isVisible(.hidden, snapshot: snapshot, idle: 0))
+        snapshot.state = .paused
+        XCTAssertFalse(HMSocialFullscreenControls.isVisible(.hidden, snapshot: snapshot, idle: 0)) // Hidden never returns, even paused.
+        let auto = HMSocialOptions.FullscreenControls.autoHide(after: 3)
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 600)) // Paused: shown however long.
+        snapshot.state = .buffering
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 600))
+        snapshot.state = .playing
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 0)) // Shown on entry and after any change.
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 2.9))
+        XCTAssertFalse(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 3))
+        // A live DVR window: the rule reads the coarse playback state only, never positions, durations or isLive.
+        snapshot.isLive = true; snapshot.seekableStart = 1_200; snapshot.duration = 1_260; snapshot.currentTime = 1_255
+        XCTAssertFalse(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 3))
+        snapshot.state = .paused
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(auto, snapshot: snapshot, idle: 3))
+        // The wall-clock delay the view waits before hiding; nil means no timer is ever started.
+        XCTAssertNil(HMSocialFullscreenControls.hideDelay(for: .visible))
+        XCTAssertNil(HMSocialFullscreenControls.hideDelay(for: .hidden))
+        XCTAssertEqual(HMSocialFullscreenControls.hideDelay(for: auto), 3)
+        XCTAssertNil(HMSocialFullscreenControls.hideDelay(for: .autoHide(after: .infinity))) // Infinite means never hide.
+        XCTAssertEqual(HMSocialFullscreenControls.hideDelay(for: .autoHide(after: -1)), 0) // Negative and NaN hide as soon as playback runs.
+        XCTAssertEqual(HMSocialFullscreenControls.hideDelay(for: .autoHide(after: .nan)), 0)
+        snapshot.state = .playing
+        XCTAssertTrue(HMSocialFullscreenControls.isVisible(.autoHide(after: .infinity), snapshot: snapshot, idle: 1e9))
+        XCTAssertFalse(HMSocialFullscreenControls.isVisible(.autoHide(after: -1), snapshot: snapshot, idle: 0))
+    }
 }
 #endif

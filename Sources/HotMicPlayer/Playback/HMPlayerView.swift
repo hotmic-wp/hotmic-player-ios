@@ -457,6 +457,8 @@ private struct HMFullscreenContent: View {
             .accessibilityIdentifier("hm-exit-fullscreen")
             .padding().tint(.white)
         }
+        // VoiceOver's escape gesture leaves fullscreen from anywhere on the surface, whatever the overlay shows.
+        .accessibilityAction(.escape) { player.exitFullscreen() }
     }
 }
 /// Partner posters use the same small, preblurred still path as decoded frames.

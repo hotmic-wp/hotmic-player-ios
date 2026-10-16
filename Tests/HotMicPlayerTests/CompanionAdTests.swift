@@ -28,6 +28,28 @@ struct CompanionAdTests {
         }
         var prefetch: [String] { events.filter { $0.kind == .adPrefetchChanged }.map { $0.properties["paused"] ?? "" } }
     }
+    /// Accepts connections and never sends a byte, so a creative stalls at startup without failing.
+    final class SilentOrigin: @unchecked Sendable {
+        let listener: NWListener
+        private let lock = NSLock()
+        private var connections: [NWConnection] = []
+        init() throws {
+            listener = try NWListener(using: .tcp, on: .any)
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { connection.cancel(); return }
+                self.lock.lock(); self.connections.append(connection); self.lock.unlock()
+                connection.start(queue: .global())
+                // Read whatever the client sends and leave it unanswered.
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { _, _, _, _ in }
+            }
+            listener.start(queue: .global())
+        }
+        func stop() {
+            lock.lock(); let owned = connections; connections.removeAll(); lock.unlock()
+            listener.cancel()
+            for connection in owned { connection.cancel() }
+        }
+    }
     private func wait(_ seconds: TimeInterval = 5, _ predicate: () -> Bool) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
         while !predicate(), ProcessInfo.processInfo.systemUptime < deadline {
@@ -269,9 +291,10 @@ struct CompanionAdTests {
         var contexts: [HMHostAdContext] = [], stops: [HMAdOutcome] = []
         let host = HMHostAdBreak(start: { contexts.append($0) }, stop: { stops.append($0) })
         let missing = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("hotmic-missing-\(UUID()).mp4")
-        // A hanging origin accepts the request and never answers, so the creative stalls at startup instead of
-        // racing the deadline: a warmed engine can show a local file's first frame inside 0.1 s.
-        let origin: PlayerNativeReviewTests.PrefixOrigin? = try mode == "url-startup" ? PlayerNativeReviewTests.PrefixOrigin() : nil
+        // A silent origin accepts the connection and never answers, so the creative stalls at startup instead of
+        // racing the deadline: a warmed engine can show a local file's first frame inside 0.1 s, and an origin
+        // that answers anything at all (even a withheld tail) can fail the load just as fast.
+        let origin: SilentOrigin? = try mode == "url-startup" ? SilentOrigin() : nil
         defer { origin?.stop() }
         var stalling = missing
         if let origin {
@@ -279,7 +302,7 @@ struct CompanionAdTests {
             let deadline = Date().addingTimeInterval(5)
             while (origin.listener.port?.rawValue ?? 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
             let port = try #require(origin.listener.port)
-            // https: the engine opens a TLS handshake the origin never answers; a cleartext scheme can be refused before any request.
+            // https: the engine waits on a TLS handshake that never completes; a cleartext scheme can be refused before any request.
             stalling = URL(string: "https://127.0.0.1:\(port.rawValue)/companion.mp4")!
         }
         let stalled = stalling
@@ -310,7 +333,7 @@ struct CompanionAdTests {
             let errors = sink.events.filter { $0.kind == .error }.map {
                 "\($0.itemID) \($0.properties["error_domain"] ?? "")/\($0.properties["error_code"] ?? ""): \($0.properties["error_message"] ?? "")"
             }
-            #expect(ends == [mode == "url-startup" ? "timedOut" : "failed"] && player.companionNode == nil, "errors: \(errors)")
+            #expect(ends == [mode == "url-startup" ? "timedOut" : "failed"] && player.companionNode == nil, "ends: \(sink.companionEnds) errors: \(errors)")
             #expect(states == ["armed", "countdown", "none"])
             #expect(player.currentNode?.isActive == true && player.wantsPlayback) // Content was never held.
             player.teardown()

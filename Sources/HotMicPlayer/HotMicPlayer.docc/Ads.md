@@ -68,9 +68,13 @@ Decisions never trim existing warm players, including when the provider returns 
 
 The Sample's **Ads lab** demonstrates both modes offline, with a generated landscape MP4, a colored host break and state-driven comment suppression. Its benchmark `ads` scenario plays a local pre-roll before measuring subsequent content swipes. The `no-fill` scenario compares normal back-and-forth swipes with a provider returning `.none` against a control without a provider.
 
+## Picture in Picture and AirPlay
+
+The SDK owns no Picture in Picture controller: set `HMPlayer.isPictureInPictureActive` from your `AVPictureInPictureControllerDelegate`. `isExternalPlaybackActive` follows the external route, such as AirPlay, of the engine playing current content; it moves with that content across swipes and engine reuse, and stays false while the player is idle. `suppressesCompanionAds` is true while either is active. Companion ads do not appear while Picture in Picture or external playback is active, and a playing companion pauses. `HMPlayer.events` emits `externalPresentationChanged(pictureInPicture:externalPlayback:)` on each effective change of either flag.
+
 ## Source compatibility
 
-Ad integration adds cases to `HMPlayerEvent` and `HMPlaybackEvent.Kind`. Update exhaustive switches to handle the ad events when upgrading, and use `@unknown default` when ignoring future SDK enum cases. `HMAdState.playing(kind:)` describes a phase; progress lives in `HMPlayer.adProgress`.
+Ad integration adds cases to `HMPlayerEvent` and `HMPlaybackEvent.Kind`, including `HMPlayerEvent.externalPresentationChanged(pictureInPicture:externalPlayback:)`. Update exhaustive switches to handle the ad events when upgrading, and use `@unknown default` when ignoring future SDK enum cases. `HMAdState.playing(kind:)` describes a phase; progress lives in `HMPlayer.adProgress`.
 
 ## Ad SDK adapter recipe (for example, Google IMA)
 

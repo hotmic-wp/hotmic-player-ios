@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Ads
+
+- `HMPlayer.isPictureInPictureActive` (host-set), `isExternalPlaybackActive` (follows the external route of the engine playing current content) and `suppressesCompanionAds` report when companion ads must not appear. `HMPlayerEvent.externalPresentationChanged(pictureInPicture:externalPlayback:)` reports each change; update exhaustive switches over `HMPlayerEvent`.
+
 ### Ready-made social overlay
 
 - `HMSocialOptions.sheetMode` adds `.snapped(squeezeFraction:)`: the comment sheet rests only at squeezed, expanded or closed, snapping on release by the predicted end of the drag. The expanded sheet pauses playback through the player and resumes on leaving unless the viewer had paused. `HMSocialState` exposes `sheetPosition`, `squeezedSheetHeight`, `snapComments(to:)` and `updateSheetSnapping(squeezedHeight:)`. The default `.continuous` mode is unchanged.

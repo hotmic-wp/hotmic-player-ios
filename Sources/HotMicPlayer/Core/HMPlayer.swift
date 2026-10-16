@@ -47,7 +47,7 @@ import UIKit
     public var suppressesCompanionAds: Bool { isPictureInPictureActive || isExternalPlaybackActive }
     /// Replaces the detected external-playback state, for labs and demos without an external display.
     /// Nil follows the current content engine.
-    @_spi(Benchmark) public var externalPlaybackOverride: Bool? {
+    @ObservationIgnored @_spi(Benchmark) public var externalPlaybackOverride: Bool? {
         didSet { syncExternalPlayback() }
     }
 

@@ -89,7 +89,7 @@ struct BRFeedScreen: View {
         // Failed clips stay current so the retry control in the squeezed frame can be exercised.
         var configuration = HMPlayerConfiguration.default
         configuration.failedItemPolicy = .stay
-        player = HMPlayer(configuration: configuration, interactions: CustomEngagementBackend())
+        player = HMPlayer(configuration: configuration, interactions: BRDemoSource())
     }
     deinit { MainActor.assumeIsolated { player.teardown() } }
     func refreshRanking() {
@@ -99,10 +99,7 @@ struct BRFeedScreen: View {
     func data(_ item: HMMediaItem) -> any HMSocialDataSource {
         let engagement = player.engagement(for: item)
         if let adapter = adapters[item.id], adapter.engagement === engagement { return adapter }
-        let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: HMSocialContent(
-            title: item.title ?? "The moment everyone is talking about",
-            description: "Placeholder copy until the demo content set lands. Join the conversation and share your view of this moment.",
-            hashtags: ["Highlights", "GameDay"], community: "B/R community"))
+        let adapter = HMEngagementSocialAdapter(engagement: engagement, metadata: BRDemoContent.metadata(for: item))
         adapters[item.id] = adapter; return adapter
     }
     func start() async {
@@ -111,7 +108,8 @@ struct BRFeedScreen: View {
         player.replaceAll(BRDemoContent.items)
         await player.start()
         do {
-            for item in player.items { try await data(item).loadMoreComments() }
+            // Media-clock replay has no comment pages; loading one would switch replay off.
+            for item in player.items where data(item).canLoadMore { try await data(item).loadMoreComments() }
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
     }

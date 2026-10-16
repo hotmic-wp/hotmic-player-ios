@@ -1,0 +1,597 @@
+{
+ "key": "s01",
+ "clipID": "b583313c-3af8-492a-91b0-eb8cc4b0e1f3",
+ "seed": 1568534610,
+ "historyCount": 8,
+ "rows": [
+  {
+   "id": "s01-c00",
+   "author": "endzonejunkie9",
+   "avatarURL": null,
+   "text": "Passing like it's a pickup run",
+   "reactions": {
+    "💯": 12
+   },
+   "offset": 0.2,
+   "postedAgo": 784
+  },
+  {
+   "id": "s01-c01",
+   "author": "buzzerfan51",
+   "avatarURL": null,
+   "text": "The crowd though 🔊",
+   "reactions": {},
+   "offset": 0.42,
+   "postedAgo": 646
+  },
+  {
+   "id": "s01-c02",
+   "author": "endzonekid",
+   "avatarURL": null,
+   "text": "Instant classic",
+   "reactions": {
+    "💯": 47
+   },
+   "offset": 0.78,
+   "postedAgo": 563
+  },
+  {
+   "id": "s01-c03",
+   "author": "gridironqueen97",
+   "avatarURL": null,
+   "text": "Unreal 🔥🔥",
+   "reactions": {
+    "😭": 8,
+    "👏": 3
+   },
+   "offset": 1.37,
+   "postedAgo": 495
+  },
+  {
+   "id": "s01-c04",
+   "author": "endzonelegend12",
+   "avatarURL": null,
+   "text": "Commentary would've gone nuts",
+   "reactions": {
+    "👏": 2
+   },
+   "offset": 1.67,
+   "postedAgo": 440
+  },
+  {
+   "id": "s01-c05",
+   "author": "sidelinefan_76",
+   "avatarURL": null,
+   "text": "Need this in 4K",
+   "reactions": {
+    "💯": 130,
+    "😂": 8
+   },
+   "offset": 1.9,
+   "postedAgo": 312
+  },
+  {
+   "id": "s01-c06",
+   "author": "fastbreakhead_",
+   "avatarURL": null,
+   "text": "Absolute scenes",
+   "reactions": {
+    "👏": 8
+   },
+   "offset": 2.47,
+   "postedAgo": 217
+  },
+  {
+   "id": "s01-c07",
+   "author": "fantasykid44",
+   "avatarURL": null,
+   "text": "Cinema",
+   "reactions": {
+    "😂": 47,
+    "💯": 2
+   },
+   "offset": 2.75,
+   "postedAgo": 96
+  },
+  {
+   "id": "s01-c08",
+   "author": "fastbreakfan",
+   "avatarURL": null,
+   "text": "Somebody check on the defender",
+   "reactions": {
+    "👏": 130,
+    "💯": 130
+   },
+   "offset": 3.14,
+   "gap": 4.12,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c09",
+   "author": "rinksideking_49",
+   "avatarURL": null,
+   "text": "He was LOCKED in",
+   "reactions": {},
+   "offset": 3.66,
+   "gap": 3.44,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c10",
+   "author": "gridironhead_",
+   "avatarURL": null,
+   "text": "Stop it 😂",
+   "reactions": {
+    "😭": 130
+   },
+   "offset": 3.94,
+   "gap": 5.4,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c11",
+   "author": "gridironking10",
+   "avatarURL": null,
+   "text": "Clip of the year?",
+   "reactions": {},
+   "offset": 4.39,
+   "gap": 4.08,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c12",
+   "author": "rinksideking_",
+   "avatarURL": null,
+   "text": "Ratio'd by a highlight 💀",
+   "reactions": {
+    "😂": 1
+   },
+   "offset": 4.73,
+   "gap": 5.0,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c13",
+   "author": "buzzerjunkie_",
+   "avatarURL": null,
+   "text": "Tell me you've seen a better one",
+   "reactions": {},
+   "offset": 4.91,
+   "gap": 4.35,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c14",
+   "author": "redzonefan",
+   "avatarURL": null,
+   "text": "Haters gonna say it's fake",
+   "reactions": {},
+   "offset": 5.26,
+   "gap": 4.42,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c15",
+   "author": "buzzerwatcher67",
+   "avatarURL": null,
+   "text": "Rim said no thanks",
+   "reactions": {
+    "💯": 8
+   },
+   "offset": 5.83,
+   "gap": 3.83,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c16",
+   "author": "diamondlegend83",
+   "avatarURL": null,
+   "text": "Where was he even throwing it",
+   "reactions": {
+    "👏": 130
+   },
+   "offset": 6.14,
+   "gap": 4.3,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c17",
+   "author": "playoffguru87",
+   "avatarURL": null,
+   "text": "Best thing I've seen all week",
+   "reactions": {},
+   "offset": 6.45,
+   "gap": 3.76,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c18",
+   "author": "sidelinekid_",
+   "avatarURL": null,
+   "text": "This is why I watch",
+   "reactions": {
+    "🔥": 2
+   },
+   "offset": 6.74,
+   "gap": 4.65,
+   "fireBump": 0
+  },
+  {
+   "id": "s01-c19",
+   "author": "slapshotwatcher",
+   "avatarURL": null,
+   "text": "Nah this is crazy",
+   "reactions": {
+    "🔥": 130
+   },
+   "offset": 7.23,
+   "gap": 5.12,
+   "fireBump": 0
+  }
+ ],
+ "audience": {
+  "start": 40,
+  "ticks": [
+   [
+    8.0,
+    42
+   ],
+   [
+    6.5,
+    46
+   ],
+   [
+    4.9,
+    42
+   ],
+   [
+    7.7,
+    41
+   ],
+   [
+    7.6,
+    46
+   ],
+   [
+    4.3,
+    47
+   ],
+   [
+    2.1,
+    42
+   ],
+   [
+    9.3,
+    37
+   ],
+   [
+    9.6,
+    37
+   ],
+   [
+    3.0,
+    39
+   ],
+   [
+    9.3,
+    43
+   ],
+   [
+    6.3,
+    43
+   ],
+   [
+    9.2,
+    40
+   ],
+   [
+    6.1,
+    36
+   ],
+   [
+    4.1,
+    39
+   ],
+   [
+    8.1,
+    42
+   ],
+   [
+    8.1,
+    46
+   ],
+   [
+    9.0,
+    49
+   ],
+   [
+    5.9,
+    48
+   ],
+   [
+    2.5,
+    44
+   ],
+   [
+    4.9,
+    46
+   ],
+   [
+    3.0,
+    44
+   ],
+   [
+    1.8,
+    44
+   ],
+   [
+    3.1,
+    43
+   ],
+   [
+    5.4,
+    44
+   ],
+   [
+    5.3,
+    48
+   ],
+   [
+    7.0,
+    50
+   ],
+   [
+    2.2,
+    53
+   ],
+   [
+    9.5,
+    54
+   ],
+   [
+    1.2,
+    51
+   ],
+   [
+    4.1,
+    50
+   ],
+   [
+    4.2,
+    53
+   ],
+   [
+    3.1,
+    56
+   ],
+   [
+    5.9,
+    58
+   ],
+   [
+    1.9,
+    58
+   ],
+   [
+    3.6,
+    55
+   ],
+   [
+    3.3,
+    54
+   ],
+   [
+    7.5,
+    51
+   ],
+   [
+    1.3,
+    49
+   ],
+   [
+    9.1,
+    48
+   ],
+   [
+    8.9,
+    45
+   ],
+   [
+    8.3,
+    41
+   ],
+   [
+    3.0,
+    39
+   ],
+   [
+    2.6,
+    43
+   ],
+   [
+    9.7,
+    38
+   ],
+   [
+    3.4,
+    36
+   ],
+   [
+    8.0,
+    32
+   ],
+   [
+    3.7,
+    34
+   ],
+   [
+    5.3,
+    30
+   ],
+   [
+    5.4,
+    29
+   ],
+   [
+    9.1,
+    29
+   ],
+   [
+    8.2,
+    28
+   ],
+   [
+    8.6,
+    28
+   ],
+   [
+    6.0,
+    28
+   ],
+   [
+    3.4,
+    28
+   ],
+   [
+    2.9,
+    31
+   ],
+   [
+    3.1,
+    31
+   ],
+   [
+    7.5,
+    33
+   ],
+   [
+    7.2,
+    29
+   ],
+   [
+    9.7,
+    31
+   ],
+   [
+    7.8,
+    28
+   ],
+   [
+    7.9,
+    30
+   ],
+   [
+    7.0,
+    32
+   ],
+   [
+    4.0,
+    32
+   ],
+   [
+    9.4,
+    30
+   ],
+   [
+    3.2,
+    30
+   ],
+   [
+    9.4,
+    33
+   ],
+   [
+    5.4,
+    36
+   ],
+   [
+    6.7,
+    36
+   ],
+   [
+    9.8,
+    31
+   ],
+   [
+    1.7,
+    33
+   ],
+   [
+    6.4,
+    34
+   ],
+   [
+    1.4,
+    36
+   ],
+   [
+    1.5,
+    35
+   ],
+   [
+    6.2,
+    40
+   ],
+   [
+    5.4,
+    43
+   ],
+   [
+    8.9,
+    39
+   ],
+   [
+    1.2,
+    41
+   ],
+   [
+    7.8,
+    38
+   ],
+   [
+    6.6,
+    39
+   ],
+   [
+    4.4,
+    37
+   ],
+   [
+    6.6,
+    36
+   ],
+   [
+    1.2,
+    37
+   ],
+   [
+    9.7,
+    41
+   ],
+   [
+    1.1,
+    39
+   ],
+   [
+    8.3,
+    39
+   ],
+   [
+    9.6,
+    38
+   ],
+   [
+    4.8,
+    37
+   ],
+   [
+    4.1,
+    33
+   ],
+   [
+    1.3,
+    36
+   ]
+  ]
+ }
+}

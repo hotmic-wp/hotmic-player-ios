@@ -94,8 +94,8 @@ private struct HMSocialChrome: View {
                 HMSocialPausedLeaf(player: player, item: item)
                     .position(x: geometry.size.width / 2, y: max(safe.top + 50, videoFrame.midY))
                     .opacity(current && state.sheetPosition != .expanded ? 1 : 0)
-                if player.isFullscreen {
-                    HMSocialFullscreenControls(player: player, item: item, showsMute: options.showsMute)
+                if player.isFullscreen, options.fullscreenControls != .hidden {
+                    HMSocialFullscreenControls(player: player, item: item, showsMute: options.showsMute, mode: options.fullscreenControls)
                         .padding(.bottom, nav + 12).opacity(adActive ? 0 : 1).allowsHitTesting(!adActive)
                         .accessibilityHidden(!current || adActive)
                 } else {
@@ -293,19 +293,56 @@ private struct HMSocialAuxiliaryControls: View {
         }
     }
 }
-private struct HMSocialFullscreenControls: View {
+/// The fullscreen pill. Internal so its visibility rule can be unit-tested without a player.
+struct HMSocialFullscreenControls: View {
     let player: HMPlayer
     let item: HMMediaItem
     let showsMute: Bool
+    var mode: HMSocialOptions.FullscreenControls = .visible
+    /// Seconds of running playback the hide timer has counted since the last change the pill could make.
+    @State private var idle: TimeInterval = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        HMHitArea {
-            HStack {
-                let playing = player.snapshot(for: item).state == .playing
-                HMSocialControl(icon: playing ? .pause : .play, label: playing ? "Pause" : "Play") { player.togglePlayPause() }
-                HMSocialAuxiliaryControls(player: player, item: item, aspectRatio: nil, showsMute: showsMute)
-                HMSocialControl(icon: .close, label: "Exit fullscreen") { player.exitFullscreen() }
-            }.padding(8).background(.black.opacity(0.65), in: Capsule())
+        let snapshot = player.snapshot(for: item)
+        let playing = snapshot.state == .playing
+        let visible = Self.isVisible(mode, snapshot: snapshot, idle: idle)
+        ZStack(alignment: .bottom) {
+            // Unmounted while hidden, so its reserved region no longer swallows taps meant for the video.
+            if visible {
+                HMHitArea {
+                    HStack {
+                        HMSocialControl(icon: playing ? .pause : .play, label: playing ? "Pause" : "Play") { player.togglePlayPause() }
+                        HMSocialAuxiliaryControls(player: player, item: item, aspectRatio: nil, showsMute: showsMute)
+                        HMSocialControl(icon: .close, label: "Exit fullscreen") { player.exitFullscreen() }
+                    }.padding(8).background(.black.opacity(0.65), in: Capsule())
+                }.transition(reduceMotion ? AnyTransition.identity : AnyTransition.opacity)
+            }
         }
+        .animation(reduceMotion ? nil : Animation.easeInOut(duration: 0.2), value: visible)
+        // Display cadence runs on the wall clock in the view; every change the pill can make restarts the delay.
+        .task(id: "\(playing)|\(player.isMuted)|\(player.captionsEnabled)") {
+            idle = 0
+            guard playing, let delay = Self.hideDelay(for: mode) else { return }
+            if delay > 0 {
+                do { try await Task.sleep(for: .seconds(min(delay, 86_400))) } catch { return }
+            }
+            idle = delay
+        }
+    }
+    /// Whether the pill is shown for an option, the coarse playback state and the seconds of playback since the last change.
+    static func isVisible(_ mode: HMSocialOptions.FullscreenControls, snapshot: HMPlaybackSnapshot, idle: TimeInterval) -> Bool {
+        switch mode {
+        case .visible: return true
+        case .hidden: return false
+        case .autoHide:
+            guard snapshot.state == .playing, let delay = hideDelay(for: mode) else { return true }
+            return idle < delay
+        }
+    }
+    /// Seconds of running playback before the pill hides, or nil when no timer ever hides it.
+    static func hideDelay(for mode: HMSocialOptions.FullscreenControls) -> TimeInterval? {
+        guard case .autoHide(let after) = mode, after != .infinity else { return nil }
+        return after.isNaN ? 0 : max(0, after)
     }
 }
 private struct HMSocialControl: View {

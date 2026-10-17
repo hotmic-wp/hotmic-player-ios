@@ -1,6 +1,6 @@
 import SwiftUI
 import Observation
-import HotMicPlayer
+@_spi(Benchmark) import HotMicPlayer
 import HotMicPlayerUI
 
 /// Home screen of the BR demo: the partner demo's ready-made social feed on BR clips.
@@ -16,6 +16,7 @@ struct BRFeedScreen: View {
     @State private var sharePresented = false
     @State private var notice = ""
     @State private var homeOpen = false
+    @State private var signInOpen = false
     @State private var hashtag: BRHashtag?
     @State private var clipFailure = BRClipFailureHook()
     @Environment(\.scenePhase) private var scenePhase
@@ -33,6 +34,7 @@ struct BRFeedScreen: View {
         options.allowsPagingWhileSheetOpen = false
         options.closesSheetOnVideoTap = true
         options.showsPlaybackStatus = true
+        options.showsCompanionChrome = true
         // Landscape fullscreen: nothing over the video but the player's corner exit; a tap plays and pauses.
         options.fullscreenControls = .hidden
         return options
@@ -40,7 +42,10 @@ struct BRFeedScreen: View {
     private var callbacks: HMSocialCallbacks {
         var callbacks = HMSocialCallbacks()
         callbacks.hashtagTapped = { hashtag = BRHashtag(tag: $0) }
-        callbacks.share = { shareURL = $0.url; sharePresented = true }
+        callbacks.share = {
+            model.player.setCompanionCovered(true, by: "share")
+            shareURL = $0.url; sharePresented = true
+        }
         callbacks.commentPosted = { _, _ in notice = "Comment posted" }
         callbacks.sheetChanged = { _, opened in sheetOpen = opened }
         return callbacks
@@ -63,11 +68,40 @@ struct BRFeedScreen: View {
                         Toggle("Preview once per item", isOn: $previewOnce)
                         Button("Landscape item") { model.player.jump(toID: BRDemoContent.landscapeID) }
                         Button("Fail this clip") { clipFailure.fail(model.player) }
+                        Menu("Side-car") {
+                            Picker("Side-car timing (next replay)", selection: Binding(
+                                get: { model.sideCarTiming }, set: { model.sideCarTiming = $0 }
+                            )) {
+                                ForEach(BRFeedModel.SideCarTiming.allCases) { timing in
+                                    Text(timing.rawValue).tag(timing)
+                                }
+                            }
+                            Button("Replay the side-car — next eligible clip") {
+                                model.replaySideCar()
+                                notice = "Side-car reset. Swipe to an eligible clip (2–9)."
+                            }
+                            Toggle("Simulate Picture in Picture", isOn: Binding(
+                                get: { model.player.isPictureInPictureActive },
+                                set: { model.player.isPictureInPictureActive = $0 }
+                            ))
+                            Toggle("Simulate AirPlay", isOn: Binding(
+                                get: { model.simulatesAirPlay }, set: { model.simulatesAirPlay = $0 }
+                            ))
+                            Button("Show sign-in prompt") {
+                                model.player.setCompanionCovered(true, by: "signIn")
+                                signInOpen = true
+                            }
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle").font(.system(size: 22)).frame(width: 44, height: 44)
                     }.accessibilityLabel("Demo options").accessibilityIdentifier("br-demo-options")
                 }
                 .padding(.horizontal, 16).background(.black.opacity(0.7))
+                }
+                if case .playing = model.player.adState {
+                    Text("Ad · 0:15").font(.caption.bold()).padding(8)
+                        .background(.black.opacity(0.75), in: Capsule())
+                        .allowsHitTesting(false).accessibilityIdentifier("br-preroll-label")
                 }
                 if !notice.isEmpty {
                     // A short-lived toast, never a standing status line.
@@ -85,7 +119,20 @@ struct BRFeedScreen: View {
         .hmTheme(BRTheme.theme)
         .ignoresSafeArea(.keyboard)
         .preferredColorScheme(.dark).foregroundStyle(.white)
-        .sheet(isPresented: $sharePresented) { if let shareURL { HMShareSheet(items: [shareURL]) } }
+        .sheet(isPresented: $sharePresented, onDismiss: {
+            model.player.setCompanionCovered(false, by: "share")
+        }) { if let shareURL { HMShareSheet(items: [shareURL]) } }
+        .sheet(isPresented: $signInOpen, onDismiss: {
+            model.player.setCompanionCovered(false, by: "signIn")
+        }) {
+            VStack(spacing: 20) {
+                Text("Sign-in prompt (stand-in)").font(.title2.bold())
+                Text("Your app owns sign-in. This demo creates no account and collects no information. The side-car pauses while this sheet covers it.")
+                    .multilineTextAlignment(.center)
+                Button("Close sign-in prompt") { signInOpen = false }.buttonStyle(.borderedProminent)
+            }
+            .padding(24).presentationDetents([.large])
+        }
         .fullScreenCover(isPresented: $homeOpen) {
             BRHomeScreen(onOpen: { entry in clipFailure.forget(); model.open(entry); homeOpen = false },
                          onClose: { homeOpen = false })
@@ -118,9 +165,21 @@ struct BRFeedScreen: View {
         }
     }
     private var kit: HMSocialPlayerView {
-        HMSocialPlayerView(player: model.player, options: options, callbacks: callbacks, data: model.data)
+        let kit = HMSocialPlayerView(player: model.player, options: options, callbacks: callbacks, data: model.data)
             .actionRail { item, context in BRActionRail(item: item, context: context) }
             .metadata { _, context in BRMetadata(context: context) }
+        // Do not reserve an empty banner slot on clips without a banner.
+        guard let current = model.player.currentItem,
+              BRDemoContent.catalog.clip(forItemID: current.id)?.banner != nil else { return kit }
+        return kit.sidecar(size: CGSize(width: 240, height: 60)) { item in
+                if let banner = BRDemoContent.catalog.clip(forItemID: item.id)?.banner {
+                    AsyncImage(url: banner) { image in image.resizable().scaledToFit() }
+                        placeholder: { Color.clear }
+                        .accessibilityLabel("Sponsor banner (stand-in)")
+                        .accessibilityIdentifier("br-sponsor-banner")
+                        .allowsHitTesting(false)
+                }
+            }
     }
 }
 
@@ -130,7 +189,26 @@ struct BRFeedScreen: View {
 
 /// Internal so the Home entries (`BRDemoEntries.swift`) can extend it.
 @MainActor @Observable final class BRFeedModel {
+    enum SideCarTiming: String, CaseIterable, Identifiable {
+        case standard = "10s / 5s countdown"
+        case extended = "20s / 3s countdown"
+        var id: Self { self }
+        var trigger: HMCompanionTrigger {
+            switch self {
+            case .standard: HMCompanionTrigger(watchedTime: 10, countdown: 5, scope: .session)
+            case .extended: HMCompanionTrigger(watchedTime: 20, countdown: 3, scope: .session)
+            }
+        }
+    }
     var player: HMPlayer
+    @ObservationIgnored private let adProvider = BRDemoAdProvider()
+    /// Trigger settings are sampled at the next companion decision. Replay, then swipe to apply.
+    var sideCarTiming: SideCarTiming = .standard {
+        didSet { player.configuration.companionTrigger = sideCarTiming.trigger }
+    }
+    var simulatesAirPlay = false {
+        didSet { player.externalPlaybackOverride = simulatesAirPlay ? true : nil }
+    }
     private var started = false
     @ObservationIgnored private var adapters: [String: HMEngagementSocialAdapter] = [:]
     var error: String?
@@ -139,6 +217,11 @@ struct BRFeedScreen: View {
         var configuration = HMPlayerConfiguration.default
         configuration.failedItemPolicy = .stay
         player = HMPlayer(configuration: configuration, interactions: BRDemoSource())
+        player.adBreakProvider = adProvider
+    }
+    func replaySideCar() {
+        player.dismissCompanion()
+        adProvider.resetSideCar()
     }
     deinit { MainActor.assumeIsolated { player.teardown() } }
     func refreshRanking() {

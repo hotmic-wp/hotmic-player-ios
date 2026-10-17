@@ -34,8 +34,18 @@ import HotMicPlayer
         }
     }
     func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
-        guard case let .preRoll(creative) = decision(for: item) else { return .none }
-        return .preRoll(creative.mediaItem())
+        switch decision(for: item) {
+        case let .preRoll(creative): return .preRoll(creative.mediaItem())
+        case .sideCar:
+            // Horizontal eligibility remains available to task 5; only the vertical feed is wired here.
+            guard catalog.section(forItemID: item.id) == .feed,
+                  let creative = sideCarCreative(for: item),
+                  let clip = catalog.clip(forItemID: item.id) else { return .none }
+            sideCarDidShow()
+            // The catalog's share destination is a real poster URL, used as a stand-in click-through.
+            return .companion(.media(creative, clickThroughURL: clip.shareURL))
+        case .none: return .none
+        }
     }
     /// The 30 s 16:9 side-car creative for this item, or nil when the item isn't eligible or the
     /// side-car already ran this session.
@@ -44,6 +54,6 @@ import HotMicPlayer
         return catalog.ads["sideCar16x9_30"]?.mediaItem()
     }
     func sideCarDidShow() { sideCarShown = true }
-    /// "Replay the side-car" in the demo options.
+    /// Offers the side-car on the next eligible visit, never on the current visit.
     func resetSideCar() { sideCarShown = false }
 }

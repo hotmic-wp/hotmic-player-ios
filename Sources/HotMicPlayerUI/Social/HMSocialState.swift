@@ -34,6 +34,44 @@ import HotMicPlayer
     public private(set) var sheetPosition: SheetPosition?
     /// Snapped rest height of the squeezed position; nil keeps continuous dragging.
     public private(set) var squeezedSheetHeight: CGFloat?
+    /// Height of the presented companion band, reported by the current page's overlay. Chrome and the sheet lift by it.
+    private(set) var companionBandHeight: CGFloat = 0
+    private var progressFrames: [String: CGRect] = [:]
+    func updateCompanionBand(height: CGFloat) {
+        let valid = height.isFinite ? max(0, height) : 0
+        if companionBandHeight != valid { companionBandHeight = valid }
+    }
+    /// The current page's progress bar, in the overlay's coordinates, so the countdown pill can sit just above it.
+    func recordProgressBarFrame(_ frame: CGRect, for itemID: String) {
+        if progressFrames[itemID] != frame { progressFrames[itemID] = frame }
+    }
+    func progressBarFrame(for itemID: String) -> CGRect? { progressFrames[itemID] }
+    /// One layout pass of sheet anchoring. Host navigation plus the companion band form the bottom
+    /// anchor, the keyboard only moves the sheet, and a snapped rest height is measured above the band.
+    struct SheetGeometry: Equatable {
+        /// Host navigation plus the bottom safe area: the content inset the video keeps.
+        let navigation: CGFloat
+        /// The bottom anchor of resting chrome and the sheet: navigation plus the companion band.
+        let bottom: CGFloat
+        /// The sheet's bottom inset: the anchor or the keyboard, whichever is higher.
+        let sheetBottom: CGFloat
+        /// Maximum sheet height after the top safe area, the sheet bottom and the handle gap.
+        let maximum: CGFloat
+        /// Snapped rest height above the anchor; nil for continuous sheets.
+        let squeezed: CGFloat?
+    }
+    static func sheetGeometry(fullHeight: CGFloat, safeTop: CGFloat, safeBottom: CGFloat, navigationHeight: CGFloat,
+                              keyboard: CGFloat, companionBand: CGFloat, mode: HMSocialOptions.SheetMode) -> SheetGeometry {
+        let band = companionBand.isFinite ? max(0, companionBand) : 0
+        let navigation = max(0, navigationHeight) + safeBottom
+        let bottom = navigation + band
+        let sheetBottom = max(bottom, keyboard)
+        // Snapped rest heights follow host navigation and the band, not the keyboard, so the squeezed video holds its size.
+        let squeezed = squeezedRestHeight(viewportHeight: fullHeight - bottom, mode: mode)
+        // An expanded snapped sheet reaches the top safe area; continuous sheets keep a handle gap.
+        let maximum = max(1, fullHeight - safeTop - sheetBottom - (squeezed == nil ? 24 : 0))
+        return SheetGeometry(navigation: navigation, bottom: bottom, sheetBottom: sheetBottom, maximum: maximum, squeezed: squeezed)
+    }
     @ObservationIgnored private var previewedItems: Set<String> = []
     @ObservationIgnored private var fireTargets: [String: CGPoint] = [:]
     func recordFireTarget(_ point: CGPoint, for itemID: String) { fireTargets[itemID] = point }
@@ -185,36 +223,37 @@ private struct HMSocialPlaybackModifier: ViewModifier {
         actions.sheetAnimation = reduceMotion ? nil : .easeInOut(duration: theme.sheetAnimationDuration)
         return GeometryReader { geometry in
             let safe = extendsUnderSafeArea ? geometry.safeAreaInsets : EdgeInsets()
-            let bottom = max(0, options.hostNavigationHeight) + safe.bottom
             let fullHeight = geometry.size.height + safe.top + safe.bottom
             let keyboard = keyboardTop.map { max(0, geometry.frame(in: .global).maxY + safe.bottom - $0) } ?? 0
-            let sheetBottom = max(bottom, keyboard)
-            // Snapped rest heights follow host navigation, not the keyboard, so the squeezed video holds its size.
-            let squeezed = HMSocialState.squeezedRestHeight(viewportHeight: fullHeight - bottom, mode: options.sheetMode)
-            // An expanded snapped sheet reaches the top safe area; continuous sheets keep a handle gap.
-            let maximum = max(1, fullHeight - safe.top - sheetBottom - (squeezed == nil ? 24 : 0))
-            let height = max(0, fullHeight - max(bottom, state.sheetBottomInset) - state.sheetHeight)
+            // The companion band lifts the anchor; the video keeps only host navigation as its content inset
+            // because the feed squeezes every page above the band itself.
+            let layout = HMSocialState.sheetGeometry(fullHeight: fullHeight, safeTop: safe.top, safeBottom: safe.bottom,
+                navigationHeight: options.hostNavigationHeight, keyboard: keyboard, companionBand: state.companionBandHeight, mode: options.sheetMode)
+            let height = max(0, fullHeight - max(layout.bottom, state.sheetBottomInset) - state.sheetHeight)
             content
-                .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: bottom),
+                .hmVideoLayout(HMVideoLayout(contentInsets: HMVideoInsets(bottom: layout.navigation),
                     squeezeTarget: state.isSheetOpen ? CGRect(x: 0, y: 0, width: geometry.size.width, height: height) : nil))
                 .hmFullscreenVideoLayout(HMVideoLayout())
                 .hmFeedPagingDisabled(!options.allowsPagingWhileSheetOpen && state.isSheetOpen)
                 .hmVideoGestures(isAdPlaying: player.adState.isActive,
                     onTap: actions.tap, onDoubleTap: !player.isFullscreen && !state.isSheetOpen && actions.canFire ? actions.fire : nil)
-                .onChange(of: maximum, initial: true) { _, value in
-                    state.updateSheetLayout(maximumHeight: value, bottomInset: sheetBottom)
+                .environment(\.hmSocialState, state)
+                .onChange(of: layout.maximum, initial: true) { _, value in
+                    state.updateSheetLayout(maximumHeight: value, bottomInset: layout.sheetBottom)
                 }
-                .onChange(of: sheetBottom) { _, value in
-                    state.updateSheetLayout(maximumHeight: maximum, bottomInset: value)
+                .onChange(of: layout.sheetBottom) { _, value in
+                    state.updateSheetLayout(maximumHeight: layout.maximum, bottomInset: value)
                 }
-                .onChange(of: squeezed, initial: true) { _, value in
+                .onChange(of: layout.squeezed, initial: true) { _, value in
                     state.updateSheetSnapping(squeezedHeight: value)
                 }
         }
         .ignoresSafeArea(.keyboard)
         .onAppear { actions.start() }
         // Pause and resume go through the player; the expanded sheet never stores a position itself.
+        // The expanded sheet covers the companion band, which the player must know; the content pause is separate.
         .onChange(of: state.sheetPosition == .expanded) { _, expanded in
+            player.setCompanionCovered(expanded, by: "comments")
             if expanded {
                 guard player.snapshot.state != .paused else { return }
                 actions.resumesAfterExpandedSheet = true; player.pause()
@@ -229,7 +268,7 @@ private struct HMSocialPlaybackModifier: ViewModifier {
         .onChange(of: player.currentItem?.id) { _, _ in state.closeComments() }
         .onChange(of: player.adState.isActive) { _, active in if active { state.closeComments() } }
         .onChange(of: player.isFullscreen) { _, _ in state.closeComments() }
-        .onDisappear { actions.stop(); state.closeComments() }
+        .onDisappear { actions.stop(); state.closeComments(); player.setCompanionCovered(false, by: "comments") }
     }
 }
 #endif

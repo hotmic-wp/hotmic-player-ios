@@ -134,6 +134,10 @@ public enum HMPlayerEvent: Sendable, Equatable {
     case nearingEnd(remaining: Int)
     /// Picture in Picture or external playback started or stopped.
     case externalPresentationChanged(pictureInPicture: Bool, externalPlayback: Bool)
+    /// Companion lifecycle. `item` is the item whose decision armed it, not necessarily the one on screen.
+    case companionStateChanged(item: HMMediaItem, state: HMCompanionState)
+    /// Exactly once per armed companion. Cancellation includes host dismissal, a later pre-roll and teardown.
+    case companionEnded(item: HMMediaItem, outcome: HMAdOutcome)
 }
 
 /// Main-actor observations forwarded through `HMPlayer.events`.

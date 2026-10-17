@@ -17,6 +17,10 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
         case adBreakEnded
         /// Bulk prefetch pause/resume during ads; protected content heads remain prepared.
         case adPrefetchChanged
+        /// Companion lifecycle phase change, associated with the arming item without starting a content impression.
+        case companionStateChanged
+        /// A companion's terminal outcome.
+        case companionEnded
 
         /// A view (one item impression) began. Mux: `videochange` / new view.
         ///
@@ -113,6 +117,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
             case .adStateChanged: return "adStateChanged"
             case .adBreakEnded: return "adBreakEnded"
             case .adPrefetchChanged: return "adPrefetchChanged"
+            case .companionStateChanged: return "companionStateChanged"
+            case .companionEnded: return "companionEnded"
             case .viewStart: return "viewStart"
             case .pageGesture: return "pageGesture"
             case .viewEnd: return "viewEnd"
@@ -146,6 +152,8 @@ public struct HMPlaybackEvent: Sendable, Identifiable {
             case "adStateChanged": self = .adStateChanged
             case "adBreakEnded": self = .adBreakEnded
             case "adPrefetchChanged": self = .adPrefetchChanged
+            case "companionStateChanged": self = .companionStateChanged
+            case "companionEnded": self = .companionEnded
             case "viewStart": self = .viewStart
             case "pageGesture": self = .pageGesture
             case "viewEnd": self = .viewEnd

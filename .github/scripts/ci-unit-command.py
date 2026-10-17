@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run one external unit-CI command with a deadline and an owned process group."""
+"""Run one external unit-CI command with a deadline and an owned process group.
+
+Exit status: the command's own status; 124 when its deadline passed; 123 when
+--stall-seconds of silence passed before any --stall-until line; 125 for
+watchdog-side errors; 128+N for a handled signal."""
 import argparse
 from collections import deque
 import json
@@ -23,6 +27,14 @@ def main():
                         help="Parent-owned cancellation request; avoids signaling a completed background watchdog PID")
     parser.add_argument("--failure-file", type=Path,
                         help="Stop when a concurrent prerequisite records failure")
+    parser.add_argument("--stall-seconds", type=float, default=0,
+                        help="Exit 123 after this many seconds without output, until a --stall-until line appears")
+    parser.add_argument("--stall-until", metavar="REGEX",
+                        help="Output matching this disarms stall detection: the command is making progress")
+    parser.add_argument("--finish-pattern", metavar="REGEX",
+                        help="Output matching this means the command is finalizing its results")
+    parser.add_argument("--finish-grace", type=float, default=0,
+                        help="Seconds past --seconds allowed after --finish-pattern, still within the total deadline")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command
@@ -30,6 +42,10 @@ def main():
         command = command[1:]
     if not command or args.seconds <= 0 or args.grace < 0 or args.reserve < 0:
         parser.error("a command, positive seconds and nonnegative grace/reserve are required")
+    if args.stall_seconds < 0 or args.finish_grace < 0:
+        parser.error("stall seconds and finish grace must be nonnegative")
+    stall_regex = re.compile(args.stall_until) if args.stall_until else None
+    finish_regex = re.compile(args.finish_pattern) if args.finish_pattern else None
 
     began = time.monotonic()
     deadline = min(began + args.seconds, args.total_deadline - args.reserve)
@@ -37,6 +53,8 @@ def main():
                   budget_seconds=args.seconds, total_deadline=args.total_deadline,
                   reserve_seconds=args.reserve, deadline=deadline,
                   available_seconds=max(0, deadline - began), grace_seconds=args.grace,
+                  stall_seconds=args.stall_seconds, stalled=False,
+                  finish_grace_seconds=args.finish_grace, finish_seen_after=None,
                   timed_out=False, received_signal=None, pid=None, command_exit=None)
     received = None
 
@@ -54,9 +72,13 @@ def main():
     recent = deque(maxlen=12)
     partial = ""
     timing_summary = False
+    # Stall detection stays armed until the command shows the progress named by
+    # --stall-until; after that, long silences belong to the command itself.
+    stall_armed = args.stall_seconds > 0
+    finish_seen = None
 
     def progress(reader):
-        nonlocal partial, timing_summary
+        nonlocal partial, timing_summary, stall_armed, finish_seen
         # Read at most 64 KiB per poll: noisy output cannot starve deadline checks.
         data = reader.read(65536)
         if not data:
@@ -69,6 +91,14 @@ def main():
                 timing_summary = False
                 continue
             recent.append(line[-2000:])
+            if stall_armed and stall_regex is not None and stall_regex.search(line):
+                stall_armed = False
+                say(f"progress observed after {time.monotonic() - began:.1f}s; stall detection disarmed")
+            if finish_seen is None and finish_regex is not None and finish_regex.search(line):
+                finish_seen = time.monotonic()
+                record["finish_seen_after"] = finish_seen - began
+                if args.finish_grace > 0:
+                    say(f"results finalizing after {finish_seen - began:.1f}s; up to {args.finish_grace:g}s past the cap allowed")
             if "Build Timing Summary" in line:
                 timing_summary = True
             if timing_summary or re.search(r"Test (Suite|Case)|Executed \d+|[◇✔✘↳]|\*\* (TEST|BUILD)|Result bundle|Testing (started|failed)| \| [\d.]+ seconds", line):
@@ -132,10 +162,18 @@ def main():
                                            start_new_session=True)
                 record["pid"] = process.pid
                 heartbeat = began + 15
+                last_output = began
                 while True:
-                    progress(reader)
+                    if progress(reader):
+                        last_output = time.monotonic()
                     now = time.monotonic()
                     code = process.poll()
+                    # Once results are being written, finishing them may run
+                    # past the cap; the total deadline and reserve still bind.
+                    effective_deadline = deadline
+                    if finish_seen is not None and args.finish_grace > 0:
+                        effective_deadline = max(deadline, min(began + args.seconds + args.finish_grace,
+                                                               args.total_deadline - args.reserve))
                     # Preserve an observed command failure before a concurrent
                     # prerequisite failure can replace its exit status.
                     if code is not None and code != 0 and received is None:
@@ -158,7 +196,12 @@ def main():
                     if code is not None and code != 0:
                         status = code if code >= 0 else 128 - code
                         break
-                    if now >= deadline:
+                    if code is None and stall_armed and now - last_output >= args.stall_seconds:
+                        record["stalled"] = True
+                        status = 123
+                        say(f"no output for {now - last_output:.0f}s and no progress yet; treating the command as stalled")
+                        break
+                    if now >= effective_deadline:
                         record["timed_out"] = True
                         status = 124
                         break
@@ -166,7 +209,7 @@ def main():
                         status = code if code >= 0 else 128 - code
                         break
                     if now >= heartbeat:
-                        say(f"{now - began:.1f}s elapsed; {max(0, deadline - now):.1f}s left; last output: {recent[-1] if recent else '(none)'}")
+                        say(f"{now - began:.1f}s elapsed; {max(0, effective_deadline - now):.1f}s left; silent {now - last_output:.0f}s; last output: {recent[-1] if recent else '(none)'}")
                         heartbeat = now + 15
                     time.sleep(0.1)
 
@@ -201,7 +244,7 @@ def main():
             say("last raw output (also retained in log):")
             for line in recent:
                 say(line)
-        say(f"exit={status}; elapsed={record['elapsed_seconds']:.1f}s; timeout={record['timed_out']}; signal={received}")
+        say(f"exit={status}; elapsed={record['elapsed_seconds']:.1f}s; timeout={record['timed_out']}; stalled={record['stalled']}; signal={received}")
     return status
 
 

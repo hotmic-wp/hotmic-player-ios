@@ -34,15 +34,8 @@ import HotMicPlayer
         }
     }
     func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
-        switch decision(for: item) {
-        case let .preRoll(creative): return .preRoll(creative.mediaItem())
-        case .sideCar:
-            // Throwaway for the companion device proof; the demo wiring ticket installs this properly.
-            guard let creative = sideCarCreative(for: item) else { return .none }
-            sideCarDidShow()
-            return .companion(.media(creative))
-        case .none: return .none
-        }
+        guard case let .preRoll(creative) = decision(for: item) else { return .none }
+        return .preRoll(creative.mediaItem())
     }
     /// The 30 s 16:9 side-car creative for this item, or nil when the item isn't eligible or the
     /// side-car already ran this session.

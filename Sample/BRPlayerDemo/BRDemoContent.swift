@@ -95,6 +95,8 @@ struct BRDemoClip: Decodable, Sendable {
     let liveCounts: Bool
     /// `preRoll16x9`, `preRoll9x16`, `sideCar` or `none`.
     let ad: String
+    /// Sidecar WebVTT by language (slot 5). The other clips' as-served masters omit `CLOSED-CAPTIONS`, and the
+    /// SDK no longer counts the undeclared CC option they imply, so those clips show no captions control.
     let captions: [String: URL]?
     let banner: URL?
     let shareURL: URL

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Captions
+
+- `HMPlayer.availableCaptionLanguages` lists closed-caption tracks only when they are declared with a language. The undeclared "CC" option AVFoundation offers for every multivariant playlist that omits `CLOSED-CAPTIONS` no longer counts, so the ready-made overlay's captions control and the native "Captions on" action appear only for streams that really have captions. Subtitle renditions and sidecars are unchanged.
+
 ### Ads
 
 - Companion ads: `HMAdBreak.companion(HMCompanionBreak)` arms a video ad in the pre-roll slot that appears in a band above host chrome after the trigger's watched time (`HMCompanionTrigger`, `HMWatchedTimeScope`, `HMPlayerConfiguration.companionTrigger`), stays pinned across swipes, navigation and playlist edits, and never gates comments or the sheet. `HMPlayer` gains `companionState`, `companionCountdown`, `companionProgress`, `isCompanionMuted` (unmuting holds content paused), `skipCompanion()`, `dismissCompanion()`, `setCompanionCovered(_:by:)` and `isCompanionCovered`; snapshots carry `companionFrame`; `hmCompanionOverlay` draws player-level chrome over the feed through `HMCompanionOverlayContext`. `HMHostAdContext` gains `isMuted`, `onMutedChange` and `reportMuted(_:)`. New cases: `HMAdOutcome.companion`, `HMPlayerEvent.companionStateChanged` / `companionEnded`, `HMPlaybackEvent.Kind.companionStateChanged` / `companionEnded`; update exhaustive switches.

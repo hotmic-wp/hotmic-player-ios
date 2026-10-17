@@ -275,6 +275,8 @@ public struct HMSocialCallbacks {
     public var commentPosted: (HMMediaItem, String) -> Void = { _, _ in }
     /// Called once for each sheet opening or closing, with the originating item.
     public var sheetChanged: (HMMediaItem, Bool) -> Void = { _, _ in }
+    /// Opens a companion's click-through URL. Nil uses the environment's `openURL`.
+    public var companionClickThrough: ((URL) -> Void)? = nil
     /// Creates this component with host-supplied data and actions.
     public init() {}
 }
@@ -334,6 +336,9 @@ public struct HMSocialOptions: Equatable {
     public var commentSelection: HMCommentSelection?
     /// Where the audience or view count appears when the content supplies one; defaults to under the title.
     public var audienceBadgePlacement: AudienceBadgePlacement = .belowTitle
+    /// Draws the ready-made companion countdown and band strip. The strip appears for player-played
+    /// creatives only; host SDKs draw their own. Default true.
+    public var showsCompanionChrome = true
     /// Behavior of the fullscreen control pill; defaults to always visible.
     public var fullscreenControls: FullscreenControls = .visible
     /// Creates this component with host-supplied data and actions.

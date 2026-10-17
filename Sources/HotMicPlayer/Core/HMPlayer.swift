@@ -36,10 +36,57 @@ import UIKit
     @ObservationIgnored private var adTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var adProgressTask: Task<Void, Never>?
 
+    /// Player-level companion lifecycle. It never gates comments, chrome or the sheet; see `adState` for pre-rolls.
+    public private(set) var companionState: HMCompanionState = .none
+    /// Creative media-time progress while a companion plays; zero otherwise. Ticks emit no events or analytics.
+    public private(set) var companionProgress = HMAdProgress()
+    /// Latest watched-time sample while a companion is armed or counting down; nil otherwise.
+    public private(set) var companionCountdown: HMCompanionCountdown?
+    /// Companion audio, independent of `isMuted` and reset to true each time a companion appears.
+    /// Unmuting holds content paused until the companion is muted again or ends, or the viewer plays
+    /// content or navigates (both re-mute the companion). Ignored while no companion plays.
+    public var isCompanionMuted = true {
+        didSet { if isCompanionMuted != oldValue { companionMutedChanged() } }
+    }
+    /// Ends a playing companion as skipped. Offer a close control only when your ad stack allows it.
+    public func skipCompanion() { if companionState.isPresented { endCompanion(.skipped) } }
+    /// Ends an armed or playing companion as cancelled, for host navigation such as leaving the screen.
+    /// Swipes and `jump(toID:)` alone keep it.
+    public func dismissCompanion() { if companionState != .none { endCompanion(.cancelled, reason: "dismissed") } }
+    /// Records whether a host surface, such as a registration prompt or a full-height sheet, covers
+    /// the companion band. A covered companion does not appear, its countdown freezes, and a playing
+    /// one pauses. Use one stable name per surface; clearing one surface never clears another.
+    public func setCompanionCovered(_ covered: Bool, by surface: String) {
+        let changed = covered ? companionCovers.insert(surface).inserted : companionCovers.remove(surface) != nil
+        if changed { refreshCompanion() }
+    }
+    /// True while any surface reported through `setCompanionCovered(_:by:)` covers the band.
+    public var isCompanionCovered: Bool { !companionCovers.isEmpty }
+    private var companionCovers: Set<String> = []
+    // The companion engine and host context are observed by the band surface; the rest is bookkeeping.
+    private(set) var companionNode: HMPlayerNode?
+    private(set) var companionHostContext: HMHostAdContext?
+    @ObservationIgnored private var companionBreak: HMCompanionBreak?
+    @ObservationIgnored private var companionItem: HMMediaItem?
+    @ObservationIgnored private var companionTrigger = HMCompanionTrigger()
+    @ObservationIgnored private var companionToken = UUID()
+    @ObservationIgnored private var companionClock = HMWatchedTimeClock()
+    @ObservationIgnored private var companionHold = false
+    @ObservationIgnored private var companionBandMounted = false
+    @ObservationIgnored private var companionHostStarted = false
+    @ObservationIgnored private var companionPresentedAt: TimeInterval?
+    @ObservationIgnored private var companionLastProgressAt: TimeInterval = 0
+    @ObservationIgnored private var companionLastSampleAt: TimeInterval = -.infinity
+    @ObservationIgnored private var companionSampleTask: Task<Void, Never>?
+    @ObservationIgnored private var companionDeadlineTask: Task<Void, Never>?
+    @ObservationIgnored private var companionWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored private var companionProgressTask: Task<Void, Never>?
+    @ObservationIgnored private var companionMountFallback: Task<Void, Never>?
+
     /// Host-reported Picture in Picture state. The SDK owns no Picture in Picture controller; set
     /// this from your `AVPictureInPictureControllerDelegate`.
     public var isPictureInPictureActive = false {
-        didSet { if isPictureInPictureActive != oldValue { emitExternalPresentation() } }
+        didSet { if isPictureInPictureActive != oldValue { emitExternalPresentation(); refreshCompanion() } }
     }
     /// True while current content plays on an external route such as AirPlay.
     public private(set) var isExternalPlaybackActive = false
@@ -103,7 +150,7 @@ import UIKit
                 let suspended = (note.userInfo?[AVAudioSessionInterruptionWasSuspendedKey] as? NSNumber)?.boolValue == true
                 guard reason != AVAudioSession.InterruptionReason.appWasSuspended.rawValue, !suspended else { return }
                 if !audioInterrupted { resumeAfterInterruption = wantsPlayback }
-                audioInterrupted = true; pauseAll(); updateHostPlaybackPermission()
+                audioInterrupted = true; pauseAll(); updateHostPlaybackPermission(); refreshCompanion()
                 emit(.audioSession(.interruptionBegan))
             } else {
                 let options = AVAudioSession.InterruptionOptions(rawValue: (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? NSNumber)?.uintValue ?? 0)
@@ -116,7 +163,7 @@ import UIKit
                 if !shouldResume { wantsPlayback = false }
                 let resumed = eligible && isFeedVisible && !audioBlocked
                 if resumed { activateAudioIfManaged(); resumeActive() }
-                updateHostPlaybackPermission()
+                updateHostPlaybackPermission(); refreshCompanion()
                 if mediaProgressAllowed { refreshWindow() }
                 emit(.audioSession(.interruptionEnded(shouldResume: shouldResume, resumed: resumed)))
             }
@@ -129,7 +176,7 @@ import UIKit
             appBackgrounded = true
             diagnosticsRecorder?.suspend()
             if !configuration.allowsBackgroundAudio { pauseAll() }
-            updateHostPlaybackPermission(); emit(.audioSession(.enteredBackground))
+            updateHostPlaybackPermission(); refreshCompanion(); emit(.audioSession(.enteredBackground))
         case UIApplication.didBecomeActiveNotification:
             // Latest explicit host intent also includes play/navigation while blocked.
             let eligible = wantsPlayback
@@ -138,7 +185,7 @@ import UIKit
             resumeAfterInterruption = false
             let resumed = eligible && isFeedVisible && !audioBlocked
             if resumed { activateAudioIfManaged(); resumeActive() }
-            updateHostPlaybackPermission()
+            updateHostPlaybackPermission(); refreshCompanion()
             if mediaProgressAllowed { refreshWindow() }
             emit(.audioSession(.enteredForeground(resumed: resumed)))
         case AVAudioSession.mediaServicesWereResetNotification:
@@ -151,6 +198,7 @@ import UIKit
                 position.isFinite && position > 0 ? (identity(item), position) : nil
             }
             if adState.isActive { endAd(.failed, resume: false) }
+            if companionNode != nil { endCompanion(.failed) }
             for node in pool.nodes { analytics.detach(playerKey: node.id) }
             pool.rebuild()
             activateAudioIfManaged()
@@ -199,12 +247,14 @@ import UIKit
         guard !ended, currentItem != nil else { return }
         requestedPageID = nil
         isFullscreen = true
+        refreshCompanion()
     }
     /// Returns to the same inline item and feed page. Access on the main actor.
     public func exitFullscreen() {
         guard isFullscreen else { return }
         isFullscreen = false
         scheduleFailedItemAdvance()
+        refreshCompanion()
     }
     // A single mounted presenter owns fullscreen for this engine. A duplicate is inert.
     @ObservationIgnored weak var fullscreenPresenter: AnyObject?
@@ -275,7 +325,7 @@ import UIKit
     /// Mutes every current and prepared player synchronously.
     ///
     /// Access on the main actor.
-    public var isMuted: Bool { didSet { for node in pool.nodes { node.setMuted(isMuted) }; adNode?.setMuted(isMuted) } }
+    public var isMuted: Bool { didSet { for node in pool.nodes { node.setMuted(isMuted) }; adNode?.setMuted(isMuted); hostAdContext?.setMuted(isMuted) } }
     /// Pause when hidden or backgrounded. Resume is synchronous for a resolved, prepared current item.
     ///
     /// Access on the main actor.
@@ -287,6 +337,7 @@ import UIKit
             updateHostPlaybackPermission()
             if isFeedVisible { Task { [weak self] in await self?.prepareTransport() }; activateAudioIfManaged(); refreshWindow() }
             else { pauseAll() }
+            refreshCompanion()
         }
     }
     /// Analytics fan-out, independent of the player event stream.
@@ -483,6 +534,11 @@ import UIKit
     private func wire(_ node: HMPlayerNode) {
         node.onBufferChanged = { [weak self] in self?.updatePrefetch() }
         node.onExternalPlaybackChanged = { [weak self] in self?.syncExternalPlayback() }
+        // Only the engine carrying current content feeds the companion's watched-time clock.
+        node.onPlayheadTick = { [weak self, weak node] snapshot, advancing in
+            guard let self, let node, node === self.currentNode else { return }
+            self.recordContentTick(snapshot, advancing: advancing)
+        }
         node.captions.configure(enabled: captionsEnabled, language: selectedCaptionLanguage)
         node.captions.onLanguagesChanged = { [weak self, weak node] in
             guard let self, let node, node.item?.id == self.currentItem?.id else { return }
@@ -596,6 +652,8 @@ import UIKit
         #if os(iOS)
         audioInterrupted = false; resumeAfterInterruption = false
         #endif
+        // Playing held content re-mutes the companion, which releases the hold.
+        if companionHold { isCompanionMuted = true }
         wantsPlayback = true; activateAudioIfManaged(); updateHostPlaybackPermission(); resumeActive(); refreshWindow()
     }
     /// Pauses playback without changing the playlist or current position.
@@ -711,9 +769,10 @@ import UIKit
         var properties = commit.properties; properties["outcome"] = outcome
         analytics.recordBenchmark(HMPlaybackEvent(kind: .pageGesture, itemID: id, metrics: commit.clockMetrics, properties: properties), item: item)
     }
-    func attachFeed() { feedSurfaces += 1; isFeedVisible = true }
+    func attachFeed() { feedSurfaces += 1; isFeedVisible = true; refreshCompanion() }
     func detachFeed() {
         feedSurfaces = max(0, feedSurfaces - 1)
+        refreshCompanion()
         pageIsMoving = false; feedIsTouching = false
         if feedSurfaces == 0, let id = requestedPageID, failurePageID == id {
             commitPage(toID: id, requestedAt: ProcessInfo.processInfo.systemUptime)
@@ -738,6 +797,8 @@ import UIKit
     }
     private func saveAndDeactivate() {
         mediaResetPosition = nil
+        // Navigation re-mutes a companion; the departing item is never resumed by the release.
+        if companionHold { companionHold = false; isCompanionMuted = true }
         if adState.isActive { endAd(.cancelled, resume: false) }
         adVisit = nil; adState = .none; adProgress = HMAdProgress(); adContentOutcome = nil
         guard let node = currentNode, let item = currentItem else { return }
@@ -1025,8 +1086,8 @@ import UIKit
             mediaResetPosition = nil
             node.activate(startingAt: resetPosition ?? (configuration.restoresPlaybackPosition ? resumePositions[identity(original)] : nil),
                           requestedAt: requestTime, reason: requestReason, cachedBytes: proxy?.cachedByteCount(for: item) ?? 0, commit: requestCommit)
-            if !playbackAllowed { node.pause() }
-        } else if wantsPlayback && (node.snapshot.state == .paused || node.player.timeControlStatus == .paused) { node.play() }
+            if !playbackAllowed || companionHold { node.pause() }
+        } else if wantsPlayback && !companionHold && (node.snapshot.state == .paused || node.player.timeControlStatus == .paused) { node.play() }
     }
     /// Fixed mode separates request ordering from progress permission. Current reads
     /// have priority, one immediate-next prefix can progress during cold startup,
@@ -1328,7 +1389,7 @@ import UIKit
     /// Toggles current playback; useful for tap overlays.
     ///
     /// Access on the main actor.
-    public func togglePlayPause() { wantsPlayback ? pause() : play() }
+    public func togglePlayPause() { wantsPlayback && !companionHold ? pause() : play() }
     /// Toggles global mute.
     ///
     /// Access on the main actor.
@@ -1376,6 +1437,7 @@ import UIKit
         #if os(iOS)
         audioObserver?.cancel(); audioObserver = nil
         #endif
+        if companionState != .none { endCompanion(.cancelled, reason: "teardown") }
         if adState.isActive { endAd(.cancelled, resume: false) }
         failureAdvanceTask?.cancel(); failureAdvanceTask = nil
         interactionTimeoutTask?.cancel(); interactionTimeoutTask = nil
@@ -1410,6 +1472,7 @@ import UIKit
                 let decision = try await provider.adBreak(for: item)
                 guard let self, self.adToken == token, self.adState.isActive, !Task.isCancelled else {
                     if case .hostPlayed(let host) = decision { host.stop(.cancelled) }
+                    if case .companion(let companion) = decision, case .host(let adapter) = companion.creative { adapter.stop(.cancelled) }
                     return
                 }
                 self.adDecisionPending = false; self.adTimeoutTask?.cancel(); self.adTimeoutTask = nil
@@ -1417,6 +1480,7 @@ import UIKit
                 case .none: self.endAd(.noFill)
                 case .preRoll(let ad): self.startURLAd(ad, token: token)
                 case .hostPlayed(let host): self.startHostAd(host, token: token)
+                case .companion(let companion): self.armCompanion(companion, item: item)
                 }
             } catch {
                 guard let self, self.adToken == token, self.adState.isActive else { return }
@@ -1436,6 +1500,7 @@ import UIKit
             emit(.adStateChanged(item: item, state: state))
             analytics.emit(HMPlaybackEvent(kind: .adStateChanged, itemID: item.id, properties: Self.adStateProperties(state)), item: item)
         }
+        refreshCompanion()
     }
     private static func adStateProperties(_ state: HMAdState) -> [String: String] {
         switch state {
@@ -1456,6 +1521,8 @@ import UIKit
         adProgress = value
     }
     private func beginAcceptedAd(token: UUID) {
+        // A pre-roll and a companion never coexist: the accepted break wins before it starts.
+        if companionState != .none { endCompanion(.cancelled, reason: "preRoll") }
         resetAdContentPosition(); adDidStart = true; wantsPlayback = true
         let started = ProcessInfo.processInfo.systemUptime
         adLastProgressAt = started
@@ -1480,7 +1547,7 @@ import UIKit
         }, progress: { [weak self] progress in
             guard let self, self.adToken == token, self.adState.isActive else { return }
             self.updateAdProgress(progress)
-        })
+        }, muted: isMuted)
         hostAdContext = context
         context.setPlaybackAllowed(isFeedVisible && playbackAllowed)
         setAdState(.playing(kind: .host))
@@ -1522,7 +1589,7 @@ import UIKit
     }
     /// Calls the host adapter's stop callback or ends the URL ad. Host decides when skip is offered.
     public func skipAd() { if adState.isActive { endAd(.skipped) } }
-    private func endAd(_ outcome: HMAdOutcome, resume: Bool = true) {
+    private func endAd(_ outcome: HMAdOutcome, resume: Bool = true, reason: String? = nil) {
         guard adState.isActive else { return }
         adToken = UUID(); adDecisionPending = false
         adContentOutcome = adDidStart ? outcome : nil
@@ -1536,7 +1603,9 @@ import UIKit
         setAdState(.finished)
         if let item = adItem {
             emit(.adBreakEnded(item: item, outcome: outcome))
-            analytics.emit(HMPlaybackEvent(kind: .adBreakEnded, itemID: item.id, properties: ["outcome": outcome.rawValue]), item: item)
+            var properties = ["outcome": outcome.rawValue]
+            if let reason { properties["reason"] = reason }
+            analytics.emit(HMPlaybackEvent(kind: .adBreakEnded, itemID: item.id, properties: properties), item: item)
             analytics.emit(HMPlaybackEvent(kind: .adPrefetchChanged, itemID: item.id, properties: ["paused": "false"]), item: item)
         }
         emit(.adPrefetchChanged(paused: false)); adItem = nil
@@ -1584,6 +1653,9 @@ import UIKit
         refreshWindow(); checkEnd(); scheduleFailedItemAdvance()
     }
     private func handle(_ event: HMPlaybackEvent, item: HMMediaItem) {
+        if event.itemID == currentItem?.id, [.seeking, .seeked, .ended, .rebufferStart, .rebufferEnd, .pause].contains(event.kind) {
+            companionContentDiscontinuity()
+        }
         if let recorder = diagnosticsRecorder {
             switch event.kind {
             case .viewStart:
@@ -1779,7 +1851,7 @@ import UIKit
     private func emit(_ event: HMPlayerEvent) {
         lastEvent = event; for continuation in subscribers.values { continuation.yield(event) }
         // Every current change passes here; engine assignments and route changes arrive from the node.
-        if case .currentItemChanged(_) = event { syncExternalPlayback() }
+        if case .currentItemChanged(_) = event { syncExternalPlayback(); companionItemChanged() }
     }
     /// Reads the route of the engine carrying current content; false while idle or after teardown.
     private func syncExternalPlayback() {
@@ -1787,10 +1859,282 @@ import UIKit
         guard active != isExternalPlaybackActive else { return }
         isExternalPlaybackActive = active
         emitExternalPresentation()
+        refreshCompanion()
     }
     private func emitExternalPresentation() {
         emit(.externalPresentationChanged(pictureInPicture: isPictureInPictureActive, externalPlayback: isExternalPlaybackActive))
     }
     private func report(_ kind: HMPlayerError, item: HMMediaItem? = nil) { loadError = kind.localizedDescription; emit(.error(item: item, kind: kind)) }
+}
+
+// MARK: - Companion ads
+// A companion is player-level, not visit-scoped: one visit's decision arms it and it lives across
+// swipes and edits until it ends. Its creative plays in its own engine, outside the content pool.
+extension HMPlayer {
+    private var companionPresentable: Bool {
+        guard feedSurfaces > 0, isFeedVisible, !isFullscreen, !appBackgrounded, !suppressesCompanionAds, companionCovers.isEmpty else { return false }
+        if case .playing = adState { return false }
+        return true
+    }
+    private var companionPlaybackAllowed: Bool { !ended && companionPresentable && !audioBlocked }
+    private var companionCounting: Bool { companionState == .armed || companionState == .countdown }
+    var companionAspectRatio: Double { companionBreak?.aspectRatio ?? 16 / 9 }
+    var companionClickThroughURL: URL? { companionBreak?.clickThroughURL }
+
+    private func armCompanion(_ companion: HMCompanionBreak, item: HMMediaItem) {
+        guard companionState == .none else {
+            // At most one companion exists: the decision is declined and the existing one is untouched.
+            if case .host(let adapter) = companion.creative { adapter.stop(.cancelled) }
+            endAd(.cancelled, reason: "companionActive"); return
+        }
+        companionToken = UUID()
+        companionBreak = companion; companionItem = item
+        companionTrigger = (companion.trigger ?? configuration.companionTrigger).sanitized
+        companionClock.reset(); companionHostStarted = false; companionProgress = HMAdProgress()
+        endAd(.companion)
+        setCompanionState(.armed, item: item)
+        pushCompanionSample(remaining: companionTrigger.watchedTime, at: ProcessInfo.processInfo.systemUptime, force: true)
+        startCompanionSampleTask()
+    }
+    /// A playhead tick from the engine carrying current content; never an ad engine. Tests feed shaped ticks directly.
+    func recordContentTick(_ snapshot: HMPlaybackSnapshot, advancing: Bool, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard companionCounting else { return }
+        // Armed time accrues wherever content plays; a visible countdown advances only while it can appear.
+        let counts = advancing && (companionState == .armed || companionPresentable)
+        companionClock.record(snapshot, advancing: counts, at: uptime)
+        evaluateCompanionTrigger(at: uptime)
+    }
+    private func companionContentDiscontinuity() {
+        guard companionCounting else { return }
+        companionClock.discontinuity()
+        evaluateCompanionTrigger(at: ProcessInfo.processInfo.systemUptime, force: true)
+    }
+    private func companionItemChanged() {
+        guard companionCounting else { return }
+        if companionTrigger.scope == .item { companionClock.reset() } else { companionClock.discontinuity() }
+        evaluateCompanionTrigger(at: ProcessInfo.processInfo.systemUptime, force: true)
+    }
+    private func evaluateCompanionTrigger(at uptime: TimeInterval, force: Bool = false) {
+        guard companionCounting, let item = companionItem else { return }
+        if companionState == .countdown, companionNode?.snapshot.state == .failed { endCompanion(.failed); return }
+        let remaining = max(0, companionTrigger.watchedTime - companionClock.watched)
+        if companionState == .armed, remaining <= companionTrigger.countdown, companionPresentable {
+            setCompanionState(.countdown, item: item)
+            warmCompanionCreativeIfNeeded()
+        } else if companionState == .countdown, remaining > companionTrigger.countdown {
+            // An item-scoped restart moved the companion back behind its countdown.
+            setCompanionState(.armed, item: item)
+        }
+        if companionState == .countdown, remaining <= 0 { presentCompanionIfReady(at: uptime) }
+        guard companionCounting else { return }
+        pushCompanionSample(remaining: remaining, at: uptime, force: force)
+    }
+    private func pushCompanionSample(remaining: TimeInterval, at uptime: TimeInterval, force: Bool) {
+        let rate = companionState == .armed || companionPresentable ? companionClock.rate : 0
+        guard force || rate != companionCountdown?.rate || uptime - companionLastSampleAt >= 0.25 else { return }
+        companionLastSampleAt = uptime
+        companionCountdown = HMCompanionCountdown(remaining: remaining, countdownLength: companionTrigger.countdown, rate: rate, sampledAt: uptime)
+    }
+    private func startCompanionSampleTask() {
+        let token = companionToken
+        companionSampleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                guard let self, self.companionToken == token, self.companionCounting else { return }
+                // Ticks stop without a pause event when an engine is torn down; a stale clock reads as stopped.
+                let now = ProcessInfo.processInfo.systemUptime
+                if self.companionClock.isStale(at: now) { self.companionClock.discontinuity() }
+                self.evaluateCompanionTrigger(at: now, force: true)
+            }
+        }
+    }
+    private func warmCompanionCreativeIfNeeded() {
+        guard companionNode == nil, let companionBreak, case .media(let creative) = companionBreak.creative else { return }
+        guard let url = creative.url, ["file", "http", "https"].contains(url.scheme?.lowercased() ?? "") else { endCompanion(.failed); return }
+        var config = configuration; config.loops = false; config.restoresPlaybackPosition = false
+        let node = HMPlayerNode(id: "hm-companion-" + companionToken.uuidString, configuration: config)
+        companionNode = node; node.setMuted(true)
+        let token = companionToken
+        node.onBufferChanged = { [weak self] in
+            guard let self, self.companionToken == token else { return }
+            self.refreshCompanion()
+        }
+        node.onEvent = { [weak self] event, _ in
+            guard let self, self.companionToken == token else { return }
+            switch event.kind {
+            case .ended: if self.companionState.isPresented { self.endCompanion(.completed) }
+            case .error: self.endCompanion(.failed)
+            default: break
+            }
+        }
+        // The creative plays directly in its own engine, outside the content pool and cache.
+        node.warm(with: creative)
+    }
+    private func presentCompanionIfReady(at uptime: TimeInterval) {
+        guard companionState == .countdown, let companionBreak, companionPresentable else { return }
+        switch companionBreak.creative {
+        case .media:
+            guard let node = companionNode else { warmCompanionCreativeIfNeeded(); startCompanionDeadlineIfNeeded(); return }
+            guard node.snapshot.isFrameReady else { startCompanionDeadlineIfNeeded(); return }
+            presentCompanion(kind: .player, at: uptime)
+            node.activate(requestedAt: uptime, reason: "companion", cachedBytes: 0)
+            node.setMuted(isCompanionMuted)
+            if !companionPlaybackAllowed { node.pause() }
+        case .host:
+            presentCompanion(kind: .host, at: uptime)
+            let token = companionToken
+            let context = HMHostAdContext(finish: { [weak self] outcome in
+                guard let self, self.companionToken == token else { return }; self.endCompanion(outcome)
+            }, progress: { [weak self] progress in
+                guard let self, self.companionToken == token, self.companionState.isPresented else { return }
+                self.updateCompanionProgress(progress)
+            }, muted: true, reportMuted: { [weak self] muted in
+                guard let self, self.companionToken == token else { return }; self.isCompanionMuted = muted
+            })
+            companionHostContext = context
+            context.setPlaybackAllowed(companionPlaybackAllowed)
+            startCompanionHostIfMounted()
+            if !companionHostStarted {
+                // The band surface reports when it reaches a window; a host without one still gets its start.
+                companionMountFallback = Task { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                    guard let self, self.companionToken == token else { return }
+                    self.companionBandMounted = true; self.startCompanionHostIfMounted()
+                }
+            }
+        }
+    }
+    private func presentCompanion(kind: HMAdKind, at uptime: TimeInterval) {
+        guard let item = companionItem else { return }
+        companionDeadlineTask?.cancel(); companionDeadlineTask = nil
+        companionSampleTask?.cancel(); companionSampleTask = nil
+        companionCountdown = nil
+        isCompanionMuted = true
+        companionPresentedAt = uptime; companionLastProgressAt = uptime
+        setCompanionState(.playing(kind: kind), item: item)
+        startCompanionWatchdog(from: uptime)
+        if kind == .player { startCompanionProgressPolling() }
+    }
+    /// The band surface reports whether it is in a window; a host adapter starts only once it is.
+    func setCompanionBandMounted(_ mounted: Bool) {
+        companionBandMounted = mounted
+        if mounted { startCompanionHostIfMounted() }
+    }
+    private func startCompanionHostIfMounted() {
+        guard companionState == .playing(kind: .host), !companionHostStarted, companionBandMounted,
+              let context = companionHostContext, let companionBreak, case .host(let adapter) = companionBreak.creative else { return }
+        companionHostStarted = true
+        companionMountFallback?.cancel(); companionMountFallback = nil
+        adapter.start(context)
+    }
+    private func startCompanionDeadlineIfNeeded() {
+        guard companionDeadlineTask == nil else { return }
+        let token = companionToken
+        let timeout = Self.adTimeout(configuration.adLoadTimeout, fallback: 5, range: 0.1...30)
+        companionDeadlineTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
+            guard let self, self.companionToken == token, self.companionState == .countdown else { return }
+            self.endCompanion(.timedOut)
+        }
+    }
+    private func startCompanionWatchdog(from started: TimeInterval) {
+        let token = companionToken
+        let cap = Self.adTimeout(configuration.adBreakMaxDuration, fallback: 120, range: 0.1...3600)
+        let idle = Self.adTimeout(configuration.adNoProgressTimeout, fallback: 10, range: 0.1...120)
+        companionWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                guard let self, self.companionToken == token, self.companionState.isPresented else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if !self.companionPlaybackAllowed { self.companionLastProgressAt = now }
+                if now - started >= cap || now - self.companionLastProgressAt >= idle { self.endCompanion(.timedOut); return }
+            }
+        }
+    }
+    private func startCompanionProgressPolling() {
+        let token = companionToken
+        companionProgressTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                guard let self, self.companionToken == token, self.companionState.isPresented, let node = self.companionNode else { return }
+                self.updateCompanionProgress(HMAdProgress(elapsed: node.snapshot.currentTime, duration: node.snapshot.duration))
+            }
+        }
+    }
+    private func updateCompanionProgress(_ value: HMAdProgress) {
+        if value.elapsed != companionProgress.elapsed { companionLastProgressAt = ProcessInfo.processInfo.systemUptime }
+        companionProgress = value
+    }
+    /// Re-evaluates whether the companion can appear or play after visibility, fullscreen, cover, route or ad changes.
+    func refreshCompanion() {
+        switch companionState {
+        case .none: return
+        case .armed, .countdown:
+            if !companionPresentable { companionDeadlineTask?.cancel(); companionDeadlineTask = nil }
+            evaluateCompanionTrigger(at: ProcessInfo.processInfo.systemUptime, force: true)
+        case .playing:
+            let allowed = companionPlaybackAllowed
+            companionHostContext?.setPlaybackAllowed(allowed)
+            if let node = companionNode, node.isActive {
+                if allowed, node.player.timeControlStatus == .paused { node.play() }
+                else if !allowed, node.player.timeControlStatus != .paused { node.pause() }
+            }
+            if !allowed { companionLastProgressAt = ProcessInfo.processInfo.systemUptime }
+        }
+    }
+    private func companionMutedChanged() {
+        companionNode?.setMuted(isCompanionMuted)
+        companionHostContext?.setMuted(isCompanionMuted)
+        if isCompanionMuted { releaseCompanionHold() } else if companionState.isPresented { applyCompanionHold() }
+    }
+    // The hold pauses the engine only: the viewer's intent (wantsPlayback) and content mute are untouched.
+    private func applyCompanionHold() {
+        guard !companionHold else { return }
+        companionHold = true
+        if let node = currentNode, node.isActive { node.pause() }
+    }
+    private func releaseCompanionHold() {
+        guard companionHold else { return }
+        companionHold = false
+        resumeActive()
+    }
+    private func setCompanionState(_ state: HMCompanionState, item: HMMediaItem) {
+        guard state != companionState else { return }
+        companionState = state
+        emit(.companionStateChanged(item: item, state: state))
+        analytics.emit(HMPlaybackEvent(kind: .companionStateChanged, itemID: item.id, properties: Self.companionStateProperties(state)), item: item)
+    }
+    private static func companionStateProperties(_ state: HMCompanionState) -> [String: String] {
+        switch state {
+        case .none: return ["state": "none"]
+        case .armed: return ["state": "armed"]
+        case .countdown: return ["state": "countdown"]
+        case .playing(let kind): return ["state": "playing", "kind": kind.rawValue]
+        }
+    }
+    private func endCompanion(_ outcome: HMAdOutcome, reason: String? = nil) {
+        guard companionState != .none, let item = companionItem else { return }
+        var adapter: HMHostAdBreak?
+        if let companionBreak, case .host(let host) = companionBreak.creative { adapter = host }
+        companionToken = UUID()
+        companionSampleTask?.cancel(); companionSampleTask = nil
+        companionDeadlineTask?.cancel(); companionDeadlineTask = nil
+        companionWatchdogTask?.cancel(); companionWatchdogTask = nil
+        companionProgressTask?.cancel(); companionProgressTask = nil
+        companionMountFallback?.cancel(); companionMountFallback = nil
+        companionHostContext?.invalidate(); companionHostContext = nil
+        companionNode?.onEvent = nil; companionNode?.onBufferChanged = nil; companionNode?.release(); companionNode = nil
+        companionBreak = nil; companionItem = nil; companionCountdown = nil; companionProgress = HMAdProgress()
+        companionClock.reset(); companionHostStarted = false; companionPresentedAt = nil
+        setCompanionState(.none, item: item)
+        emit(.companionEnded(item: item, outcome: outcome))
+        var properties = ["outcome": outcome.rawValue]
+        if let reason { properties["reason"] = reason }
+        analytics.emit(HMPlaybackEvent(kind: .companionEnded, itemID: item.id, properties: properties), item: item)
+        // Stop runs once on every outcome, including for an adapter that was never started.
+        adapter?.stop(outcome)
+        isCompanionMuted = true
+        releaseCompanionHold()
+    }
 }
 #endif

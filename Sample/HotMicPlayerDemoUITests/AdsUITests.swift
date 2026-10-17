@@ -30,4 +30,23 @@ final class AdsUITests: XCTestCase {
             app.terminate()
         }
     }
+    func testURLCompanionPinsAcrossASwipeAndKeepsCommentsLive() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--hm-ads-lab", "1", "--hm-start-index", "6", "--hm-ads-companion-watched", "2", "--hm-ads-companion-countdown", "1"]
+        app.launch()
+        let comments = app.buttons["ads-comments"], companion = app.staticTexts["ads-companion"]
+        XCTAssertTrue(comments.waitForExistence(timeout: 15)) // content starts at once: no pre-roll suppression
+        XCTAssertTrue(app.staticTexts["ads-companion-countdown"].waitForExistence(timeout: 10))
+        XCTAssertTrue(companion.waitForExistence(timeout: 10))
+        XCTAssertTrue(comments.exists) // comments stay available beside the companion
+        XCTAssertTrue(app.otherElements["hm-companion-band"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "feed-companion"; shot.lifetime = .keepAlways; add(shot)
+        app.swipeUp()
+        XCTAssertTrue(app.staticTexts["ads-status"].waitForExistence(timeout: 5))
+        XCTAssertTrue(companion.exists) // pinned across the swipe
+        app.buttons["ads-companion-mute"].tap() // unmute holds content
+        XCTAssertTrue(app.buttons["ads-companion-mute"].label.contains("Mute"))
+        app.terminate()
+    }
 }

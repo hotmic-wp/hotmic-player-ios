@@ -43,6 +43,9 @@ public struct HMPlaybackSnapshot: Sendable, Equatable {
     /// Visible video rect in page coordinates. Populated for view overlay snapshots.
     /// For custom hosts, use `HMPlayer.videoFrame(for:in:)` with the actual host bounds.
     public internal(set) var videoFrame: CGRect = .zero
+    /// The companion band in page coordinates while a companion is shown; nil otherwise. Set on
+    /// overlay snapshots, like `videoFrame`. Lift custom chrome above it.
+    public internal(set) var companionFrame: CGRect?
     /// Coarse playback lifecycle state.
     ///
     /// Use from any task; mutate only an exclusively owned value.

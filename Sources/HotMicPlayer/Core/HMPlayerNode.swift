@@ -81,6 +81,8 @@ final class HMPlayerNode: Identifiable {
 
     @ObservationIgnored var onEvent: ((HMPlaybackEvent, HMMediaItem) -> Void)?
     @ObservationIgnored var onBufferChanged: (() -> Void)?
+    /// Every periodic playhead tick, with whether content was actually advancing at that tick.
+    @ObservationIgnored var onPlayheadTick: ((HMPlaybackSnapshot, Bool) -> Void)?
     /// Mirrors `AVPlayer.isExternalPlaybackActive`, for example while video plays over AirPlay.
     private(set) var isExternalPlaybackActive = false
     /// Called when the external route or this engine's assignment changes, so the owner re-reads
@@ -704,6 +706,7 @@ final class HMPlayerNode: Identifiable {
         if !hasConfirmedDuration || snapshot.isLive { syncSeekableRange() }
         syncBufferHealth()
         liftStartupCapIfDue()
+        onPlayheadTick?(snapshot, isActive && wantsPlayback && !isSeekingFrame && player.timeControlStatus == .playing)
     }
 
     /// Once playback is genuinely stable, remove the startup bitrate ceiling so

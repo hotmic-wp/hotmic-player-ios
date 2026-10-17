@@ -247,5 +247,37 @@ struct AdBreakTests {
             #expect(previous.assignmentGeneration == generation)
         }
     }
+    @Test("A companion decision ends the visit without a break and leaves prefetch alone; a late companion result cannot arm")
+    func companionDecision() async throws {
+        let url = try await PlayerNativeReviewTests().videoFixture(rotated: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var continuation: CheckedContinuation<HMAdBreak, Never>?
+        var starts = 0, stops: [HMAdOutcome] = []
+        let provider = Provider { item in
+            if item.id == "slow" { return await withCheckedContinuation { continuation = $0 } }
+            return .companion(.media(HMMediaItem(id: "creative", url: url)))
+        }
+        var c = HMPlayerConfiguration(managesAudioSession: false); c.adDecisionTimeout = 0.05
+        let sink = Sink(), player = HMPlayer(configuration: c, analytics: HMAnalyticsHub(sinks: [sink]))
+        defer { player.teardown() }
+        player.adBreakProvider = provider
+        player.replaceAll([HMMediaItem(id: "fill", url: url), HMMediaItem(id: "slow", url: url)])
+        try await wait { player.adState == .finished && player.currentNode?.isActive == true }
+        #expect(sink.outcomes == ["companion"] && sink.prefetch == ["true", "false"])
+        #expect(player.adNode == nil && player.hostAdContext == nil && player.adProgress == HMAdProgress())
+        #expect(!player.isAdSwipeBlocked && player.companionState == .armed && player.companionNode == nil)
+        let start = try #require(sink.events.last { $0.kind == .viewStart })
+        #expect(start.properties["after_ad"] == "false" && start.properties["ad_outcome"] == nil)
+        player.dismissCompanion()
+        let changes = sink.events.filter { $0.kind == .companionStateChanged }.count
+        player.next()
+        try await wait { player.adState == .finished }
+        #expect(sink.outcomes == ["companion", "timedOut"])
+        continuation?.resume(returning: .companion(.hostRendered(HMHostAdBreak(start: { _ in starts += 1 }, stop: { stops.append($0) }))))
+        continuation = nil
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(starts == 0 && stops == [.cancelled] && player.companionState == .none)
+        #expect(sink.events.filter { $0.kind == .companionStateChanged }.count == changes)
+    }
 }
 #endif

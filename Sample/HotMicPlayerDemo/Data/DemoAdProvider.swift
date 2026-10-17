@@ -6,9 +6,15 @@ import HotMicPlayer
 @MainActor final class DemoAdProvider: HMAdBreakProvider {
     let preRollURL: URL
     let everyVisit: Bool
+    /// Trigger for the lab's companion item; short defaults keep the walk-through quick.
+    var companionTrigger = HMCompanionTrigger(watchedTime: 3, countdown: 2)
     private var task: Task<Void, Never>?
     init(preRollURL: URL, everyVisit: Bool = false) { self.preRollURL = preRollURL; self.everyVisit = everyVisit }
     func adBreak(for item: HMMediaItem) async throws -> HMAdBreak {
+        if item.id == "companion-ad" {
+            let creative = HMMediaItem(id: "local-companion", url: preRollURL, format: .mp4, aspectRatio: 16.0 / 9, presentation: .fit)
+            return .companion(.media(creative, clickThroughURL: URL(string: "https://example.com/offer"), trigger: companionTrigger))
+        }
         if everyVisit || item.id == "url-ad" {
             return .preRoll(HMMediaItem(id: "local-preroll", url: preRollURL, format: .mp4, aspectRatio: 16.0 / 9, presentation: .fit))
         }

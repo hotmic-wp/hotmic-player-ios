@@ -171,7 +171,7 @@ struct BRFeedScreen: View {
         // Do not reserve an empty banner slot on clips without a banner.
         guard let current = model.player.currentItem,
               BRDemoContent.catalog.clip(forItemID: current.id)?.banner != nil else { return kit }
-        return kit.sidecar(size: CGSize(width: 240, height: 60)) { item in
+        return kit.sidecar(size: CGSize(width: 180, height: 45)) { item in
                 if let banner = BRDemoContent.catalog.clip(forItemID: item.id)?.banner {
                     AsyncImage(url: banner) { image in image.resizable().scaledToFit() }
                         placeholder: { Color.clear }

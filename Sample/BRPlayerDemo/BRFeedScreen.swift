@@ -134,7 +134,7 @@ struct BRFeedScreen: View {
             .padding(24).presentationDetents([.large])
         }
         .fullScreenCover(isPresented: $homeOpen) {
-            BRHomeScreen(onOpen: { entry in clipFailure.forget(); model.open(entry); homeOpen = false },
+            BRHomeScreen(onOpen: { entry in clipFailure.forget(); model.player.dismissCompanion(); model.open(entry); homeOpen = false },
                          onClose: { homeOpen = false })
         }
         .fullScreenCover(item: $hashtag) { tag in BRHashtagScreen(hashtag: tag) { hashtag = nil } }
